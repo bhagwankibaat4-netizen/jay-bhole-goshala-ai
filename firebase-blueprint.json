@@ -1,0 +1,362 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated application user profile with server-enforced role.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "role": { "type": "string", "enum": ["ADMIN", "STAFF", "PUBLIC"] },
+        "preferredLanguage": { "type": "string", "enum": ["hi", "en"] },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Must be FieldValue.serverTimestamp()" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Must be FieldValue.serverTimestamp()" }
+      },
+      "required": ["userId", "displayName", "email", "role", "preferredLanguage", "createdAt", "updatedAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Authoritative admin membership document.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "createdAt"]
+    },
+    "StaffInvite": {
+      "title": "StaffInvite",
+      "description": "Admin-created staff pre-authorization keyed by lowercase email.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "designation": { "type": "string" },
+        "monthlySalary": { "type": "number" },
+        "permissions": { "type": "object" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "name", "designation", "monthlySalary", "permissions", "createdBy", "createdAt", "updatedAt"]
+    },
+    "StaffAccount": {
+      "title": "StaffAccount",
+      "description": "Authorized staff account with granular module CRUD permissions.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "designation": { "type": "string" },
+        "monthlySalary": { "type": "number" },
+        "active": { "type": "boolean" },
+        "permissions": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "name", "designation", "monthlySalary", "active", "permissions", "createdAt", "updatedAt"]
+    },
+    "PublicSummary": {
+      "title": "PublicSummary",
+      "description": "Aggregated public-safe Goshala summary metrics.",
+      "type": "object",
+      "properties": {
+        "totalCattle": { "type": "integer" },
+        "healthyCattle": { "type": "integer" },
+        "sickCattle": { "type": "integer" },
+        "todayFeedKg": { "type": "number" },
+        "todayExpenseInr": { "type": "number" },
+        "totalDonationsInr": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["totalCattle", "healthyCattle", "sickCattle", "todayFeedKg", "todayExpenseInr", "totalDonationsInr", "updatedAt"]
+    },
+    "Cattle": {
+      "title": "Cattle",
+      "description": "Cow, bull, or calf registered in Jay Bhole Gosala Samiti.",
+      "type": "object",
+      "properties": {
+        "animalCode": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string", "enum": ["COW", "BULL", "CALF"] },
+        "breed": { "type": "string" },
+        "sex": { "type": "string", "enum": ["FEMALE", "MALE"] },
+        "ageText": { "type": "string" },
+        "birthDate": { "type": "string" },
+        "colour": { "type": "string" },
+        "weightKg": { "type": "number" },
+        "healthStatus": { "type": "string", "enum": ["HEALTHY", "SICK", "UNDER_TREATMENT", "RECOVERING"] },
+        "entryDate": { "type": "string" },
+        "shedNumber": { "type": "string" },
+        "identificationMarks": { "type": "string" },
+        "qrPayload": { "type": "string" },
+        "photoUri": { "type": "string" },
+        "notes": { "type": "string" },
+        "publicApproved": { "type": "boolean" },
+        "sponsorshipAvailable": { "type": "boolean" },
+        "monthlySupportInr": { "type": "integer" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["animalCode", "name", "category", "breed", "sex", "ageText", "colour", "weightKg", "healthStatus", "entryDate", "shedNumber", "identificationMarks", "qrPayload", "publicApproved", "sponsorshipAvailable", "monthlySupportInr", "createdBy", "createdAt", "updatedAt"]
+    },
+    "HealthRecord": {
+      "title": "HealthRecord",
+      "description": "Vaccination, vet visit, treatment, medicine, and weight tracking record.",
+      "type": "object",
+      "properties": {
+        "cattleId": { "type": "string" },
+        "cattleName": { "type": "string" },
+        "animalCode": { "type": "string" },
+        "recordType": { "type": "string", "enum": ["VACCINATION", "TREATMENT", "VET_VISIT", "WEIGHT_CHECK"] },
+        "title": { "type": "string" },
+        "medicine": { "type": "string" },
+        "vetName": { "type": "string" },
+        "costInr": { "type": "number" },
+        "weightKg": { "type": "number" },
+        "nextFollowUpDate": { "type": "string" },
+        "reminderActive": { "type": "boolean" },
+        "notes": { "type": "string" },
+        "recordedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["cattleId", "cattleName", "animalCode", "recordType", "title", "costInr", "weightKg", "reminderActive", "recordedBy", "createdAt", "updatedAt"]
+    },
+    "FeedAndOperationLog": {
+      "title": "FeedAndOperationLog",
+      "description": "Daily feed, fodder, water, cleaning, and staff task operation log.",
+      "type": "object",
+      "properties": {
+        "logDate": { "type": "string" },
+        "greenFodderKg": { "type": "number" },
+        "dryFodderBhusaKg": { "type": "number" },
+        "concentrateKg": { "type": "number" },
+        "waterLiters": { "type": "number" },
+        "shedCleaned": { "type": "boolean" },
+        "cleaningNotes": { "type": "string" },
+        "assignedStaffName": { "type": "string" },
+        "taskTitle": { "type": "string" },
+        "taskCompleted": { "type": "boolean" },
+        "feedStockRemainingKg": { "type": "number" },
+        "notes": { "type": "string" },
+        "recordedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["logDate", "greenFodderKg", "dryFodderBhusaKg", "concentrateKg", "waterLiters", "shedCleaned", "taskCompleted", "feedStockRemainingKg", "recordedBy", "createdAt", "updatedAt"]
+    },
+    "StaffOperation": {
+      "title": "StaffOperation",
+      "description": "Staff attendance, salary disbursement, and task assignment entry.",
+      "type": "object",
+      "properties": {
+        "staffUid": { "type": "string" },
+        "staffName": { "type": "string" },
+        "entryType": { "type": "string", "enum": ["ATTENDANCE", "SALARY", "TASK"] },
+        "dateStr": { "type": "string" },
+        "attendanceStatus": { "type": "string", "enum": ["PRESENT", "ABSENT", "HALF_DAY", "NA"] },
+        "amountInr": { "type": "number" },
+        "taskDescription": { "type": "string" },
+        "paidStatus": { "type": "string", "enum": ["PAID", "PENDING", "NA"] },
+        "recordedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["staffUid", "staffName", "entryType", "dateStr", "attendanceStatus", "amountInr", "paidStatus", "recordedBy", "createdAt", "updatedAt"]
+    },
+    "FinancialTransaction": {
+      "title": "FinancialTransaction",
+      "description": "Goshala income and expense ledger entry.",
+      "type": "object",
+      "properties": {
+        "txType": { "type": "string", "enum": ["INCOME", "EXPENSE"] },
+        "category": { "type": "string", "enum": ["DONATION", "FEED_PURCHASE", "MEDICAL", "STAFF_SALARY", "PRODUCT_SALE", "MAINTENANCE", "OTHER"] },
+        "amountInr": { "type": "number" },
+        "paymentMode": { "type": "string", "enum": ["CASH", "BANK", "UPI"] },
+        "paymentStatus": { "type": "string", "enum": ["COMPLETED", "PENDING"] },
+        "partyName": { "type": "string" },
+        "description": { "type": "string" },
+        "dateStr": { "type": "string" },
+        "receiptNumber": { "type": "string" },
+        "recordedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["txType", "category", "amountInr", "paymentMode", "paymentStatus", "partyName", "description", "dateStr", "recordedBy", "createdAt", "updatedAt"]
+    },
+    "FarmerRecord": {
+      "title": "FarmerRecord",
+      "description": "Goshala-managed local farmer supplier/buyer directory record (no login account).",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "mobile": { "type": "string" },
+        "village": { "type": "string" },
+        "address": { "type": "string" },
+        "cooperationType": { "type": "string", "enum": ["SUPPLIER", "BUYER", "BOTH"] },
+        "totalPurchasedInr": { "type": "number" },
+        "totalSoldInr": { "type": "number" },
+        "outstandingInr": { "type": "number" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "mobile", "village", "address", "cooperationType", "totalPurchasedInr", "totalSoldInr", "outstandingInr", "createdBy", "createdAt", "updatedAt"]
+    },
+    "FarmerTransaction": {
+      "title": "FarmerTransaction",
+      "description": "Purchase of fodder from farmer or sale of goshala compost/nursery products to farmer.",
+      "type": "object",
+      "properties": {
+        "farmerId": { "type": "string" },
+        "farmerName": { "type": "string" },
+        "village": { "type": "string" },
+        "direction": { "type": "string", "enum": ["PURCHASE_FROM_FARMER", "SALE_TO_FARMER"] },
+        "productName": { "type": "string" },
+        "quantity": { "type": "number" },
+        "unit": { "type": "string" },
+        "qualityGrade": { "type": "string" },
+        "ratePerUnitInr": { "type": "number" },
+        "totalAmountInr": { "type": "number" },
+        "paidAmountInr": { "type": "number" },
+        "outstandingInr": { "type": "number" },
+        "invoiceNumber": { "type": "string" },
+        "dateStr": { "type": "string" },
+        "notes": { "type": "string" },
+        "recordedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["farmerId", "farmerName", "village", "direction", "productName", "quantity", "unit", "qualityGrade", "ratePerUnitInr", "totalAmountInr", "paidAmountInr", "outstandingInr", "invoiceNumber", "dateStr", "recordedBy", "createdAt", "updatedAt"]
+    },
+    "CompostBatch": {
+      "title": "CompostBatch",
+      "description": "Cow dung collection, compost, vermicompost, manure, and nursery production batch.",
+      "type": "object",
+      "properties": {
+        "batchCode": { "type": "string" },
+        "productType": { "type": "string", "enum": ["DUNG_COLLECTION", "COMPOST", "VERMICOMPOST", "DRY_MANURE", "NURSERY_PLANTS", "PACKAGED_PRODUCT"] },
+        "quantity": { "type": "number" },
+        "unit": { "type": "string" },
+        "rawDungKg": { "type": "number" },
+        "productionCostInr": { "type": "number" },
+        "packagingCostInr": { "type": "number" },
+        "sellingPricePerUnitInr": { "type": "number" },
+        "soldQuantity": { "type": "number" },
+        "stockRemaining": { "type": "number" },
+        "status": { "type": "string", "enum": ["IN_PROGRESS", "PACKAGED", "READY_FOR_SALE", "SOLD_OUT"] },
+        "dateStr": { "type": "string" },
+        "notes": { "type": "string" },
+        "recordedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["batchCode", "productType", "quantity", "unit", "rawDungKg", "productionCostInr", "packagingCostInr", "sellingPricePerUnitInr", "soldQuantity", "stockRemaining", "status", "dateStr", "recordedBy", "createdAt", "updatedAt"]
+    },
+    "Donation": {
+      "title": "Donation",
+      "description": "Public or goshala-recorded donation with verified payment status gate.",
+      "type": "object",
+      "properties": {
+        "donorUid": { "type": "string" },
+        "donorName": { "type": "string" },
+        "donorPhone": { "type": "string" },
+        "donorCity": { "type": "string" },
+        "purpose": { "type": "string" },
+        "amountInr": { "type": "number" },
+        "paymentProviderRef": { "type": "string" },
+        "paymentStatus": { "type": "string", "enum": ["PENDING_VERIFICATION", "VERIFIED_SUCCESS", "FAILED"] },
+        "receiptNumber": { "type": "string" },
+        "dateStr": { "type": "string" },
+        "recordedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["donorUid", "donorName", "donorPhone", "purpose", "amountInr", "paymentProviderRef", "paymentStatus", "receiptNumber", "dateStr", "recordedBy", "createdAt", "updatedAt"]
+    },
+    "Sponsorship": {
+      "title": "Sponsorship",
+      "description": "Cow adoption/sponsorship application without transferring legal ownership.",
+      "type": "object",
+      "properties": {
+        "applicantUid": { "type": "string" },
+        "applicantName": { "type": "string" },
+        "applicantPhone": { "type": "string" },
+        "applicantAddress": { "type": "string" },
+        "cattleId": { "type": "string" },
+        "cattleName": { "type": "string" },
+        "animalCode": { "type": "string" },
+        "monthlySupportInr": { "type": "number" },
+        "durationMonths": { "type": "integer" },
+        "totalSupportInr": { "type": "number" },
+        "status": { "type": "string", "enum": ["PENDING", "APPROVED", "REJECTED"] },
+        "certificateNumber": { "type": "string" },
+        "disclaimerAccepted": { "type": "boolean" },
+        "dateStr": { "type": "string" },
+        "reviewedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["applicantUid", "applicantName", "applicantPhone", "applicantAddress", "cattleId", "cattleName", "animalCode", "monthlySupportInr", "durationMonths", "totalSupportInr", "status", "disclaimerAccepted", "dateStr", "createdAt", "updatedAt"]
+    },
+    "NotificationItem": {
+      "title": "NotificationItem",
+      "description": "Alerts and reminders for vaccination, feed stock, tasks, payments, and adoptions.",
+      "type": "object",
+      "properties": {
+        "targetRole": { "type": "string", "enum": ["ADMIN", "STAFF", "PUBLIC", "ALL"] },
+        "targetUid": { "type": "string" },
+        "category": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "readByUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["targetRole", "category", "title", "message", "readByUids", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable audit trail of important data changes.",
+      "type": "object",
+      "properties": {
+        "actorUid": { "type": "string" },
+        "actorName": { "type": "string" },
+        "actorRole": { "type": "string" },
+        "action": { "type": "string" },
+        "module": { "type": "string" },
+        "entityId": { "type": "string" },
+        "summary": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorUid", "actorName", "actorRole", "action", "module", "entityId", "summary", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": { "schema": "UserProfile", "description": "User profiles with server-locked roles" },
+    "/admins/{uid}": { "schema": "AdminRecord", "description": "Authorized admin UIDs" },
+    "/staffInvites/{emailKey}": { "schema": "StaffInvite", "description": "Admin-issued staff email invites" },
+    "/staffAccounts/{uid}": { "schema": "StaffAccount", "description": "Active staff accounts and module permissions" },
+    "/goshalaInfo/{docId}": { "schema": "PublicSummary", "description": "Public summary metrics document" },
+    "/cattle/{cattleId}": { "schema": "Cattle", "description": "Cattle registry" },
+    "/healthRecords/{recordId}": { "schema": "HealthRecord", "description": "Health, vaccination, and treatment logs" },
+    "/feedAndOperations/{logId}": { "schema": "FeedAndOperationLog", "description": "Daily feed, water, cleaning, and task logs" },
+    "/staffOperations/{entryId}": { "schema": "StaffOperation", "description": "Staff attendance, salary, and tasks" },
+    "/financialTransactions/{txId}": { "schema": "FinancialTransaction", "description": "Goshala income and expense ledger" },
+    "/farmers/{farmerId}": { "schema": "FarmerRecord", "description": "Local farmer supplier/buyer directory" },
+    "/farmerTransactions/{txId}": { "schema": "FarmerTransaction", "description": "Farmer purchase/sale invoices" },
+    "/compostProduction/{batchId}": { "schema": "CompostBatch", "description": "Gobar and compost production batches" },
+    "/donations/{donationId}": { "schema": "Donation", "description": "Donation records and receipts" },
+    "/sponsorships/{sponsorshipId}": { "schema": "Sponsorship", "description": "Cow sponsorship applications and certificates" },
+    "/notifications/{notifId}": { "schema": "NotificationItem", "description": "Goshala alerts and reminders" },
+    "/auditLogs/{logId}": { "schema": "AuditLog", "description": "Immutable audit trail" }
+  }
+}

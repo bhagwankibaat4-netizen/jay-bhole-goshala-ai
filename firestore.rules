@@ -1,0 +1,665 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- GLOBAL HELPERS ---
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isSignedIn() { return request.auth != null; }
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    function isValidEmailKey(emailKey) {
+      return emailKey is string && emailKey.size() >= 5 && emailKey.size() <= 120 &&
+             emailKey.matches('^[^/\\s@]+@[^/\\s@]+\\.[^/\\s@]+$');
+    }
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+    function isOptString(data, key, maxLen) {
+      return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    // --- TRUSTED ROLE RESOLUTION (NEVER TRUST CLIENT ROLE SELECTION) ---
+    function isBootstrappedAdmin() {
+      return isSignedIn() &&
+             request.auth.token.email_verified == true &&
+             request.auth.token.email == 'bhagwankibaat4@gmail.com';
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        (
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+          (
+            !('active' in get(/databases/$(database)/documents/admins/$(request.auth.uid)).data) ||
+            get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.active == true
+          )
+        )
+      );
+    }
+
+    function hasStaffDoc() {
+      return isSignedIn() &&
+             exists(/databases/$(database)/documents/staffAccounts/$(request.auth.uid));
+    }
+
+    function staffData() {
+      return get(/databases/$(database)/documents/staffAccounts/$(request.auth.uid)).data;
+    }
+
+    function hasStaffPermission(module, action) {
+      return hasStaffDoc() &&
+             staffData().active == true &&
+             module in staffData().permissions &&
+             action in staffData().permissions[module];
+    }
+
+    function isValidPermissionsMap(perms) {
+      return perms is map &&
+             perms.keys().hasOnly(['cattle', 'health', 'feed', 'staff', 'finance', 'farmers', 'production', 'donations', 'reports', 'ai']) &&
+             (!('cattle' in perms) || (perms.cattle is list && perms.cattle.size() <= 4 && perms.cattle.hasOnly(['VIEW', 'ADD', 'EDIT', 'DELETE']))) &&
+             (!('health' in perms) || (perms.health is list && perms.health.size() <= 4 && perms.health.hasOnly(['VIEW', 'ADD', 'EDIT', 'DELETE']))) &&
+             (!('feed' in perms) || (perms.feed is list && perms.feed.size() <= 4 && perms.feed.hasOnly(['VIEW', 'ADD', 'EDIT', 'DELETE']))) &&
+             (!('staff' in perms) || (perms.staff is list && perms.staff.size() <= 4 && perms.staff.hasOnly(['VIEW', 'ADD', 'EDIT', 'DELETE']))) &&
+             (!('finance' in perms) || (perms.finance is list && perms.finance.size() <= 4 && perms.finance.hasOnly(['VIEW', 'ADD', 'EDIT', 'DELETE']))) &&
+             (!('farmers' in perms) || (perms.farmers is list && perms.farmers.size() <= 4 && perms.farmers.hasOnly(['VIEW', 'ADD', 'EDIT', 'DELETE']))) &&
+             (!('production' in perms) || (perms.production is list && perms.production.size() <= 4 && perms.production.hasOnly(['VIEW', 'ADD', 'EDIT', 'DELETE']))) &&
+             (!('donations' in perms) || (perms.donations is list && perms.donations.size() <= 4 && perms.donations.hasOnly(['VIEW', 'ADD', 'EDIT', 'DELETE']))) &&
+             (!('reports' in perms) || (perms.reports is list && perms.reports.size() <= 4 && perms.reports.hasOnly(['VIEW', 'ADD', 'EDIT', 'DELETE']))) &&
+             (!('ai' in perms) || (perms.ai is list && perms.ai.size() <= 4 && perms.ai.hasOnly(['VIEW', 'ADD', 'EDIT', 'DELETE'])));
+    }
+
+    // --- VALIDATION HELPERS ---
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId.size() <= 128 &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+             data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+             data.role in ['ADMIN', 'STAFF', 'PUBLIC'] &&
+             data.preferredLanguage in ['hi', 'en'] &&
+             isOptString(data, 'photoUrl', 500) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidAdminRecord(data) {
+      return data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+             data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+             (!('active' in data) || data.active is bool) &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidStaffInvite(data) {
+      return data.email is string && data.email.size() >= 5 && data.email.size() <= 120 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             data.designation is string && data.designation.size() >= 1 && data.designation.size() <= 80 &&
+             (data.monthlySalary is int || data.monthlySalary is float) && data.monthlySalary >= 0 && data.monthlySalary <= 1000000 &&
+             isOptString(data, 'phone', 20) &&
+             isValidPermissionsMap(data.permissions) &&
+             data.createdBy is string && data.createdBy.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidStaffAccount(data) {
+      return data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+             data.email is string && data.email.size() >= 5 && data.email.size() <= 120 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             data.designation is string && data.designation.size() >= 1 && data.designation.size() <= 80 &&
+             (data.monthlySalary is int || data.monthlySalary is float) && data.monthlySalary >= 0 && data.monthlySalary <= 1000000 &&
+             data.active is bool &&
+             isOptString(data, 'phone', 20) &&
+             isValidPermissionsMap(data.permissions) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidPublicSummary(data) {
+      return data.totalCattle is int && data.totalCattle >= 0 && data.totalCattle <= 100000 &&
+             data.healthyCattle is int && data.healthyCattle >= 0 && data.healthyCattle <= 100000 &&
+             data.sickCattle is int && data.sickCattle >= 0 && data.sickCattle <= 100000 &&
+             (data.todayFeedKg is int || data.todayFeedKg is float) && data.todayFeedKg >= 0 &&
+             (data.todayExpenseInr is int || data.todayExpenseInr is float) && data.todayExpenseInr >= 0 &&
+             (data.totalDonationsInr is int || data.totalDonationsInr is float) && data.totalDonationsInr >= 0 &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidCattle(data) {
+      return data.animalCode is string && data.animalCode.size() >= 2 && data.animalCode.size() <= 40 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+             data.category in ['COW', 'BULL', 'CALF'] &&
+             data.breed is string && data.breed.size() >= 1 && data.breed.size() <= 80 &&
+             data.sex in ['FEMALE', 'MALE'] &&
+             data.ageText is string && data.ageText.size() >= 1 && data.ageText.size() <= 40 &&
+             isOptString(data, 'birthDate', 30) &&
+             data.colour is string && data.colour.size() >= 1 && data.colour.size() <= 40 &&
+             (data.weightKg is int || data.weightKg is float) && data.weightKg >= 0 && data.weightKg <= 2000 &&
+             data.healthStatus in ['HEALTHY', 'SICK', 'UNDER_TREATMENT', 'RECOVERING'] &&
+             data.entryDate is string && data.entryDate.size() >= 1 && data.entryDate.size() <= 30 &&
+             data.shedNumber is string && data.shedNumber.size() >= 1 && data.shedNumber.size() <= 30 &&
+             data.identificationMarks is string && data.identificationMarks.size() <= 200 &&
+             data.qrPayload is string && data.qrPayload.size() >= 2 && data.qrPayload.size() <= 300 &&
+             isOptString(data, 'photoUri', 500) &&
+             isOptString(data, 'notes', 500) &&
+             data.publicApproved is bool &&
+             data.sponsorshipAvailable is bool &&
+             data.monthlySupportInr is int && data.monthlySupportInr >= 0 && data.monthlySupportInr <= 500000 &&
+             data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidHealthRecord(data) {
+      return data.cattleId is string && data.cattleId.size() >= 1 && data.cattleId.size() <= 128 &&
+             data.cattleName is string && data.cattleName.size() >= 1 && data.cattleName.size() <= 80 &&
+             data.animalCode is string && data.animalCode.size() >= 1 && data.animalCode.size() <= 40 &&
+             data.recordType in ['VACCINATION', 'TREATMENT', 'VET_VISIT', 'WEIGHT_CHECK'] &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             isOptString(data, 'medicine', 200) &&
+             isOptString(data, 'vetName', 100) &&
+             (data.costInr is int || data.costInr is float) && data.costInr >= 0 && data.costInr <= 1000000 &&
+             (data.weightKg is int || data.weightKg is float) && data.weightKg >= 0 && data.weightKg <= 2000 &&
+             isOptString(data, 'nextFollowUpDate', 30) &&
+             data.reminderActive is bool &&
+             isOptString(data, 'notes', 500) &&
+             data.recordedBy is string && data.recordedBy.size() >= 1 && data.recordedBy.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidFeedOperation(data) {
+      return data.logDate is string && data.logDate.size() >= 4 && data.logDate.size() <= 30 &&
+             (data.greenFodderKg is int || data.greenFodderKg is float) && data.greenFodderKg >= 0 && data.greenFodderKg <= 100000 &&
+             (data.dryFodderBhusaKg is int || data.dryFodderBhusaKg is float) && data.dryFodderBhusaKg >= 0 && data.dryFodderBhusaKg <= 100000 &&
+             (data.concentrateKg is int || data.concentrateKg is float) && data.concentrateKg >= 0 && data.concentrateKg <= 50000 &&
+             (data.waterLiters is int || data.waterLiters is float) && data.waterLiters >= 0 && data.waterLiters <= 500000 &&
+             data.shedCleaned is bool &&
+             isOptString(data, 'cleaningNotes', 300) &&
+             isOptString(data, 'assignedStaffName', 100) &&
+             isOptString(data, 'taskTitle', 150) &&
+             data.taskCompleted is bool &&
+             (data.feedStockRemainingKg is int || data.feedStockRemainingKg is float) && data.feedStockRemainingKg >= 0 && data.feedStockRemainingKg <= 500000 &&
+             isOptString(data, 'notes', 500) &&
+             data.recordedBy is string && data.recordedBy.size() >= 1 && data.recordedBy.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidStaffOperation(data) {
+      return data.staffUid is string && data.staffUid.size() >= 1 && data.staffUid.size() <= 128 &&
+             data.staffName is string && data.staffName.size() >= 1 && data.staffName.size() <= 100 &&
+             data.entryType in ['ATTENDANCE', 'SALARY', 'TASK'] &&
+             data.dateStr is string && data.dateStr.size() >= 4 && data.dateStr.size() <= 30 &&
+             data.attendanceStatus in ['PRESENT', 'ABSENT', 'HALF_DAY', 'NA'] &&
+             (data.amountInr is int || data.amountInr is float) && data.amountInr >= 0 && data.amountInr <= 1000000 &&
+             isOptString(data, 'taskDescription', 300) &&
+             data.paidStatus in ['PAID', 'PENDING', 'NA'] &&
+             data.recordedBy is string && data.recordedBy.size() >= 1 && data.recordedBy.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidFinancialTx(data) {
+      return data.txType in ['INCOME', 'EXPENSE'] &&
+             data.category in ['DONATION', 'FEED_PURCHASE', 'MEDICAL', 'STAFF_SALARY', 'PRODUCT_SALE', 'MAINTENANCE', 'OTHER'] &&
+             (data.amountInr is int || data.amountInr is float) && data.amountInr > 0 && data.amountInr <= 100000000 &&
+             data.paymentMode in ['CASH', 'BANK', 'UPI'] &&
+             data.paymentStatus in ['COMPLETED', 'PENDING'] &&
+             data.partyName is string && data.partyName.size() >= 1 && data.partyName.size() <= 120 &&
+             data.description is string && data.description.size() >= 1 && data.description.size() <= 300 &&
+             data.dateStr is string && data.dateStr.size() >= 4 && data.dateStr.size() <= 30 &&
+             isOptString(data, 'receiptNumber', 60) &&
+             data.recordedBy is string && data.recordedBy.size() >= 1 && data.recordedBy.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidFarmer(data) {
+      return data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             data.mobile is string && data.mobile.size() >= 6 && data.mobile.size() <= 20 &&
+             data.village is string && data.village.size() >= 1 && data.village.size() <= 100 &&
+             data.address is string && data.address.size() <= 250 &&
+             data.cooperationType in ['SUPPLIER', 'BUYER', 'BOTH'] &&
+             (data.totalPurchasedInr is int || data.totalPurchasedInr is float) && data.totalPurchasedInr >= 0 &&
+             (data.totalSoldInr is int || data.totalSoldInr is float) && data.totalSoldInr >= 0 &&
+             (data.outstandingInr is int || data.outstandingInr is float) && data.outstandingInr >= 0 &&
+             data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidFarmerTx(data) {
+      return data.farmerId is string && data.farmerId.size() >= 1 && data.farmerId.size() <= 128 &&
+             data.farmerName is string && data.farmerName.size() >= 1 && data.farmerName.size() <= 100 &&
+             data.village is string && data.village.size() >= 1 && data.village.size() <= 100 &&
+             data.direction in ['PURCHASE_FROM_FARMER', 'SALE_TO_FARMER'] &&
+             data.productName is string && data.productName.size() >= 1 && data.productName.size() <= 100 &&
+             (data.quantity is int || data.quantity is float) && data.quantity > 0 && data.quantity <= 1000000 &&
+             data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 30 &&
+             data.qualityGrade is string && data.qualityGrade.size() >= 1 && data.qualityGrade.size() <= 40 &&
+             (data.ratePerUnitInr is int || data.ratePerUnitInr is float) && data.ratePerUnitInr >= 0 &&
+             (data.totalAmountInr is int || data.totalAmountInr is float) && data.totalAmountInr >= 0 &&
+             (data.paidAmountInr is int || data.paidAmountInr is float) && data.paidAmountInr >= 0 &&
+             (data.outstandingInr is int || data.outstandingInr is float) && data.outstandingInr >= 0 &&
+             data.invoiceNumber is string && data.invoiceNumber.size() >= 1 && data.invoiceNumber.size() <= 60 &&
+             data.dateStr is string && data.dateStr.size() >= 4 && data.dateStr.size() <= 30 &&
+             isOptString(data, 'notes', 400) &&
+             data.recordedBy is string && data.recordedBy.size() >= 1 && data.recordedBy.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidCompostBatch(data) {
+      return data.batchCode is string && data.batchCode.size() >= 1 && data.batchCode.size() <= 60 &&
+             data.productType in ['DUNG_COLLECTION', 'COMPOST', 'VERMICOMPOST', 'DRY_MANURE', 'NURSERY_PLANTS', 'PACKAGED_PRODUCT'] &&
+             (data.quantity is int || data.quantity is float) && data.quantity >= 0 &&
+             data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 30 &&
+             (data.rawDungKg is int || data.rawDungKg is float) && data.rawDungKg >= 0 &&
+             (data.productionCostInr is int || data.productionCostInr is float) && data.productionCostInr >= 0 &&
+             (data.packagingCostInr is int || data.packagingCostInr is float) && data.packagingCostInr >= 0 &&
+             (data.sellingPricePerUnitInr is int || data.sellingPricePerUnitInr is float) && data.sellingPricePerUnitInr >= 0 &&
+             (data.soldQuantity is int || data.soldQuantity is float) && data.soldQuantity >= 0 &&
+             (data.stockRemaining is int || data.stockRemaining is float) && data.stockRemaining >= 0 &&
+             data.status in ['IN_PROGRESS', 'PACKAGED', 'READY_FOR_SALE', 'SOLD_OUT'] &&
+             data.dateStr is string && data.dateStr.size() >= 4 && data.dateStr.size() <= 30 &&
+             isOptString(data, 'notes', 400) &&
+             data.recordedBy is string && data.recordedBy.size() >= 1 && data.recordedBy.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidDonation(data) {
+      return data.donorUid is string && data.donorUid.size() >= 1 && data.donorUid.size() <= 128 &&
+             data.donorName is string && data.donorName.size() >= 1 && data.donorName.size() <= 100 &&
+             data.donorPhone is string && data.donorPhone.size() <= 20 &&
+             isOptString(data, 'donorCity', 100) &&
+             data.purpose is string && data.purpose.size() >= 1 && data.purpose.size() <= 100 &&
+             (data.amountInr is int || data.amountInr is float) && data.amountInr > 0 && data.amountInr <= 100000000 &&
+             data.paymentProviderRef is string && data.paymentProviderRef.size() >= 1 && data.paymentProviderRef.size() <= 120 &&
+             data.paymentStatus in ['PENDING_VERIFICATION', 'VERIFIED_SUCCESS', 'FAILED'] &&
+             data.receiptNumber is string && data.receiptNumber.size() >= 1 && data.receiptNumber.size() <= 60 &&
+             data.dateStr is string && data.dateStr.size() >= 4 && data.dateStr.size() <= 30 &&
+             data.recordedBy is string && data.recordedBy.size() >= 1 && data.recordedBy.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidSponsorship(data) {
+      return data.applicantUid is string && data.applicantUid.size() >= 1 && data.applicantUid.size() <= 128 &&
+             data.applicantName is string && data.applicantName.size() >= 1 && data.applicantName.size() <= 100 &&
+             data.applicantPhone is string && data.applicantPhone.size() >= 6 && data.applicantPhone.size() <= 20 &&
+             data.applicantAddress is string && data.applicantAddress.size() >= 2 && data.applicantAddress.size() <= 250 &&
+             data.cattleId is string && data.cattleId.size() >= 1 && data.cattleId.size() <= 128 &&
+             data.cattleName is string && data.cattleName.size() >= 1 && data.cattleName.size() <= 80 &&
+             data.animalCode is string && data.animalCode.size() >= 1 && data.animalCode.size() <= 40 &&
+             (data.monthlySupportInr is int || data.monthlySupportInr is float) && data.monthlySupportInr > 0 &&
+             data.durationMonths is int && data.durationMonths >= 1 && data.durationMonths <= 120 &&
+             (data.totalSupportInr is int || data.totalSupportInr is float) && data.totalSupportInr > 0 &&
+             data.status in ['PENDING', 'APPROVED', 'REJECTED'] &&
+             isOptString(data, 'certificateNumber', 60) &&
+             data.disclaimerAccepted is bool &&
+             data.dateStr is string && data.dateStr.size() >= 4 && data.dateStr.size() <= 30 &&
+             isOptString(data, 'reviewedBy', 128) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidNotification(data) {
+      return data.targetRole in ['ADMIN', 'STAFF', 'PUBLIC', 'ALL'] &&
+             isOptString(data, 'targetUid', 128) &&
+             data.category is string && data.category.size() >= 1 && data.category.size() <= 40 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.message is string && data.message.size() >= 1 && data.message.size() <= 500 &&
+             data.readByUids is list && data.readByUids.size() <= 50 &&
+             (data.readByUids.size() == 0 || data.readByUids[0] is string) &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidAuditLog(data) {
+      return data.actorUid is string && data.actorUid.size() >= 1 && data.actorUid.size() <= 128 &&
+             data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 100 &&
+             data.actorRole in ['ADMIN', 'STAFF', 'PUBLIC'] &&
+             data.action is string && data.action.size() >= 1 && data.action.size() <= 40 &&
+             data.module is string && data.module.size() >= 1 && data.module.size() <= 40 &&
+             data.entityId is string && data.entityId.size() >= 1 && data.entityId.size() <= 128 &&
+             data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 300 &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    // --- COLLECTIONS ---
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().role == 'PUBLIC' &&
+                       incoming().keys().hasAll(['userId', 'displayName', 'email', 'role', 'preferredLanguage', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'displayName', 'email', 'photoUrl', 'role', 'preferredLanguage', 'createdAt', 'updatedAt']);
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       (
+                         isAdmin() ||
+                         (
+                           request.auth.uid == userId &&
+                           incoming().role == existing().role &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoUrl', 'preferredLanguage', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    match /admins/{uid} {
+      allow get: if isSignedIn() && isValidId(uid) && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isAdmin() && isValidId(uid) && isValidAdminRecord(incoming());
+      allow delete: if isAdmin() && isValidId(uid);
+    }
+
+    match /staffInvites/{emailKey} {
+      allow get: if isSignedIn() && isValidEmailKey(emailKey) && (
+        isAdmin() ||
+        (request.auth.token.email_verified == true && request.auth.token.email == emailKey)
+      );
+      allow list: if isAdmin();
+      allow create, update: if isAdmin() && isValidEmailKey(emailKey) && isValidStaffInvite(incoming());
+      allow delete: if isAdmin() && isValidEmailKey(emailKey);
+    }
+
+    match /staffAccounts/{uid} {
+      allow get: if isSignedIn() && isValidId(uid) && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() &&
+                       isValidId(uid) &&
+                       isValidStaffAccount(incoming()) &&
+                       incoming().uid == uid &&
+                       (
+                         isAdmin() ||
+                         (
+                           request.auth.uid == uid &&
+                           request.auth.token.email_verified == true &&
+                           incoming().email == request.auth.token.email &&
+                           incoming().active == true &&
+                           exists(/databases/$(database)/documents/staffInvites/$(request.auth.token.email)) &&
+                           incoming().permissions == get(/databases/$(database)/documents/staffInvites/$(request.auth.token.email)).data.permissions
+                         )
+                       );
+      allow update: if isAdmin() && isValidId(uid) && isValidStaffAccount(incoming()) &&
+                       incoming().uid == existing().uid &&
+                       incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin() && isValidId(uid);
+    }
+
+    match /goshalaInfo/{docId} {
+      allow get: if isSignedIn() && docId == 'public_summary';
+      allow list: if false;
+      allow create, update: if isSignedIn() &&
+                               docId == 'public_summary' &&
+                               isValidPublicSummary(incoming()) &&
+                               (isAdmin() || hasStaffPermission('cattle', 'EDIT') || hasStaffPermission('feed', 'ADD') || hasStaffPermission('finance', 'ADD') || hasStaffPermission('donations', 'EDIT'));
+    }
+
+    match /cattle/{cattleId} {
+      allow get: if isSignedIn() && isValidId(cattleId) && (
+        isAdmin() ||
+        hasStaffPermission('cattle', 'VIEW') ||
+        existing().publicApproved == true
+      );
+      allow list: if isSignedIn() && (
+        isAdmin() ||
+        hasStaffPermission('cattle', 'VIEW') ||
+        resource.data.publicApproved == true
+      );
+      allow create: if isSignedIn() &&
+                       isValidId(cattleId) &&
+                       isValidCattle(incoming()) &&
+                       incoming().createdBy == request.auth.uid &&
+                       (isAdmin() || hasStaffPermission('cattle', 'ADD'));
+      allow update: if isSignedIn() &&
+                       isValidId(cattleId) &&
+                       isValidCattle(incoming()) &&
+                       incoming().createdBy == existing().createdBy &&
+                       incoming().createdAt == existing().createdAt &&
+                       (isAdmin() || hasStaffPermission('cattle', 'EDIT'));
+      allow delete: if isSignedIn() && isValidId(cattleId) && (isAdmin() || hasStaffPermission('cattle', 'DELETE'));
+    }
+
+    match /healthRecords/{recordId} {
+      allow get: if isSignedIn() && isValidId(recordId) && (isAdmin() || hasStaffPermission('health', 'VIEW'));
+      allow list: if isSignedIn() && (isAdmin() || hasStaffPermission('health', 'VIEW'));
+      allow create: if isSignedIn() &&
+                       isValidId(recordId) &&
+                       isValidHealthRecord(incoming()) &&
+                       incoming().recordedBy == request.auth.uid &&
+                       (isAdmin() || hasStaffPermission('health', 'ADD'));
+      allow update: if isSignedIn() &&
+                       isValidId(recordId) &&
+                       isValidHealthRecord(incoming()) &&
+                       incoming().recordedBy == existing().recordedBy &&
+                       incoming().createdAt == existing().createdAt &&
+                       (isAdmin() || hasStaffPermission('health', 'EDIT'));
+      allow delete: if isSignedIn() && isValidId(recordId) && (isAdmin() || hasStaffPermission('health', 'DELETE'));
+    }
+
+    match /feedAndOperations/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && (isAdmin() || hasStaffPermission('feed', 'VIEW'));
+      allow list: if isSignedIn() && (isAdmin() || hasStaffPermission('feed', 'VIEW'));
+      allow create: if isSignedIn() &&
+                       isValidId(logId) &&
+                       isValidFeedOperation(incoming()) &&
+                       incoming().recordedBy == request.auth.uid &&
+                       (isAdmin() || hasStaffPermission('feed', 'ADD'));
+      allow update: if isSignedIn() &&
+                       isValidId(logId) &&
+                       isValidFeedOperation(incoming()) &&
+                       incoming().recordedBy == existing().recordedBy &&
+                       incoming().createdAt == existing().createdAt &&
+                       (isAdmin() || hasStaffPermission('feed', 'EDIT'));
+      allow delete: if isSignedIn() && isValidId(logId) && (isAdmin() || hasStaffPermission('feed', 'DELETE'));
+    }
+
+    match /staffOperations/{entryId} {
+      allow get: if isSignedIn() && isValidId(entryId) && (
+        isAdmin() ||
+        hasStaffPermission('staff', 'VIEW') ||
+        existing().staffUid == request.auth.uid
+      );
+      allow list: if isSignedIn() && (
+        isAdmin() ||
+        hasStaffPermission('staff', 'VIEW') ||
+        resource.data.staffUid == request.auth.uid
+      );
+      allow create: if isSignedIn() &&
+                       isValidId(entryId) &&
+                       isValidStaffOperation(incoming()) &&
+                       incoming().recordedBy == request.auth.uid &&
+                       (isAdmin() || hasStaffPermission('staff', 'ADD'));
+      allow update: if isSignedIn() &&
+                       isValidId(entryId) &&
+                       isValidStaffOperation(incoming()) &&
+                       incoming().recordedBy == existing().recordedBy &&
+                       incoming().createdAt == existing().createdAt &&
+                       (isAdmin() || hasStaffPermission('staff', 'EDIT'));
+      allow delete: if isSignedIn() && isValidId(entryId) && (isAdmin() || hasStaffPermission('staff', 'DELETE'));
+    }
+
+    match /financialTransactions/{txId} {
+      allow get: if isSignedIn() && isValidId(txId) && (isAdmin() || hasStaffPermission('finance', 'VIEW'));
+      allow list: if isSignedIn() && (isAdmin() || hasStaffPermission('finance', 'VIEW'));
+      allow create: if isSignedIn() &&
+                       isValidId(txId) &&
+                       isValidFinancialTx(incoming()) &&
+                       incoming().recordedBy == request.auth.uid &&
+                       (isAdmin() || hasStaffPermission('finance', 'ADD'));
+      allow update: if isSignedIn() &&
+                       isValidId(txId) &&
+                       isValidFinancialTx(incoming()) &&
+                       incoming().recordedBy == existing().recordedBy &&
+                       incoming().createdAt == existing().createdAt &&
+                       (isAdmin() || hasStaffPermission('finance', 'EDIT'));
+      allow delete: if isSignedIn() && isValidId(txId) && (isAdmin() || hasStaffPermission('finance', 'DELETE'));
+    }
+
+    match /farmers/{farmerId} {
+      allow get: if isSignedIn() && isValidId(farmerId) && (isAdmin() || hasStaffPermission('farmers', 'VIEW'));
+      allow list: if isSignedIn() && (isAdmin() || hasStaffPermission('farmers', 'VIEW'));
+      allow create: if isSignedIn() &&
+                       isValidId(farmerId) &&
+                       isValidFarmer(incoming()) &&
+                       incoming().createdBy == request.auth.uid &&
+                       (isAdmin() || hasStaffPermission('farmers', 'ADD'));
+      allow update: if isSignedIn() &&
+                       isValidId(farmerId) &&
+                       isValidFarmer(incoming()) &&
+                       incoming().createdBy == existing().createdBy &&
+                       incoming().createdAt == existing().createdAt &&
+                       (isAdmin() || hasStaffPermission('farmers', 'EDIT'));
+      allow delete: if isSignedIn() && isValidId(farmerId) && (isAdmin() || hasStaffPermission('farmers', 'DELETE'));
+    }
+
+    match /farmerTransactions/{txId} {
+      allow get: if isSignedIn() && isValidId(txId) && (isAdmin() || hasStaffPermission('farmers', 'VIEW'));
+      allow list: if isSignedIn() && (isAdmin() || hasStaffPermission('farmers', 'VIEW'));
+      allow create: if isSignedIn() &&
+                       isValidId(txId) &&
+                       isValidFarmerTx(incoming()) &&
+                       incoming().recordedBy == request.auth.uid &&
+                       (isAdmin() || hasStaffPermission('farmers', 'ADD'));
+      allow update: if isSignedIn() &&
+                       isValidId(txId) &&
+                       isValidFarmerTx(incoming()) &&
+                       incoming().recordedBy == existing().recordedBy &&
+                       incoming().createdAt == existing().createdAt &&
+                       (isAdmin() || hasStaffPermission('farmers', 'EDIT'));
+      allow delete: if isSignedIn() && isValidId(txId) && (isAdmin() || hasStaffPermission('farmers', 'DELETE'));
+    }
+
+    match /compostProduction/{batchId} {
+      allow get: if isSignedIn() && isValidId(batchId) && (isAdmin() || hasStaffPermission('production', 'VIEW'));
+      allow list: if isSignedIn() && (isAdmin() || hasStaffPermission('production', 'VIEW'));
+      allow create: if isSignedIn() &&
+                       isValidId(batchId) &&
+                       isValidCompostBatch(incoming()) &&
+                       incoming().recordedBy == request.auth.uid &&
+                       (isAdmin() || hasStaffPermission('production', 'ADD'));
+      allow update: if isSignedIn() &&
+                       isValidId(batchId) &&
+                       isValidCompostBatch(incoming()) &&
+                       incoming().recordedBy == existing().recordedBy &&
+                       incoming().createdAt == existing().createdAt &&
+                       (isAdmin() || hasStaffPermission('production', 'EDIT'));
+      allow delete: if isSignedIn() && isValidId(batchId) && (isAdmin() || hasStaffPermission('production', 'DELETE'));
+    }
+
+    match /donations/{donationId} {
+      allow get: if isSignedIn() && isValidId(donationId) && (
+        isAdmin() ||
+        hasStaffPermission('donations', 'VIEW') ||
+        existing().donorUid == request.auth.uid
+      );
+      allow list: if isSignedIn() && (
+        isAdmin() ||
+        hasStaffPermission('donations', 'VIEW') ||
+        resource.data.donorUid == request.auth.uid
+      );
+      allow create: if isSignedIn() &&
+                       isValidId(donationId) &&
+                       isValidDonation(incoming()) &&
+                       incoming().recordedBy == request.auth.uid &&
+                       (
+                         isAdmin() ||
+                         hasStaffPermission('donations', 'ADD') ||
+                         (
+                           incoming().donorUid == request.auth.uid &&
+                           incoming().paymentStatus == 'PENDING_VERIFICATION'
+                         )
+                       );
+      allow update: if isSignedIn() &&
+                       isValidId(donationId) &&
+                       isValidDonation(incoming()) &&
+                       incoming().donorUid == existing().donorUid &&
+                       incoming().createdAt == existing().createdAt &&
+                       (isAdmin() || hasStaffPermission('donations', 'EDIT'));
+      allow delete: if isAdmin() && isValidId(donationId);
+    }
+
+    match /sponsorships/{sponsorshipId} {
+      allow get: if isSignedIn() && isValidId(sponsorshipId) && (
+        isAdmin() ||
+        hasStaffPermission('donations', 'VIEW') ||
+        existing().applicantUid == request.auth.uid
+      );
+      allow list: if isSignedIn() && (
+        isAdmin() ||
+        hasStaffPermission('donations', 'VIEW') ||
+        resource.data.applicantUid == request.auth.uid
+      );
+      allow create: if isSignedIn() &&
+                       isValidId(sponsorshipId) &&
+                       isValidSponsorship(incoming()) &&
+                       incoming().applicantUid == request.auth.uid &&
+                       incoming().status == 'PENDING' &&
+                       incoming().disclaimerAccepted == true;
+      allow update: if isAdmin() &&
+                       isValidId(sponsorshipId) &&
+                       isValidSponsorship(incoming()) &&
+                       incoming().applicantUid == existing().applicantUid &&
+                       incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin() && isValidId(sponsorshipId);
+    }
+
+    match /notifications/{notifId} {
+      allow get: if isSignedIn() && isValidId(notifId) && (
+        isAdmin() ||
+        hasStaffPermission('reports', 'VIEW') ||
+        existing().targetUid == request.auth.uid ||
+        existing().targetRole == 'PUBLIC' ||
+        existing().targetRole == 'ALL'
+      );
+      allow list: if isSignedIn() && (
+        isAdmin() ||
+        hasStaffPermission('reports', 'VIEW') ||
+        resource.data.targetUid == request.auth.uid ||
+        resource.data.targetRole == 'PUBLIC'
+      );
+      allow create: if isSignedIn() &&
+                       isValidId(notifId) &&
+                       isValidNotification(incoming()) &&
+                       (isAdmin() || hasStaffPermission('health', 'ADD') || hasStaffPermission('feed', 'ADD') || hasStaffPermission('donations', 'EDIT'));
+      allow update: if isSignedIn() &&
+                       isValidId(notifId) &&
+                       isValidNotification(incoming()) &&
+                       incoming().createdAt == existing().createdAt &&
+                       (
+                         isAdmin() ||
+                         (
+                           (existing().targetUid == request.auth.uid || existing().targetRole in ['PUBLIC', 'ALL']) &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['readByUids'])
+                         )
+                       );
+      allow delete: if isAdmin() && isValidId(notifId);
+    }
+
+    match /auditLogs/{logId} {
+      allow get, list: if isAdmin();
+      allow create: if isSignedIn() &&
+                       isValidId(logId) &&
+                       isValidAuditLog(incoming()) &&
+                       incoming().actorUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+  }
+}

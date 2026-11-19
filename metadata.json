@@ -1,0 +1,6 @@
+{
+  "name": "जय भोले गौशाला",
+  "description": "जय भोले गौशाला समिति — AI-powered Android app for goshala management, cattle care, farmer cooperation, public donations, cow sponsorship, and Gemini Hindi assistant.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
