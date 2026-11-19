@@ -47,6 +47,10 @@ import com.example.ui.auth.AuthScreen
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.GosalaOfficialLogo
 import com.example.ui.components.GosalaTopBar
+import com.example.ui.navigation.AuthNavigationController
+import com.example.ui.navigation.AuthNavigationState
+import com.example.ui.navigation.GosalaRootNavHost
+import com.example.ui.navigation.rememberAuthNavigationController
 import com.example.ui.screens.*
 import com.example.ui.theme.ForestGreen
 import com.example.ui.theme.GosalaTheme
@@ -122,208 +126,239 @@ class MainActivity : ComponentActivity() {
 
             CompositionLocalProvider(LocalAppLanguage provides language) {
                 GosalaTheme(darkTheme = isDark) {
-                    val activeBootstrap = bootstrap
-                    if (activeBootstrap == null) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.background)
-                                .testTag("splash_screen"),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(16.dp),
-                                modifier = Modifier.padding(24.dp)
-                            ) {
-                                GosalaOfficialLogo(
-                                    size = 116.dp,
-                                    innerPadding = 4.dp,
-                                    borderWidth = 2.5.dp,
-                                    testTag = "splash_official_logo"
-                                )
-                                Text(
-                                    text = str(language, GosalaBrand.NAME_HI, GosalaBrand.NAME_EN),
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    textAlign = TextAlign.Center
-                                )
-                                CircularProgressIndicator(color = ForestGreen)
-                            }
-                        }
-                        return@GosalaTheme
-                    }
-
-                    val db = activeBootstrap.db
-                    val authRepo = activeBootstrap.authRepo
                     val credentialManager = remember(context) { CredentialManager.create(context) }
-                    val firebaseUser by authRepo.observeAuthState().collectAsStateWithLifecycle(initialValue = null)
+                    val authNavController = rememberAuthNavigationController()
+                    val activeBootstrap = bootstrap
 
-                    if (firebaseUser == null) {
-                        AuthScreen(
-                            language = language,
-                            onToggleLanguage = {
-                                val next = if (language == AppLanguage.HINDI) AppLanguage.ENGLISH else AppLanguage.HINDI
-                                scope.launch { prefs.setLanguage(next) }
-                            },
-                            selectedPortal = selectedPortal,
-                            onSelectPortal = { portal ->
-                                selectedPortal = portal
-                                portalRejectionMsg = null
-                                rejectedAccountNote = null
-                            },
-                            sessionError = portalRejectionMsg,
-                            rejectedAccountNote = rejectedAccountNote,
-                            skipAutoSignIn = skipAutoSignIn,
-                            isResolvingSession = false,
-                            onAuthSuccess = {
-                                activeSignInPortal = selectedPortal
-                                portalRejectionMsg = null
-                                rejectedAccountNote = null
-                            }
-                        )
-                    } else {
-                        val user = firebaseUser!!
-                        key(user.uid) {
-                            var sessionState by remember { mutableStateOf<UserSession?>(null) }
-                            var isResolving by remember { mutableStateOf(true) }
-                            var sessionError by remember { mutableStateOf<String?>(null) }
-                            var retryKey by remember { mutableIntStateOf(0) }
+                    // Observe FirebaseAuth state once Firebase is bootstrapped
+                    val firebaseUser by remember(activeBootstrap) {
+                        activeBootstrap?.authRepo?.observeAuthState()
+                            ?: kotlinx.coroutines.flow.flowOf(null)
+                    }.collectAsStateWithLifecycle(initialValue = null)
 
-                            LaunchedEffect(user.uid, retryKey) {
-                                isResolving = true
-                                sessionError = null
-                                authRepo.resolveVerifiedSession(user, activeSignInPortal).fold(
-                                    onSuccess = { resolution ->
-                                        when (resolution) {
-                                            is SessionResolution.Authorized -> {
-                                                sessionState = resolution.session
-                                                activeSignInPortal = null
-                                                portalRejectionMsg = null
-                                                rejectedAccountNote = null
-                                                isResolving = false
-                                            }
-                                            is SessionResolution.UnauthorizedPortal -> {
-                                                portalRejectionMsg = str(
-                                                    language,
-                                                    resolution.messageHi,
-                                                    resolution.messageEn
-                                                )
-                                                rejectedAccountNote = "Email: ${resolution.email.ifBlank { "-" }} | UID: ${resolution.uid}"
-                                                activeSignInPortal = null
-                                                skipAutoSignIn = true
-                                                sessionState = null
-                                                isResolving = false
-                                                authRepo.signOut(credentialManager)
-                                            }
-                                        }
-                                    },
-                                    onFailure = { err ->
-                                        sessionError = friendlyHindiError(err, language)
+                    var sessionState by remember { mutableStateOf<UserSession?>(null) }
+                    var isResolving by remember { mutableStateOf(false) }
+                    var sessionError by remember { mutableStateOf<String?>(null) }
+                    var retryKey by remember { mutableIntStateOf(0) }
+
+                    LaunchedEffect(activeBootstrap, firebaseUser?.uid, retryKey) {
+                        val user = firebaseUser
+                        val authRepo = activeBootstrap?.authRepo
+                        if (authRepo == null || user == null) {
+                            sessionState = null
+                            sessionError = null
+                            isResolving = false
+                            return@LaunchedEffect
+                        }
+                        isResolving = true
+                        sessionError = null
+                        authRepo.resolveVerifiedSession(user, activeSignInPortal).fold(
+                            onSuccess = { resolution ->
+                                when (resolution) {
+                                    is SessionResolution.Authorized -> {
+                                        sessionState = resolution.session
+                                        activeSignInPortal = null
+                                        portalRejectionMsg = null
+                                        rejectedAccountNote = null
                                         isResolving = false
                                     }
-                                )
-                            }
-
-                            when {
-                                isResolving -> {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .background(MaterialTheme.colorScheme.background),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Column(
-                                            horizontalAlignment = Alignment.CenterHorizontally,
-                                            modifier = Modifier.padding(24.dp)
-                                        ) {
-                                            GosalaOfficialLogo(
-                                                size = 104.dp,
-                                                innerPadding = 4.dp,
-                                                borderWidth = 2.5.dp,
-                                                testTag = "session_loading_official_logo"
-                                            )
-                                            Spacer(Modifier.height(16.dp))
-                                            CircularProgressIndicator(color = ForestGreen)
-                                            Spacer(Modifier.height(14.dp))
-                                            Text(
-                                                text = str(language, "जय भोले गौशाला समिति\nसत्यापित सत्र लोड हो रहा है...", "Verifying role & loading session..."),
-                                                style = MaterialTheme.typography.titleSmall,
-                                                textAlign = TextAlign.Center,
-                                                color = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-                                    }
-                                }
-                                sessionError != null -> {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .background(MaterialTheme.colorScheme.background)
-                                            .padding(24.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Card(
-                                            shape = RoundedCornerShape(20.dp),
-                                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                                        ) {
-                                            Column(
-                                                modifier = Modifier.padding(20.dp),
-                                                horizontalAlignment = Alignment.CenterHorizontally,
-                                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                                            ) {
-                                                Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(40.dp))
-                                                Text(
-                                                    text = sessionError ?: str(language, "सत्र सत्यापन विफल", "Session verification failed"),
-                                                    textAlign = TextAlign.Center,
-                                                    style = MaterialTheme.typography.bodyMedium
-                                                )
-                                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                                    Button(
-                                                        onClick = { retryKey++ },
-                                                        colors = ButtonDefaults.buttonColors(containerColor = ForestGreen)
-                                                    ) {
-                                                        Text(str(language, "पुनः प्रयास करें", "Retry"))
-                                                    }
-                                                    OutlinedButton(
-                                                        onClick = {
-                                                            skipAutoSignIn = true
-                                                            activeSignInPortal = null
-                                                            scope.launch { authRepo.signOut(credentialManager) }
-                                                        }
-                                                    ) {
-                                                        Text(str(language, "साइन आउट", "Sign Out"))
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                sessionState != null -> {
-                                    val verifiedSession = sessionState!!
-                                    key(verifiedSession.uid, verifiedSession.role) {
-                                        GosalaAuthenticatedShell(
-                                            db = db,
-                                            session = verifiedSession,
-                                            language = language,
-                                            themeMode = themeMode,
-                                            isDark = isDark,
-                                            onSetLanguage = { lang -> scope.launch { prefs.setLanguage(lang) } },
-                                            onSetThemeMode = { mode -> scope.launch { prefs.setThemeMode(mode) } },
-                                            onSignOut = {
-                                                skipAutoSignIn = true
-                                                activeSignInPortal = null
-                                                portalRejectionMsg = null
-                                                rejectedAccountNote = null
-                                                scope.launch { authRepo.signOut(credentialManager) }
-                                            }
+                                    is SessionResolution.UnauthorizedPortal -> {
+                                        portalRejectionMsg = str(
+                                            language,
+                                            resolution.messageHi,
+                                            resolution.messageEn
                                         )
+                                        rejectedAccountNote = "Email: ${resolution.email.ifBlank { "-" }} | UID: ${resolution.uid}"
+                                        activeSignInPortal = null
+                                        skipAutoSignIn = true
+                                        sessionState = null
+                                        isResolving = false
+                                        authRepo.signOut(credentialManager)
                                     }
                                 }
+                            },
+                            onFailure = { err ->
+                                sessionState = null
+                                sessionError = friendlyHindiError(err, language)
+                                isResolving = false
                             }
+                        )
+                    }
+
+                    val verifiedSession = sessionState?.takeIf {
+                        firebaseUser != null && it.uid == firebaseUser?.uid
+                    }
+
+                    val authNavState: AuthNavigationState = when {
+                        activeBootstrap == null -> AuthNavigationState.Loading
+                        firebaseUser == null -> AuthNavigationState.Unauthenticated(
+                            errorMessage = portalRejectionMsg,
+                            rejectedAccountNote = rejectedAccountNote
+                        )
+                        isResolving || (verifiedSession == null && sessionError == null) -> AuthNavigationState.Loading
+                        sessionError != null -> AuthNavigationState.SessionError(sessionError!!)
+                        verifiedSession != null -> AuthNavigationState.Authorized(verifiedSession)
+                        else -> AuthNavigationState.Unauthenticated()
+                    }
+
+                    val handleSignOut: () -> Unit = {
+                        skipAutoSignIn = true
+                        activeSignInPortal = null
+                        portalRejectionMsg = null
+                        rejectedAccountNote = null
+                        sessionState = null
+                        sessionError = null
+                        scope.launch {
+                            activeBootstrap?.authRepo?.signOut(credentialManager)
+                            authNavController.redirectToLogin()
                         }
                     }
+
+                    GosalaRootNavHost(
+                        authState = authNavState,
+                        authNavController = authNavController,
+                        loadingContent = {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.background)
+                                    .testTag(if (activeBootstrap == null) "splash_screen" else "session_loading_screen"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                                    modifier = Modifier.padding(24.dp)
+                                ) {
+                                    GosalaOfficialLogo(
+                                        size = if (activeBootstrap == null) 116.dp else 104.dp,
+                                        innerPadding = 4.dp,
+                                        borderWidth = 2.5.dp,
+                                        testTag = if (activeBootstrap == null) "splash_official_logo" else "session_loading_official_logo"
+                                    )
+                                    Text(
+                                        text = if (activeBootstrap == null) {
+                                            str(language, GosalaBrand.NAME_HI, GosalaBrand.NAME_EN)
+                                        } else {
+                                            str(language, "जय भोले गौशाला समिति\nसत्यापित सत्र लोड हो रहा है...", "Verifying role & loading session...")
+                                        },
+                                        style = if (activeBootstrap == null) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        textAlign = TextAlign.Center
+                                    )
+                                    CircularProgressIndicator(color = ForestGreen)
+                                }
+                            }
+                        },
+                        loginContent = { errorMsg, accountNote ->
+                            AuthScreen(
+                                language = language,
+                                onToggleLanguage = {
+                                    val next = if (language == AppLanguage.HINDI) AppLanguage.ENGLISH else AppLanguage.HINDI
+                                    scope.launch { prefs.setLanguage(next) }
+                                },
+                                selectedPortal = selectedPortal,
+                                onSelectPortal = { portal ->
+                                    selectedPortal = portal
+                                    portalRejectionMsg = null
+                                    rejectedAccountNote = null
+                                },
+                                sessionError = errorMsg,
+                                rejectedAccountNote = accountNote,
+                                skipAutoSignIn = skipAutoSignIn,
+                                isResolvingSession = false,
+                                onAuthSuccess = {
+                                    activeSignInPortal = selectedPortal
+                                    portalRejectionMsg = null
+                                    rejectedAccountNote = null
+                                }
+                            )
+                        },
+                        sessionErrorContent = { errMessage ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.background)
+                                    .padding(24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Card(
+                                    shape = RoundedCornerShape(20.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(20.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(40.dp))
+                                        Text(
+                                            text = errMessage,
+                                            textAlign = TextAlign.Center,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                            Button(
+                                                onClick = { retryKey++ },
+                                                colors = ButtonDefaults.buttonColors(containerColor = ForestGreen)
+                                            ) {
+                                                Text(str(language, "पुनः प्रयास करें", "Retry"))
+                                            }
+                                            OutlinedButton(onClick = handleSignOut) {
+                                                Text(str(language, "साइन आउट", "Sign Out"))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        adminDashboardContent = { session ->
+                            val db = activeBootstrap?.db ?: return@GosalaRootNavHost
+                            key(session.uid, session.role) {
+                                GosalaAuthenticatedShell(
+                                    db = db,
+                                    session = session,
+                                    language = language,
+                                    themeMode = themeMode,
+                                    isDark = isDark,
+                                    onSetLanguage = { lang -> scope.launch { prefs.setLanguage(lang) } },
+                                    onSetThemeMode = { mode -> scope.launch { prefs.setThemeMode(mode) } },
+                                    onSignOut = handleSignOut
+                                )
+                            }
+                        },
+                        staffDashboardContent = { session ->
+                            val db = activeBootstrap?.db ?: return@GosalaRootNavHost
+                            key(session.uid, session.role) {
+                                GosalaAuthenticatedShell(
+                                    db = db,
+                                    session = session,
+                                    language = language,
+                                    themeMode = themeMode,
+                                    isDark = isDark,
+                                    onSetLanguage = { lang -> scope.launch { prefs.setLanguage(lang) } },
+                                    onSetThemeMode = { mode -> scope.launch { prefs.setThemeMode(mode) } },
+                                    onSignOut = handleSignOut
+                                )
+                            }
+                        },
+                        publicDashboardContent = { session ->
+                            val db = activeBootstrap?.db ?: return@GosalaRootNavHost
+                            key(session.uid, session.role) {
+                                GosalaAuthenticatedShell(
+                                    db = db,
+                                    session = session,
+                                    language = language,
+                                    themeMode = themeMode,
+                                    isDark = isDark,
+                                    onSetLanguage = { lang -> scope.launch { prefs.setLanguage(lang) } },
+                                    onSetThemeMode = { mode -> scope.launch { prefs.setThemeMode(mode) } },
+                                    onSignOut = handleSignOut
+                                )
+                            }
+                        }
+                    )
                 }
             }
         }
@@ -403,11 +438,7 @@ private fun GosalaAuthenticatedShell(
     }
 
     val homeRouteForRole = remember(session.role) {
-        when (session.role) {
-            UserRole.ADMIN -> Routes.ADMIN_DASHBOARD
-            UserRole.STAFF -> Routes.STAFF_DASHBOARD
-            UserRole.PUBLIC -> Routes.PUBLIC_DASHBOARD
-        }
+        AuthNavigationController.dashboardRouteForRole(session.role)
     }
 
     // Separate Navigation Configurations strictly by verified Role

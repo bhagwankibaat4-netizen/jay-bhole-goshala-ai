@@ -584,6 +584,9 @@ private fun QuickActionPill(
 }
 
 object Routes {
+    const val LOGIN = "login"
+    const val AUTH_LOADING = "auth_loading"
+    const val AUTH_ERROR = "auth_error"
     const val PUBLIC_DASHBOARD = "public_dashboard"
     const val ADMIN_DASHBOARD = "admin_dashboard"
     const val STAFF_DASHBOARD = "staff_dashboard"

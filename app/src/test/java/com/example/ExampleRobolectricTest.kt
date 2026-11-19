@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.core.app.ApplicationProvider
@@ -13,6 +14,10 @@ import com.example.core.QrAndExportUtils
 import com.example.data.model.*
 import com.example.ui.auth.AuthScreen
 import com.example.ui.components.GosalaTopBar
+import com.example.ui.navigation.AuthNavigationController
+import com.example.ui.navigation.AuthNavigationState
+import com.example.ui.navigation.GosalaRootNavHost
+import com.example.ui.navigation.rememberAuthNavigationController
 import com.example.ui.screens.*
 import com.example.ui.theme.GosalaTheme
 import com.example.ui.viewmodel.DataUiState
@@ -856,5 +861,159 @@ class ExampleRobolectricTest {
         composeRule.waitForIdle()
         composeRule.onNodeWithText("कोई नई सूचना नहीं").assertIsDisplayed()
     }
+
+    @Test
+    fun `auth navigation controller enforces login and role dashboard rules`() {
+        assertEquals(Routes.LOGIN, AuthNavigationController.resolveTargetRoute(AuthNavigationState.Unauthenticated()))
+        assertEquals(Routes.AUTH_LOADING, AuthNavigationController.resolveTargetRoute(AuthNavigationState.Loading))
+        assertEquals(Routes.AUTH_ERROR, AuthNavigationController.resolveTargetRoute(AuthNavigationState.SessionError("Err")))
+
+        val blankUidSession = UserSession(uid = "", role = UserRole.ADMIN, staffActive = true)
+        assertEquals(Routes.LOGIN, AuthNavigationController.resolveTargetRoute(AuthNavigationState.Authorized(blankUidSession)))
+        assertFalse(AuthNavigationController.canAccessRoute(blankUidSession, Routes.ADMIN_DASHBOARD))
+        assertFalse(AuthNavigationController.canAccessRoute(null, Routes.PUBLIC_DASHBOARD))
+
+        val adminSession = UserSession(uid = "a1", role = UserRole.ADMIN, staffActive = true)
+        assertEquals(Routes.ADMIN_DASHBOARD, AuthNavigationController.resolveTargetRoute(AuthNavigationState.Authorized(adminSession)))
+        assertTrue(AuthNavigationController.canAccessRoute(adminSession, Routes.ADMIN_DASHBOARD))
+        assertTrue(AuthNavigationController.canAccessRoute(adminSession, Routes.FINANCE))
+        assertTrue(AuthNavigationController.canAccessRoute(adminSession, Routes.STAFF))
+
+        val activeStaff = UserSession(
+            uid = "s1",
+            role = UserRole.STAFF,
+            staffActive = true,
+            permissions = mapOf(AppModule.FEED.key to listOf(CrudAction.VIEW.name))
+        )
+        assertEquals(Routes.STAFF_DASHBOARD, AuthNavigationController.resolveTargetRoute(AuthNavigationState.Authorized(activeStaff)))
+        assertTrue(AuthNavigationController.canAccessRoute(activeStaff, Routes.STAFF_DASHBOARD))
+        assertTrue(AuthNavigationController.canAccessRoute(activeStaff, Routes.FEED))
+        assertFalse(AuthNavigationController.canAccessRoute(activeStaff, Routes.ADMIN_DASHBOARD))
+        assertFalse(AuthNavigationController.canAccessRoute(activeStaff, Routes.FINANCE))
+
+        val inactiveStaff = activeStaff.copy(staffActive = false)
+        assertFalse(AuthNavigationController.canAccessRoute(inactiveStaff, Routes.STAFF_DASHBOARD))
+
+        val publicSession = UserSession(uid = "p1", role = UserRole.PUBLIC)
+        assertEquals(Routes.PUBLIC_DASHBOARD, AuthNavigationController.resolveTargetRoute(AuthNavigationState.Authorized(publicSession)))
+        assertTrue(AuthNavigationController.canAccessRoute(publicSession, Routes.PUBLIC_DASHBOARD))
+        assertTrue(AuthNavigationController.canAccessRoute(publicSession, Routes.DONATIONS))
+        assertFalse(AuthNavigationController.canAccessRoute(publicSession, Routes.ADMIN_DASHBOARD))
+        assertFalse(AuthNavigationController.canAccessRoute(publicSession, Routes.STAFF_DASHBOARD))
+        assertFalse(AuthNavigationController.canAccessRoute(publicSession, Routes.FINANCE))
+    }
+
+    @Test
+    fun `root nav host redirects unauthenticated users to login and blocks dashboard access`() {
+        val unauthState: AuthNavigationState = AuthNavigationState.Unauthenticated(
+            errorMessage = "कृपया लॉगिन करें"
+        )
+        lateinit var controller: AuthNavigationController
+
+        composeRule.setContent {
+            GosalaTheme {
+                controller = rememberAuthNavigationController()
+                GosalaRootNavHost(
+                    authState = unauthState,
+                    authNavController = controller,
+                    loadingContent = { androidx.compose.material3.Text("Loading") },
+                    loginContent = { err, _ ->
+                        androidx.compose.material3.Text(
+                            text = err ?: "Login Screen",
+                            modifier = androidx.compose.ui.Modifier.testTag("nav_login_screen")
+                        )
+                    },
+                    sessionErrorContent = { androidx.compose.material3.Text(it) },
+                    adminDashboardContent = {
+                        androidx.compose.material3.Text("Admin", modifier = androidx.compose.ui.Modifier.testTag("nav_admin_screen"))
+                    },
+                    staffDashboardContent = {
+                        androidx.compose.material3.Text("Staff", modifier = androidx.compose.ui.Modifier.testTag("nav_staff_screen"))
+                    },
+                    publicDashboardContent = {
+                        androidx.compose.material3.Text("Public", modifier = androidx.compose.ui.Modifier.testTag("nav_public_screen"))
+                    }
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        assertEquals(Routes.LOGIN, controller.currentRoute)
+        composeRule.onNodeWithTag("nav_login_screen").assertIsDisplayed()
+
+        // Attempting protected navigation while unauthenticated keeps user on Login Screen
+        composeRule.runOnIdle {
+            controller.navigateProtected(Routes.ADMIN_DASHBOARD, unauthState)
+            controller.navigateProtected(Routes.STAFF_DASHBOARD, unauthState)
+            controller.navigateProtected(Routes.PUBLIC_DASHBOARD, unauthState)
+        }
+        composeRule.waitForIdle()
+        assertEquals(Routes.LOGIN, controller.currentRoute)
+        composeRule.onNodeWithTag("nav_login_screen").assertIsDisplayed()
+        composeRule.onNodeWithTag("nav_admin_screen").assertDoesNotExist()
+        composeRule.onNodeWithTag("nav_staff_screen").assertDoesNotExist()
+        composeRule.onNodeWithTag("nav_public_screen").assertDoesNotExist()
+    }
+
+    @Test
+    fun `root nav host routes authorized admin staff public to role dashboards and returns to login on logout`() {
+        var authState by mutableStateOf<AuthNavigationState>(AuthNavigationState.Unauthenticated())
+        lateinit var controller: AuthNavigationController
+
+        composeRule.setContent {
+            GosalaTheme {
+                controller = rememberAuthNavigationController()
+                GosalaRootNavHost(
+                    authState = authState,
+                    authNavController = controller,
+                    loadingContent = { androidx.compose.material3.Text("Loading", modifier = androidx.compose.ui.Modifier.testTag("nav_loading")) },
+                    loginContent = { _, _ -> androidx.compose.material3.Text("Login", modifier = androidx.compose.ui.Modifier.testTag("nav_login")) },
+                    sessionErrorContent = { androidx.compose.material3.Text(it, modifier = androidx.compose.ui.Modifier.testTag("nav_error")) },
+                    adminDashboardContent = { androidx.compose.material3.Text("Admin:${it.uid}", modifier = androidx.compose.ui.Modifier.testTag("nav_admin")) },
+                    staffDashboardContent = { androidx.compose.material3.Text("Staff:${it.uid}", modifier = androidx.compose.ui.Modifier.testTag("nav_staff")) },
+                    publicDashboardContent = { androidx.compose.material3.Text("Public:${it.uid}", modifier = androidx.compose.ui.Modifier.testTag("nav_public")) }
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        assertEquals(Routes.LOGIN, controller.currentRoute)
+        composeRule.onNodeWithTag("nav_login").assertIsDisplayed()
+
+        // 1. Authorized Admin -> Admin Dashboard
+        authState = AuthNavigationState.Authorized(UserSession(uid = "admin_1", role = UserRole.ADMIN, staffActive = true))
+        composeRule.waitForIdle()
+        assertEquals(Routes.ADMIN_DASHBOARD, controller.currentRoute)
+        composeRule.onNodeWithTag("nav_admin").assertIsDisplayed()
+
+        // 2. Authorized Staff -> Staff Dashboard (and attempting Admin Dashboard redirects back to Staff Dashboard)
+        val staffAuth = AuthNavigationState.Authorized(UserSession(uid = "staff_1", role = UserRole.STAFF, staffActive = true))
+        authState = staffAuth
+        composeRule.waitForIdle()
+        assertEquals(Routes.STAFF_DASHBOARD, controller.currentRoute)
+        composeRule.onNodeWithTag("nav_staff").assertIsDisplayed()
+        composeRule.runOnIdle { controller.navigateProtected(Routes.ADMIN_DASHBOARD, staffAuth) }
+        composeRule.waitForIdle()
+        assertEquals(Routes.STAFF_DASHBOARD, controller.currentRoute)
+        composeRule.onNodeWithTag("nav_admin").assertDoesNotExist()
+
+        // 3. Authorized Public -> Public Dashboard (and attempting Admin/Staff Dashboard redirects back to Public Dashboard)
+        val publicAuth = AuthNavigationState.Authorized(UserSession(uid = "pub_1", role = UserRole.PUBLIC))
+        authState = publicAuth
+        composeRule.waitForIdle()
+        assertEquals(Routes.PUBLIC_DASHBOARD, controller.currentRoute)
+        composeRule.onNodeWithTag("nav_public").assertIsDisplayed()
+        composeRule.runOnIdle { controller.navigateProtected(Routes.ADMIN_DASHBOARD, publicAuth) }
+        composeRule.waitForIdle()
+        assertEquals(Routes.PUBLIC_DASHBOARD, controller.currentRoute)
+
+        // 4. Sign Out -> redirects back to Login Screen and removes dashboard
+        authState = AuthNavigationState.Unauthenticated()
+        composeRule.waitForIdle()
+        assertEquals(Routes.LOGIN, controller.currentRoute)
+        composeRule.onNodeWithTag("nav_login").assertIsDisplayed()
+        composeRule.onNodeWithTag("nav_public").assertDoesNotExist()
+    }
 }
+
 
