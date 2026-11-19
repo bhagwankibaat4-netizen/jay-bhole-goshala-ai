@@ -21,7 +21,9 @@ jobs:
           java-version: '17'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -33,5 +35,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Jay-Bhole-Goshala-APK
-          path: '*/build/outputs/apk/debug/.apk'
+          path: 'app/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
