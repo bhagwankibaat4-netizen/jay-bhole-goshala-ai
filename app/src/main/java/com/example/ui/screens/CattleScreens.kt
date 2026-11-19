@@ -575,7 +575,10 @@ private fun CattleFormDialog(
 
                 OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text(str(language, "पशु का नाम *", "Animal Name *")) }, singleLine = true)
 
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     listOf("COW" to "गाय", "BULL" to "बैल", "CALF" to "बछड़ा").forEach { (k, l) ->
                         FilterChip(selected = category == k, onClick = {
                             category = k
@@ -601,7 +604,10 @@ private fun CattleFormDialog(
                 )
 
                 Text(str(language, "स्वास्थ्य स्थिति", "Health Status"), style = MaterialTheme.typography.labelMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     listOf("HEALTHY" to "स्वस्थ", "SICK" to "बीमार", "UNDER_TREATMENT" to "उपचार").forEach { (k, l) ->
                         FilterChip(selected = healthStatus == k, onClick = { healthStatus = k }, label = { Text(l) })
                     }

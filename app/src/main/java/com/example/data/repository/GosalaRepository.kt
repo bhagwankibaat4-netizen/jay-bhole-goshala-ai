@@ -2,6 +2,7 @@ package com.example.data.repository
 
 import android.content.Context
 import com.example.R
+import com.example.core.OfflineQueuedException
 import com.example.core.OperationType
 import com.example.core.QrAndExportUtils
 import com.example.core.handleFirestoreError
@@ -16,11 +17,13 @@ import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeout
 
 class GosalaRepository(
     private val db: FirebaseFirestore,
@@ -325,6 +328,33 @@ class GosalaRepository(
         }
     }
 
+    suspend fun deleteStaffAccount(session: UserSession, staffUid: String): Result<Unit> {
+        if (session.role != UserRole.ADMIN) {
+            return Result.failure(SecurityException("केवल प्रशासक (Admin) स्टाफ खाता हटा सकते हैं।"))
+        }
+        if (staffUid.isBlank() || staffUid == session.uid) {
+            return Result.failure(IllegalArgumentException("अमान्य स्टाफ खाता।"))
+        }
+        return safeWrite("staffAccounts/$staffUid", OperationType.DELETE) {
+            db.collection("staffAccounts").document(staffUid).delete().await()
+            logAudit(session, "DELETE", "staff", staffUid, "Deleted staff account")
+        }
+    }
+
+    suspend fun deleteStaffInvite(session: UserSession, email: String): Result<Unit> {
+        if (session.role != UserRole.ADMIN) {
+            return Result.failure(SecurityException("केवल प्रशासक (Admin) स्टाफ आमंत्रण हटा सकते हैं।"))
+        }
+        val normalizedEmail = email.trim().lowercase()
+        if (normalizedEmail.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य ईमेल।"))
+        }
+        return safeWrite("staffInvites/$normalizedEmail", OperationType.DELETE) {
+            db.collection("staffInvites").document(normalizedEmail).delete().await()
+            logAudit(session, "DELETE", "staff", normalizedEmail, "Deleted staff invite")
+        }
+    }
+
     suspend fun addStaffOperation(session: UserSession, entry: StaffOperation): Result<Unit> {
         val uid = requireUid()
         val docRef = db.collection("staffOperations").document()
@@ -360,11 +390,43 @@ class GosalaRepository(
         }
     }
 
-    suspend fun deleteFinancialTx(session: UserSession, txId: String): Result<Unit> =
-        safeWrite("financialTransactions/$txId", OperationType.DELETE) {
+    suspend fun updateFinancialTx(session: UserSession, tx: FinancialTransaction): Result<Unit> {
+        if (!session.canEdit(AppModule.FINANCE)) {
+            return Result.failure(SecurityException("वित्तीय प्रविष्टि संपादित करने की अनुमति नहीं है।"))
+        }
+        if (tx.id.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य वित्तीय प्रविष्टि आईडी।"))
+        }
+        return safeWrite("financialTransactions/${tx.id}", OperationType.UPDATE) {
+            require(tx.amountInr > 0.0) { "राशि 0 से अधिक होनी चाहिए।" }
+            require(tx.partyName.isNotBlank() && tx.description.isNotBlank()) { "पक्ष का नाम व विवरण आवश्यक है।" }
+            db.collection("financialTransactions").document(tx.id).update(
+                mapOf(
+                    "txType" to tx.txType,
+                    "category" to tx.category,
+                    "amountInr" to tx.amountInr.coerceIn(0.01, 100000000.0),
+                    "paymentMode" to tx.paymentMode,
+                    "paymentStatus" to tx.paymentStatus,
+                    "partyName" to tx.partyName.trim().take(120),
+                    "description" to tx.description.trim().take(300),
+                    "dateStr" to tx.dateStr.trim().ifBlank { QrAndExportUtils.todayIso() }.take(30),
+                    "receiptNumber" to tx.receiptNumber.trim().take(60),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            logAudit(session, "UPDATE", "finance", tx.id, "Updated ${tx.txType} ₹${tx.amountInr}")
+        }
+    }
+
+    suspend fun deleteFinancialTx(session: UserSession, txId: String): Result<Unit> {
+        if (!session.canDelete(AppModule.FINANCE)) {
+            return Result.failure(SecurityException("वित्तीय प्रविष्टि हटाने की अनुमति नहीं है।"))
+        }
+        return safeWrite("financialTransactions/$txId", OperationType.DELETE) {
             db.collection("financialTransactions").document(txId).delete().await()
             logAudit(session, "DELETE", "finance", txId, "Deleted transaction")
         }
+    }
 
     // --- FARMER COOPERATION (NO FARMER LOGIN ACCOUNTS) ---
     fun observeFarmers(session: UserSession): Flow<List<FarmerRecord>> {
@@ -389,6 +451,44 @@ class GosalaRepository(
         return safeWrite(docRef.path, OperationType.CREATE) {
             docRef.set(farmer.copy(createdBy = uid).toCreateMap()).await()
             logAudit(session, "CREATE", "farmers", docRef.id, "Added farmer ${farmer.name}")
+        }
+    }
+
+    suspend fun updateFarmer(session: UserSession, farmer: FarmerRecord): Result<Unit> {
+        if (!session.canEdit(AppModule.FARMERS)) {
+            return Result.failure(SecurityException("किसान रिकॉर्ड संपादित करने की अनुमति नहीं है।"))
+        }
+        if (farmer.id.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य किसान आईडी।"))
+        }
+        return safeWrite("farmers/${farmer.id}", OperationType.UPDATE) {
+            require(farmer.name.isNotBlank() && farmer.mobile.trim().length >= 6 && farmer.village.isNotBlank()) {
+                "नाम, गाँव व सही मोबाइल नंबर आवश्यक है।"
+            }
+            db.collection("farmers").document(farmer.id).update(
+                mapOf(
+                    "name" to farmer.name.trim().take(100),
+                    "mobile" to farmer.mobile.trim().take(20),
+                    "village" to farmer.village.trim().take(100),
+                    "address" to farmer.address.trim().take(250),
+                    "cooperationType" to farmer.cooperationType,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            logAudit(session, "UPDATE", "farmers", farmer.id, "Updated farmer ${farmer.name}")
+        }
+    }
+
+    suspend fun deleteFarmer(session: UserSession, farmer: FarmerRecord): Result<Unit> {
+        if (!session.canDelete(AppModule.FARMERS)) {
+            return Result.failure(SecurityException("किसान रिकॉर्ड हटाने की अनुमति नहीं है।"))
+        }
+        if (farmer.id.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य किसान आईडी।"))
+        }
+        return safeWrite("farmers/${farmer.id}", OperationType.DELETE) {
+            db.collection("farmers").document(farmer.id).delete().await()
+            logAudit(session, "DELETE", "farmers", farmer.id, "Deleted farmer ${farmer.name}")
         }
     }
 
@@ -461,8 +561,54 @@ class GosalaRepository(
         }
     }
 
-    suspend fun recordCompostSale(session: UserSession, batch: CompostBatch, sellQty: Double): Result<Unit> =
-        safeWrite("compostProduction/${batch.id}", OperationType.UPDATE) {
+    suspend fun updateCompostBatch(session: UserSession, batch: CompostBatch): Result<Unit> {
+        if (!session.canEdit(AppModule.PRODUCTION)) {
+            return Result.failure(SecurityException("उत्पादन बैच संपादित करने की अनुमति नहीं है।"))
+        }
+        if (batch.id.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य बैच आईडी।"))
+        }
+        return safeWrite("compostProduction/${batch.id}", OperationType.UPDATE) {
+            require(batch.quantity > 0.0) { "उत्पाद मात्रा 0 से अधिक होनी चाहिए।" }
+            val newStock = (batch.quantity - batch.soldQuantity).coerceAtLeast(0.0)
+            val newStatus = if (newStock <= 0.0 && batch.soldQuantity > 0.0) "SOLD_OUT" else batch.status
+            db.collection("compostProduction").document(batch.id).update(
+                mapOf(
+                    "productType" to batch.productType,
+                    "quantity" to batch.quantity.coerceAtLeast(0.0),
+                    "unit" to batch.unit.trim().ifBlank { "KG" }.take(30),
+                    "rawDungKg" to batch.rawDungKg.coerceAtLeast(0.0),
+                    "productionCostInr" to batch.productionCostInr.coerceAtLeast(0.0),
+                    "packagingCostInr" to batch.packagingCostInr.coerceAtLeast(0.0),
+                    "sellingPricePerUnitInr" to batch.sellingPricePerUnitInr.coerceAtLeast(0.0),
+                    "stockRemaining" to newStock,
+                    "status" to newStatus,
+                    "notes" to batch.notes.trim().take(400),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            logAudit(session, "UPDATE", "production", batch.id, "Updated batch ${batch.batchCode}")
+        }
+    }
+
+    suspend fun deleteCompostBatch(session: UserSession, batch: CompostBatch): Result<Unit> {
+        if (!session.canDelete(AppModule.PRODUCTION)) {
+            return Result.failure(SecurityException("उत्पादन बैच हटाने की अनुमति नहीं है।"))
+        }
+        if (batch.id.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य बैच आईडी।"))
+        }
+        return safeWrite("compostProduction/${batch.id}", OperationType.DELETE) {
+            db.collection("compostProduction").document(batch.id).delete().await()
+            logAudit(session, "DELETE", "production", batch.id, "Deleted batch ${batch.batchCode}")
+        }
+    }
+
+    suspend fun recordCompostSale(session: UserSession, batch: CompostBatch, sellQty: Double): Result<Unit> {
+        if (!session.canEdit(AppModule.PRODUCTION)) {
+            return Result.failure(SecurityException("बिक्री दर्ज करने की अनुमति नहीं है।"))
+        }
+        return safeWrite("compostProduction/${batch.id}", OperationType.UPDATE) {
             require(sellQty > 0 && sellQty <= batch.stockRemaining) { "अमान्य बिक्री मात्रा / Invalid sale quantity" }
             val newSold = batch.soldQuantity + sellQty
             val newStock = (batch.stockRemaining - sellQty).coerceAtLeast(0.0)
@@ -477,6 +623,7 @@ class GosalaRepository(
             ).await()
             logAudit(session, "UPDATE", "production", batch.id, "Sold $sellQty ${batch.unit} from ${batch.batchCode}")
         }
+    }
 
     // --- DONATIONS & COW SPONSORSHIP ---
     fun observeDonations(session: UserSession): Flow<List<Donation>> {
@@ -676,7 +823,11 @@ class GosalaRepository(
         crossinline block: suspend () -> T
     ): Result<T> {
         return try {
-            Result.success(block())
+            val result = withTimeout(10_000L) { block() }
+            Result.success(result)
+        } catch (e: TimeoutCancellationException) {
+            handleFirestoreError(e, operationType, path)
+            Result.failure(OfflineQueuedException())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

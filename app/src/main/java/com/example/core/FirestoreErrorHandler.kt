@@ -5,8 +5,13 @@ import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import org.json.JSONArray
 import org.json.JSONObject
+
+class OfflineQueuedException(
+    message: String = "Offline or slow network: change queued locally for sync."
+) : Exception(message)
 
 enum class OperationType(val value: String) {
     CREATE("create"),
@@ -61,11 +66,21 @@ fun handleFirestoreError(
 }
 
 fun friendlyHindiError(error: Throwable, language: AppLanguage): String {
+    if (error is OfflineQueuedException || error is TimeoutCancellationException) {
+        return str(
+            language,
+            "इंटरनेट बंद या धीमा है। परिवर्तन फोन में सुरक्षित कर लिए गए हैं और नेटवर्क आने पर अपने-आप सिंक हो जाएंगे।",
+            "Offline or slow network. Changes are saved locally and will sync automatically when online."
+        )
+    }
     val msg = error.message.orEmpty()
     return when {
         msg.contains("PERMISSION_DENIED", ignoreCase = true) ->
             str(language, "अनुमति अस्वीकृत: आपके खाते को यह कार्य करने का अधिकार नहीं है।", "Permission denied: your role does not allow this action.")
-        msg.contains("UNAVAILABLE", ignoreCase = true) || msg.contains("network", ignoreCase = true) ->
+        msg.contains("UNAVAILABLE", ignoreCase = true) ||
+            msg.contains("network", ignoreCase = true) ||
+            msg.contains("offline", ignoreCase = true) ||
+            msg.contains("timed out", ignoreCase = true) ->
             str(language, "इंटरनेट कमजोर या बंद है। परिवर्तन सुरक्षित रखे गए हैं और नेटवर्क आने पर सिंक होंगे।", "Weak or offline network. Changes are queued safely for sync.")
         msg.contains("Quota exceeded", ignoreCase = true) ->
             str(language, "दैनिक डेटाबेस सीमा पूर्ण हो गई है। कृपया कल पुनः प्रयास करें।", "Daily database quota exceeded. Please retry tomorrow.")

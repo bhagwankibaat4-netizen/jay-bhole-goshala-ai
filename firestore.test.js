@@ -496,3 +496,190 @@ test("Admin /admins/{uid} active check: active admin succeeds, inactive admin is
     })
   );
 });
+
+test("Edit/Delete enforcement for Finance, Farmers, Compost, Staff + auditLogs role anti-spoofing", async () => {
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID, {
+    email: ADMIN_EMAIL,
+    email_verified: true,
+  }).firestore();
+  const staffNoEditUid = "staff_view_only";
+  const staffWithEditUid = "staff_editor";
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("staffAccounts").doc(staffNoEditUid).set({
+      uid: staffNoEditUid,
+      email: "viewer@gosala.org",
+      name: "View Staff",
+      designation: "Sevak",
+      monthlySalary: 9000,
+      active: true,
+      permissions: {
+        finance: ["VIEW"],
+        farmers: ["VIEW"],
+        production: ["VIEW"],
+      },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    await db.collection("staffAccounts").doc(staffWithEditUid).set({
+      uid: staffWithEditUid,
+      email: "editor@gosala.org",
+      name: "Editor Staff",
+      designation: "Manager",
+      monthlySalary: 15000,
+      active: true,
+      permissions: {
+        finance: ["VIEW", "ADD", "EDIT", "DELETE"],
+        farmers: ["VIEW", "ADD", "EDIT", "DELETE"],
+        production: ["VIEW", "ADD", "EDIT", "DELETE"],
+      },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    await db.collection("staffInvites").doc("pending@gosala.org").set({
+      email: "pending@gosala.org",
+      name: "Pending Sevak",
+      phone: "9876543210",
+      designation: "Sevak",
+      monthlySalary: 8000,
+      permissions: { cattle: ["VIEW"] },
+      createdBy: ADMIN_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    await db.collection("financialTransactions").doc("tx_edit_1").set({
+      txType: "EXPENSE",
+      category: "FEED_PURCHASE",
+      amountInr: 3000,
+      paymentMode: "CASH",
+      paymentStatus: "COMPLETED",
+      partyName: "रामलाल",
+      description: "चारा खरीद",
+      dateStr: "2026-11-19",
+      receiptNumber: "TX-101",
+      recordedBy: ADMIN_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    await db.collection("farmers").doc("farmer_edit_1").set({
+      name: "हरि सिंह",
+      mobile: "9876543210",
+      village: "पोरसा",
+      address: "वार्ड 3",
+      cooperationType: "BOTH",
+      totalPurchasedInr: 1000,
+      totalSoldInr: 500,
+      outstandingInr: 0,
+      createdBy: ADMIN_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    await db.collection("compostProduction").doc("compost_edit_1").set({
+      batchCode: "CMP-201",
+      productType: "VERMICOMPOST",
+      quantity: 400,
+      unit: "KG",
+      rawDungKg: 700,
+      productionCostInr: 1000,
+      packagingCostInr: 200,
+      sellingPricePerUnitInr: 12,
+      soldQuantity: 50,
+      stockRemaining: 350,
+      status: "READY_FOR_SALE",
+      dateStr: "2026-11-19",
+      notes: "",
+      recordedBy: ADMIN_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+  });
+
+  const viewStaffDb = testEnv.authenticatedContext(staffNoEditUid, {
+    email: "viewer@gosala.org",
+    email_verified: true,
+  }).firestore();
+  const editStaffDb = testEnv.authenticatedContext(staffWithEditUid, {
+    email: "editor@gosala.org",
+    email_verified: true,
+  }).firestore();
+  const publicDb = testEnv.authenticatedContext(PUBLIC_UID, {
+    email: PUBLIC_EMAIL,
+    email_verified: true,
+  }).firestore();
+
+  // Public & view-only staff CANNOT update or delete finance, farmers, compost, or staff
+  await assertFails(publicDb.collection("financialTransactions").doc("tx_edit_1").update({ amountInr: 1, updatedAt: pastDate(500) }));
+  await assertFails(publicDb.collection("financialTransactions").doc("tx_edit_1").delete());
+  await assertFails(viewStaffDb.collection("financialTransactions").doc("tx_edit_1").update({ amountInr: 3500, updatedAt: pastDate(500) }));
+  await assertFails(viewStaffDb.collection("financialTransactions").doc("tx_edit_1").delete());
+  await assertFails(viewStaffDb.collection("farmers").doc("farmer_edit_1").update({ village: "मुरैना", updatedAt: pastDate(500) }));
+  await assertFails(viewStaffDb.collection("farmers").doc("farmer_edit_1").delete());
+  await assertFails(viewStaffDb.collection("compostProduction").doc("compost_edit_1").update({ sellingPricePerUnitInr: 15, updatedAt: pastDate(500) }));
+  await assertFails(viewStaffDb.collection("compostProduction").doc("compost_edit_1").delete());
+  await assertFails(editStaffDb.collection("staffAccounts").doc(staffNoEditUid).delete());
+  await assertFails(editStaffDb.collection("staffInvites").doc("pending@gosala.org").delete());
+
+  // Authorized staff CAN update & delete finance, farmers, compost
+  await assertSucceeds(editStaffDb.collection("financialTransactions").doc("tx_edit_1").update({ amountInr: 3200, updatedAt: pastDate(500) }));
+  await assertSucceeds(editStaffDb.collection("farmers").doc("farmer_edit_1").update({ village: "मुरैना", updatedAt: pastDate(500) }));
+  await assertSucceeds(editStaffDb.collection("compostProduction").doc("compost_edit_1").update({ sellingPricePerUnitInr: 14, updatedAt: pastDate(500) }));
+
+  // Admin CAN delete finance, farmers, compost, staffAccount, and staffInvite
+  await assertSucceeds(adminDb.collection("financialTransactions").doc("tx_edit_1").delete());
+  await assertSucceeds(adminDb.collection("farmers").doc("farmer_edit_1").delete());
+  await assertSucceeds(adminDb.collection("compostProduction").doc("compost_edit_1").delete());
+  await assertSucceeds(adminDb.collection("staffAccounts").doc(staffNoEditUid).delete());
+  await assertSucceeds(adminDb.collection("staffInvites").doc("pending@gosala.org").delete());
+
+  // auditLogs role anti-spoofing: public cannot log as ADMIN or STAFF, only PUBLIC
+  await assertFails(
+    publicDb.collection("auditLogs").doc("log_spoof_admin").set({
+      actorUid: PUBLIC_UID,
+      actorName: "Spoofer",
+      actorRole: "ADMIN",
+      action: "DELETE",
+      module: "finance",
+      entityId: "tx_1",
+      summary: "Fake admin log",
+      createdAt: pastDate(),
+    })
+  );
+  await assertFails(
+    publicDb.collection("auditLogs").doc("log_spoof_staff").set({
+      actorUid: PUBLIC_UID,
+      actorName: "Spoofer",
+      actorRole: "STAFF",
+      action: "CREATE",
+      module: "cattle",
+      entityId: "c1",
+      summary: "Fake staff log",
+      createdAt: pastDate(),
+    })
+  );
+  await assertSucceeds(
+    publicDb.collection("auditLogs").doc("log_pub_ok").set({
+      actorUid: PUBLIC_UID,
+      actorName: "Devotee",
+      actorRole: "PUBLIC",
+      action: "CREATE",
+      module: "donations",
+      entityId: "don_1",
+      summary: "Submitted donation",
+      createdAt: pastDate(),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("auditLogs").doc("log_admin_ok").set({
+      actorUid: ADMIN_UID,
+      actorName: "Admin",
+      actorRole: "ADMIN",
+      action: "DELETE",
+      module: "finance",
+      entityId: "tx_edit_1",
+      summary: "Deleted transaction",
+      createdAt: pastDate(),
+    })
+  );
+});
+

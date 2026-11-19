@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -90,7 +91,10 @@ fun HealthManagementScreen(
                 Spacer(Modifier.height(10.dp))
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 listOf(
                     "ALL" to str(language, "सभी", "All"),
                     "VACCINATION" to str(language, "टीकाकरण", "Vaccine"),
@@ -258,13 +262,16 @@ private fun AddHealthDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (cattleList.isNotEmpty()) {
-                    Text(str(language, "पशु चुनें:", "Select Animal:"), style = MaterialTheme.typography.labelMedium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        cattleList.take(4).forEach { c ->
+                    Text(str(language, "पशु चुनें (${cattleList.size}):", "Select Animal (${cattleList.size}):"), style = MaterialTheme.typography.labelMedium)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        cattleList.forEach { c ->
                             FilterChip(
                                 selected = selectedCattle?.id == c.id,
                                 onClick = { selectedCattle = c; weightText = c.weightKg.toString() },
-                                label = { Text(c.name) }
+                                label = { Text("${c.name} (${c.animalCode})") }
                             )
                         }
                     }
@@ -277,7 +284,10 @@ private fun AddHealthDialog(
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     listOf("VACCINATION" to "टीका", "TREATMENT" to "उपचार", "VET_VISIT" to "डॉक्टर", "WEIGHT_CHECK" to "वजन").forEach { (k, l) ->
                         FilterChip(selected = recordType == k, onClick = { recordType = k }, label = { Text(l) })
                     }

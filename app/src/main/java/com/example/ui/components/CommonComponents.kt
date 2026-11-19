@@ -486,7 +486,8 @@ fun ConfirmActionDialog(
                 onClick = onConfirm,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (isDestructive) AlertRed else ForestGreen
-                )
+                ),
+                modifier = Modifier.testTag("confirm_dialog_confirm_button")
             ) {
                 Text(confirmLabel)
             }

@@ -54,9 +54,12 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/staffAccounts/$(request.auth.uid)).data;
     }
 
+    function isActiveStaff() {
+      return hasStaffDoc() && staffData().active == true;
+    }
+
     function hasStaffPermission(module, action) {
-      return hasStaffDoc() &&
-             staffData().active == true &&
+      return isActiveStaff() &&
              module in staffData().permissions &&
              action in staffData().permissions[module];
     }
@@ -658,7 +661,12 @@ service cloud.firestore {
       allow create: if isSignedIn() &&
                        isValidId(logId) &&
                        isValidAuditLog(incoming()) &&
-                       incoming().actorUid == request.auth.uid;
+                       incoming().actorUid == request.auth.uid &&
+                       (
+                         (incoming().actorRole == 'ADMIN' && isAdmin()) ||
+                         (incoming().actorRole == 'STAFF' && isActiveStaff()) ||
+                         incoming().actorRole == 'PUBLIC'
+                       );
       allow update, delete: if false;
     }
   }

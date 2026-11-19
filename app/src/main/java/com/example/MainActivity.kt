@@ -759,7 +759,9 @@ private fun GosalaAuthenticatedShell(
                                 onUpdateStaff = { uid, active, sal, perms ->
                                     gosalaViewModel.updateStaffAccount(uid, active, sal, perms, language)
                                 },
-                                onAddStaffOperation = { op -> gosalaViewModel.addStaffOperation(op, language) }
+                                onAddStaffOperation = { op -> gosalaViewModel.addStaffOperation(op, language) },
+                                onDeleteStaff = { uid -> gosalaViewModel.deleteStaffAccount(uid, language) },
+                                onDeleteInvite = { email -> gosalaViewModel.deleteStaffInvite(email, language) }
                             )
                         }
                     }
@@ -777,7 +779,8 @@ private fun GosalaAuthenticatedShell(
                                 openAddOnStart = openAddFinanceOnStart,
                                 onConsumedOpenAdd = { openAddFinanceOnStart = false },
                                 onAddTransaction = { tx -> gosalaViewModel.addFinancialTx(tx, language) },
-                                onDeleteTransaction = { id -> gosalaViewModel.deleteFinancialTx(id, language) }
+                                onDeleteTransaction = { id -> gosalaViewModel.deleteFinancialTx(id, language) },
+                                onUpdateTransaction = { tx -> gosalaViewModel.updateFinancialTx(tx, language) }
                             )
                         }
                     }
@@ -794,7 +797,9 @@ private fun GosalaAuthenticatedShell(
                                 farmersState = farmersState,
                                 farmerTxState = farmerTxState,
                                 onAddFarmer = { farmer -> gosalaViewModel.addFarmer(farmer, language) },
-                                onAddFarmerTx = { tx, farmer -> gosalaViewModel.addFarmerTx(tx, farmer, language) }
+                                onAddFarmerTx = { tx, farmer -> gosalaViewModel.addFarmerTx(tx, farmer, language) },
+                                onUpdateFarmer = { farmer -> gosalaViewModel.updateFarmer(farmer, language) },
+                                onDeleteFarmer = { farmer -> gosalaViewModel.deleteFarmer(farmer, language) }
                             )
                         }
                     }
@@ -814,7 +819,9 @@ private fun GosalaAuthenticatedShell(
                                 onAskAiCostAnalysis = {
                                     initialAiMode = AiMode.BUSINESS
                                     navigateTopTab(Routes.AI_ASSISTANT)
-                                }
+                                },
+                                onUpdateBatch = { batch -> gosalaViewModel.updateCompostBatch(batch, language) },
+                                onDeleteBatch = { batch -> gosalaViewModel.deleteCompostBatch(batch, language) }
                             )
                         }
                     }

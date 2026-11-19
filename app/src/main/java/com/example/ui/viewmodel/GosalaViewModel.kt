@@ -218,6 +218,18 @@ class GosalaViewModel(
         }
     }
 
+    fun deleteStaffAccount(staffUid: String, language: AppLanguage) {
+        runMutation(language, "कर्मचारी खाता हटाया गया।", "Staff account deleted.") {
+            repository.deleteStaffAccount(session, staffUid)
+        }
+    }
+
+    fun deleteStaffInvite(email: String, language: AppLanguage) {
+        runMutation(language, "कर्मचारी आमंत्रण हटाया गया।", "Staff invite deleted.") {
+            repository.deleteStaffInvite(session, email)
+        }
+    }
+
     fun addStaffOperation(entry: StaffOperation, language: AppLanguage) {
         runMutation(language, "कर्मचारी प्रविष्टि सहेजी गई।", "Staff operation saved.") {
             repository.addStaffOperation(session, entry)
@@ -227,6 +239,12 @@ class GosalaViewModel(
     fun addFinancialTx(tx: FinancialTransaction, language: AppLanguage) {
         runMutation(language, "वित्तीय प्रविष्टि सहेजी गई।", "Financial transaction saved.") {
             repository.addFinancialTx(session, tx)
+        }
+    }
+
+    fun updateFinancialTx(tx: FinancialTransaction, language: AppLanguage) {
+        runMutation(language, "वित्तीय प्रविष्टि अपडेट हुई।", "Financial transaction updated.") {
+            repository.updateFinancialTx(session, tx)
         }
     }
 
@@ -242,6 +260,18 @@ class GosalaViewModel(
         }
     }
 
+    fun updateFarmer(farmer: FarmerRecord, language: AppLanguage) {
+        runMutation(language, "किसान रिकॉर्ड अपडेट हुआ।", "Farmer record updated.") {
+            repository.updateFarmer(session, farmer)
+        }
+    }
+
+    fun deleteFarmer(farmer: FarmerRecord, language: AppLanguage) {
+        runMutation(language, "किसान रिकॉर्ड हटाया गया।", "Farmer record deleted.") {
+            repository.deleteFarmer(session, farmer)
+        }
+    }
+
     fun addFarmerTx(tx: FarmerTransaction, farmer: FarmerRecord, language: AppLanguage) {
         runMutation(language, "किसान खरीद/बिक्री बिल सहेजा गया।", "Farmer invoice saved.") {
             repository.addFarmerTransaction(session, tx, farmer)
@@ -251,6 +281,18 @@ class GosalaViewModel(
     fun addCompostBatch(batch: CompostBatch, language: AppLanguage) {
         runMutation(language, "उत्पादन बैच सहेजा गया।", "Production batch saved.") {
             repository.addCompostBatch(session, batch)
+        }
+    }
+
+    fun updateCompostBatch(batch: CompostBatch, language: AppLanguage) {
+        runMutation(language, "उत्पादन बैच अपडेट हुआ।", "Production batch updated.") {
+            repository.updateCompostBatch(session, batch)
+        }
+    }
+
+    fun deleteCompostBatch(batch: CompostBatch, language: AppLanguage) {
+        runMutation(language, "उत्पादन बैच हटाया गया।", "Production batch deleted.") {
+            repository.deleteCompostBatch(session, batch)
         }
     }
 

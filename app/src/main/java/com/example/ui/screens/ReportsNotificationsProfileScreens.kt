@@ -130,7 +130,7 @@ fun ReportsScreen(
             }
             GoshalaReportType.STAFF_ATTENDANCE -> {
                 listOf(str(language, "कर्मचारी", "Staff"), str(language, "तिथि", "Date"), str(language, "उपस्थिति", "Status"), str(language, "कार्य", "Task")) to
-                    staffOps.filter { it.entryType == "ATTENDANCE" || it.entryType == "WORK" }.map {
+                    staffOps.filter { it.entryType == "ATTENDANCE" || it.entryType == "TASK" || it.entryType == "WORK" }.map {
                         listOf(it.staffName, it.dateStr, it.attendanceStatus, it.taskDescription)
                     }
             }

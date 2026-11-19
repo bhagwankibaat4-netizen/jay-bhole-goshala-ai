@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -8,6 +9,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -23,6 +25,7 @@ import com.example.core.AppLanguage
 import com.example.core.QrAndExportUtils
 import com.example.core.str
 import com.example.data.model.*
+import com.example.ui.components.ConfirmActionDialog
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.MetricStatCard
 import com.example.ui.theme.*
@@ -35,11 +38,15 @@ fun FarmerCooperationScreen(
     farmersState: DataUiState<List<FarmerRecord>>,
     farmerTxState: DataUiState<List<FarmerTransaction>>,
     onAddFarmer: (FarmerRecord) -> Unit,
-    onAddFarmerTx: (FarmerTransaction, FarmerRecord) -> Unit
+    onAddFarmerTx: (FarmerTransaction, FarmerRecord) -> Unit,
+    onUpdateFarmer: (FarmerRecord) -> Unit = {},
+    onDeleteFarmer: (FarmerRecord) -> Unit = {}
 ) {
     val context = LocalContext.current
     var tabIndex by remember { mutableIntStateOf(0) }
     var showAddFarmerDialog by remember { mutableStateOf(false) }
+    var editingFarmer by remember { mutableStateOf<FarmerRecord?>(null) }
+    var deletingFarmer by remember { mutableStateOf<FarmerRecord?>(null) }
     var selectedFarmerForTx by remember { mutableStateOf<FarmerRecord?>(null) }
 
     val farmers = (farmersState as? DataUiState.Success)?.data.orEmpty()
@@ -49,7 +56,10 @@ fun FarmerCooperationScreen(
         floatingActionButton = {
             if (session.canAdd(AppModule.FARMERS)) {
                 ExtendedFloatingActionButton(
-                    onClick = { showAddFarmerDialog = true },
+                    onClick = {
+                        editingFarmer = null
+                        showAddFarmerDialog = true
+                    },
                     containerColor = ForestGreen,
                     contentColor = Color.White,
                     modifier = Modifier.testTag("add_farmer_fab")
@@ -121,17 +131,27 @@ fun FarmerCooperationScreen(
             Spacer(Modifier.height(10.dp))
 
             if (tabIndex == 0) {
-                if (farmers.isEmpty()) {
-                    EmptyStateCard(
-                        icon = Icons.Default.Agriculture,
-                        title = str(language, "कोई किसान पंजीकृत नहीं", "No farmers registered"),
-                        subtitle = str(language, "चारा आपूर्तिकर्ता या खाद खरीदार किसान का नाम, गाँव व मोबाइल जोड़ें।", "Register local farmers as fodder suppliers or compost buyers.")
+                when (farmersState) {
+                    is DataUiState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = ForestGreen)
+                    }
+                    is DataUiState.Error -> EmptyStateCard(
+                        icon = Icons.Default.ErrorOutline,
+                        title = str(language, "किसान डेटा लोड नहीं हो सका", "Could not load farmers"),
+                        subtitle = farmersState.message
                     )
-                } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        contentPadding = PaddingValues(bottom = 84.dp)
-                    ) {
+                    is DataUiState.Success -> if (farmers.isEmpty()) {
+                        EmptyStateCard(
+                            icon = Icons.Default.Agriculture,
+                            title = str(language, "कोई किसान पंजीकृत नहीं", "No farmers registered"),
+                            subtitle = str(language, "चारा आपूर्तिकर्ता या खाद खरीदार किसान का नाम, गाँव व मोबाइल जोड़ें।", "Register local farmers as fodder suppliers or compost buyers.")
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.testTag("farmers_list"),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            contentPadding = PaddingValues(bottom = 96.dp)
+                        ) {
                         items(farmers, key = { it.id }) { farmer ->
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
@@ -161,9 +181,45 @@ fun FarmerCooperationScreen(
                                         color = if (farmer.outstandingInr > 0) AlertRed else GoshalaGreen,
                                         fontWeight = FontWeight.SemiBold
                                     )
+                                    if (session.canEdit(AppModule.FARMERS) || session.canDelete(AppModule.FARMERS)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.Start,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            if (session.canEdit(AppModule.FARMERS)) {
+                                                IconButton(
+                                                    onClick = {
+                                                        editingFarmer = farmer
+                                                        showAddFarmerDialog = false
+                                                    },
+                                                    modifier = Modifier.testTag("farmer_edit_${farmer.id}")
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.Edit,
+                                                        contentDescription = str(language, "संपादित करें", "Edit"),
+                                                        tint = ForestGreen
+                                                    )
+                                                }
+                                            }
+                                            if (session.canDelete(AppModule.FARMERS)) {
+                                                IconButton(
+                                                    onClick = { deletingFarmer = farmer },
+                                                    modifier = Modifier.testTag("farmer_delete_${farmer.id}")
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.DeleteOutline,
+                                                        contentDescription = str(language, "हटाएं", "Delete"),
+                                                        tint = AlertRed
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
+                    }
                     }
                 }
             } else {
@@ -203,17 +259,26 @@ fun FarmerCooperationScreen(
                 }
                 Spacer(Modifier.height(8.dp))
 
-                if (transactions.isEmpty()) {
-                    EmptyStateCard(
-                        icon = Icons.Default.Receipt,
-                        title = str(language, "कोई किसान लेनदेन नहीं", "No farmer invoices yet"),
-                        subtitle = str(language, "किसान सूची से '+ बिल/लेनदेन' चुनकर खरीद या बिक्री बिल बनाएं।", "Select '+ Invoice' on any farmer record to create a purchase or sale bill.")
+                when (farmerTxState) {
+                    is DataUiState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = ForestGreen)
+                    }
+                    is DataUiState.Error -> EmptyStateCard(
+                        icon = Icons.Default.ErrorOutline,
+                        title = str(language, "लेनदेन लोड नहीं हो सके", "Could not load invoices"),
+                        subtitle = farmerTxState.message
                     )
-                } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        contentPadding = PaddingValues(bottom = 84.dp)
-                    ) {
+                    is DataUiState.Success -> if (transactions.isEmpty()) {
+                        EmptyStateCard(
+                            icon = Icons.Default.Receipt,
+                            title = str(language, "कोई किसान लेनदेन नहीं", "No farmer invoices yet"),
+                            subtitle = str(language, "किसान सूची से '+ बिल/लेनदेन' चुनकर खरीद या बिक्री बिल बनाएं।", "Select '+ Invoice' on any farmer record to create a purchase or sale bill.")
+                        )
+                    } else {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            contentPadding = PaddingValues(bottom = 84.dp)
+                        ) {
                         items(transactions, key = { it.id }) { tx ->
                             val isPurchase = tx.direction == "PURCHASE_FROM_FARMER"
                             Card(
@@ -242,27 +307,46 @@ fun FarmerCooperationScreen(
                         }
                     }
                 }
+                }
             }
         }
     }
 
-    if (showAddFarmerDialog) {
-        var name by remember { mutableStateOf("") }
-        var mobile by remember { mutableStateOf("") }
-        var village by remember { mutableStateOf("") }
-        var address by remember { mutableStateOf("") }
-        var coopType by remember { mutableStateOf("BOTH") }
+    if (showAddFarmerDialog || editingFarmer != null) {
+        val currentEdit = editingFarmer
+        val isEdit = currentEdit != null
+        var name by remember(currentEdit?.id) { mutableStateOf(currentEdit?.name ?: "") }
+        var mobile by remember(currentEdit?.id) { mutableStateOf(currentEdit?.mobile ?: "") }
+        var village by remember(currentEdit?.id) { mutableStateOf(currentEdit?.village ?: "") }
+        var address by remember(currentEdit?.id) { mutableStateOf(currentEdit?.address ?: "") }
+        var coopType by remember(currentEdit?.id) { mutableStateOf(currentEdit?.cooperationType ?: "BOTH") }
+        var farmerError by remember(currentEdit?.id) { mutableStateOf<String?>(null) }
+
+        val closeDialog = {
+            showAddFarmerDialog = false
+            editingFarmer = null
+        }
 
         AlertDialog(
-            onDismissRequest = { showAddFarmerDialog = false },
-            title = { Text(str(language, "नया किसान पंजीकरण", "Register Farmer"), fontWeight = FontWeight.Bold) },
+            onDismissRequest = closeDialog,
+            title = {
+                Text(
+                    if (isEdit) str(language, "किसान विवरण संपादित करें", "Edit Farmer Details")
+                    else str(language, "नया किसान पंजीकरण", "Register Farmer"),
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text(str(language, "किसान का नाम *", "Farmer Name *")) }, singleLine = true)
-                    OutlinedTextField(value = mobile, onValueChange = { mobile = it }, label = { Text(str(language, "मोबाइल नंबर *", "Mobile *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), singleLine = true)
-                    OutlinedTextField(value = village, onValueChange = { village = it }, label = { Text(str(language, "गाँव *", "Village *")) }, singleLine = true)
+                    farmerError?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold) }
+                    OutlinedTextField(value = name, onValueChange = { name = it; farmerError = null }, label = { Text(str(language, "किसान का नाम *", "Farmer Name *")) }, singleLine = true)
+                    OutlinedTextField(value = mobile, onValueChange = { mobile = it; farmerError = null }, label = { Text(str(language, "मोबाइल नंबर *", "Mobile *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), singleLine = true)
+                    OutlinedTextField(value = village, onValueChange = { village = it; farmerError = null }, label = { Text(str(language, "गाँव *", "Village *")) }, singleLine = true)
                     OutlinedTextField(value = address, onValueChange = { address = it }, label = { Text(str(language, "पूरा पता", "Address")) })
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         listOf("SUPPLIER" to "आपूर्तिकर्ता", "BUYER" to "खरीदार", "BOTH" to "दोनों").forEach { (k, l) ->
                             FilterChip(selected = coopType == k, onClick = { coopType = k }, label = { Text(l) })
                         }
@@ -272,14 +356,48 @@ fun FarmerCooperationScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        if (name.isBlank() || mobile.length < 6 || village.isBlank()) return@Button
-                        onAddFarmer(FarmerRecord(name = name.trim(), mobile = mobile.trim(), village = village.trim(), address = address.trim(), cooperationType = coopType))
-                        showAddFarmerDialog = false
+                        if (name.isBlank() || mobile.trim().length < 6 || village.isBlank()) {
+                            farmerError = str(language, "कृपया नाम, गाँव और सही मोबाइल नंबर दर्ज करें।", "Please enter name, village, and valid mobile number.")
+                            return@Button
+                        }
+                        if (currentEdit != null) {
+                            onUpdateFarmer(
+                                currentEdit.copy(
+                                    name = name.trim(),
+                                    mobile = mobile.trim(),
+                                    village = village.trim(),
+                                    address = address.trim(),
+                                    cooperationType = coopType
+                                )
+                            )
+                        } else {
+                            onAddFarmer(FarmerRecord(name = name.trim(), mobile = mobile.trim(), village = village.trim(), address = address.trim(), cooperationType = coopType))
+                        }
+                        closeDialog()
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = ForestGreen)
-                ) { Text(str(language, "सहेजें", "Save")) }
+                    colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                    modifier = Modifier.testTag("farmer_save_button")
+                ) { Text(if (isEdit) str(language, "अपडेट करें", "Update") else str(language, "सहेजें", "Save")) }
             },
-            dismissButton = { TextButton(onClick = { showAddFarmerDialog = false }) { Text(str(language, "रद्द करें", "Cancel")) } }
+            dismissButton = { TextButton(onClick = closeDialog) { Text(str(language, "रद्द करें", "Cancel")) } }
+        )
+    }
+
+    deletingFarmer?.let { target ->
+        ConfirmActionDialog(
+            title = str(language, "किसान रिकॉर्ड हटाएं", "Delete Farmer Record"),
+            message = str(
+                language,
+                "क्या आप वाकई ${target.name} (${target.village}) का रिकॉर्ड हटाना चाहते हैं?",
+                "Are you sure you want to delete farmer ${target.name} (${target.village})?"
+            ),
+            confirmLabel = str(language, "हटाएं", "Delete"),
+            cancelLabel = str(language, "रद्द करें", "Cancel"),
+            onConfirm = {
+                onDeleteFarmer(target)
+                deletingFarmer = null
+            },
+            onDismiss = { deletingFarmer = null }
         )
     }
 
@@ -292,6 +410,7 @@ fun FarmerCooperationScreen(
         var rate by remember { mutableStateOf("550") }
         var paid by remember { mutableStateOf("5500") }
         var notes by remember { mutableStateOf("") }
+        var txError by remember { mutableStateOf<String?>(null) }
 
         val purchaseProducts = listOf("भूसा (Bhusa)", "हरा चारा", "बरसीम", "मक्का", "सूखी घास")
         val saleProducts = listOf("गोबर खाद", "वर्मी कम्पोस्ट", "जैविक खाद", "नर्सरी पौधे")
@@ -301,20 +420,27 @@ fun FarmerCooperationScreen(
             title = { Text("${farmer.name} — ${str(language, "नया बिल", "New Invoice")}", fontWeight = FontWeight.Bold) },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    txError?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold) }
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         FilterChip(selected = direction == "PURCHASE_FROM_FARMER", onClick = { direction = "PURCHASE_FROM_FARMER"; product = purchaseProducts.first() }, label = { Text(str(language, "किसान से खरीद", "Buy Fodder")) })
                         FilterChip(selected = direction == "SALE_TO_FARMER", onClick = { direction = "SALE_TO_FARMER"; product = saleProducts.first() }, label = { Text(str(language, "किसान को बिक्री", "Sell Product")) })
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        (if (direction == "PURCHASE_FROM_FARMER") purchaseProducts else saleProducts).take(3).forEach { p ->
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        (if (direction == "PURCHASE_FROM_FARMER") purchaseProducts else saleProducts).forEach { p ->
                             FilterChip(selected = product == p, onClick = { product = p }, label = { Text(p, style = MaterialTheme.typography.labelSmall) })
                         }
                     }
-                    OutlinedTextField(value = product, onValueChange = { product = it }, label = { Text(str(language, "उत्पाद विवरण *", "Product *")) }, singleLine = true)
-                    OutlinedTextField(value = qty, onValueChange = { qty = it }, label = { Text(str(language, "मात्रा *", "Quantity *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
+                    OutlinedTextField(value = product, onValueChange = { product = it; txError = null }, label = { Text(str(language, "उत्पाद विवरण *", "Product *")) }, singleLine = true)
+                    OutlinedTextField(value = qty, onValueChange = { qty = it; txError = null }, label = { Text(str(language, "मात्रा *", "Quantity *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
                     OutlinedTextField(value = unit, onValueChange = { unit = it }, label = { Text(str(language, "इकाई (QUINTAL/KG/BAG)", "Unit")) }, singleLine = true)
                     OutlinedTextField(value = quality, onValueChange = { quality = it }, label = { Text(str(language, "गुणवत्ता", "Quality")) }, singleLine = true)
-                    OutlinedTextField(value = rate, onValueChange = { rate = it }, label = { Text(str(language, "तय दर (₹) *", "Rate (₹) *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
+                    OutlinedTextField(value = rate, onValueChange = { rate = it; txError = null }, label = { Text(str(language, "तय दर (₹) *", "Rate (₹) *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
                     OutlinedTextField(value = paid, onValueChange = { paid = it }, label = { Text(str(language, "भुगतान राशि (₹)", "Paid Amount (₹)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
                     OutlinedTextField(value = notes, onValueChange = { notes = it }, label = { Text(str(language, "टिप्पणी", "Notes")) })
                 }
@@ -324,7 +450,10 @@ fun FarmerCooperationScreen(
                     onClick = {
                         val q = qty.toDoubleOrNull() ?: 0.0
                         val r = rate.toDoubleOrNull() ?: 0.0
-                        if (q <= 0 || product.isBlank()) return@Button
+                        if (q <= 0 || product.isBlank()) {
+                            txError = str(language, "कृपया उत्पाद विवरण और सही मात्रा (>0) दर्ज करें।", "Please enter product and valid quantity (>0).")
+                            return@Button
+                        }
                         val total = q * r
                         onAddFarmerTx(
                             FarmerTransaction(
@@ -361,16 +490,23 @@ fun CompostProductionScreen(
     compostState: DataUiState<List<CompostBatch>>,
     onAddBatch: (CompostBatch) -> Unit,
     onRecordSale: (CompostBatch, Double) -> Unit,
-    onAskAiCostAnalysis: () -> Unit
+    onAskAiCostAnalysis: () -> Unit,
+    onUpdateBatch: (CompostBatch) -> Unit = {},
+    onDeleteBatch: (CompostBatch) -> Unit = {}
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
+    var editingBatch by remember { mutableStateOf<CompostBatch?>(null) }
+    var deletingBatch by remember { mutableStateOf<CompostBatch?>(null) }
     var sellBatch by remember { mutableStateOf<CompostBatch?>(null) }
 
     Scaffold(
         floatingActionButton = {
             if (session.canAdd(AppModule.PRODUCTION)) {
                 ExtendedFloatingActionButton(
-                    onClick = { showAddDialog = true },
+                    onClick = {
+                        editingBatch = null
+                        showAddDialog = true
+                    },
                     containerColor = ForestGreen,
                     contentColor = Color.White,
                     modifier = Modifier.testTag("add_compost_fab")
@@ -417,7 +553,7 @@ fun CompostProductionScreen(
                                 title = str(language, "बिक्री व लाभ/हानि", "Sales & P/L"),
                                 value = "₹${totalRevenue.toInt()}",
                                 subtitle = "${if (profit >= 0) "+" else ""}₹${profit.toInt()} ${str(language, "लाभ", "P/L")}",
-                                icon = Icons.Default.TrendingUp,
+                                icon = Icons.AutoMirrored.Filled.TrendingUp,
                                 accentColor = if (profit >= 0) GoshalaGreen else AlertRed,
                                 modifier = Modifier.weight(1f)
                             )
@@ -457,10 +593,49 @@ fun CompostProductionScreen(
                                     }
                                     Text("${str(language, "मात्रा", "Qty")}: ${batch.quantity} ${batch.unit} | ${str(language, "शेष स्टॉक", "Stock")}: ${batch.stockRemaining} ${batch.unit}", style = MaterialTheme.typography.bodySmall)
                                     Text("${str(language, "लागत", "Cost")}: ₹${(batch.productionCostInr + batch.packagingCostInr).toInt()} | ${str(language, "विक्रय दर", "Rate")}: ₹${batch.sellingPricePerUnitInr.toInt()}/${batch.unit}", style = MaterialTheme.typography.labelSmall)
-                                    if (session.canEdit(AppModule.PRODUCTION) && batch.stockRemaining > 0) {
+                                    if (session.canEdit(AppModule.PRODUCTION) || session.canDelete(AppModule.PRODUCTION)) {
                                         Spacer(Modifier.height(8.dp))
-                                        OutlinedButton(onClick = { sellBatch = batch }) {
-                                            Text(str(language, "बिक्री दर्ज करें", "Record Sale"))
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            if (session.canEdit(AppModule.PRODUCTION) && batch.stockRemaining > 0) {
+                                                OutlinedButton(onClick = { sellBatch = batch }) {
+                                                    Text(str(language, "बिक्री दर्ज करें", "Record Sale"))
+                                                }
+                                            } else {
+                                                Spacer(Modifier.width(1.dp))
+                                            }
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                if (session.canEdit(AppModule.PRODUCTION)) {
+                                                    IconButton(
+                                                        onClick = {
+                                                            editingBatch = batch
+                                                            showAddDialog = false
+                                                        },
+                                                        modifier = Modifier.testTag("compost_edit_${batch.id}")
+                                                    ) {
+                                                        Icon(
+                                                            Icons.Default.Edit,
+                                                            contentDescription = str(language, "संपादित करें", "Edit"),
+                                                            tint = ForestGreen
+                                                        )
+                                                    }
+                                                }
+                                                if (session.canDelete(AppModule.PRODUCTION)) {
+                                                    IconButton(
+                                                        onClick = { deletingBatch = batch },
+                                                        modifier = Modifier.testTag("compost_delete_${batch.id}")
+                                                    ) {
+                                                        Icon(
+                                                            Icons.Default.DeleteOutline,
+                                                            contentDescription = str(language, "हटाएं", "Delete"),
+                                                            tint = AlertRed
+                                                        )
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -472,84 +647,167 @@ fun CompostProductionScreen(
         }
     }
 
-    if (showAddDialog) {
-        var productType by remember { mutableStateOf("VERMICOMPOST") }
-        var qty by remember { mutableStateOf("500") }
-        var unit by remember { mutableStateOf("KG") }
-        var rawDung by remember { mutableStateOf("800") }
-        var prodCost by remember { mutableStateOf("1200") }
-        var packCost by remember { mutableStateOf("300") }
-        var sellPrice by remember { mutableStateOf("12") }
-        var status by remember { mutableStateOf("READY_FOR_SALE") }
+    if (showAddDialog || editingBatch != null) {
+        val currentEdit = editingBatch
+        val isEdit = currentEdit != null
+        var productType by remember(currentEdit?.id) { mutableStateOf(currentEdit?.productType ?: "VERMICOMPOST") }
+        var qty by remember(currentEdit?.id) {
+            mutableStateOf(if (currentEdit != null) currentEdit.quantity.toString().removeSuffix(".0") else "500")
+        }
+        var unit by remember(currentEdit?.id) { mutableStateOf(currentEdit?.unit ?: "KG") }
+        var rawDung by remember(currentEdit?.id) {
+            mutableStateOf(if (currentEdit != null) currentEdit.rawDungKg.toString().removeSuffix(".0") else "800")
+        }
+        var prodCost by remember(currentEdit?.id) {
+            mutableStateOf(if (currentEdit != null) currentEdit.productionCostInr.toString().removeSuffix(".0") else "1200")
+        }
+        var packCost by remember(currentEdit?.id) {
+            mutableStateOf(if (currentEdit != null) currentEdit.packagingCostInr.toString().removeSuffix(".0") else "300")
+        }
+        var sellPrice by remember(currentEdit?.id) {
+            mutableStateOf(if (currentEdit != null) currentEdit.sellingPricePerUnitInr.toString().removeSuffix(".0") else "12")
+        }
+        var status by remember(currentEdit?.id) { mutableStateOf(currentEdit?.status ?: "READY_FOR_SALE") }
+        var batchError by remember(currentEdit?.id) { mutableStateOf<String?>(null) }
+
+        val closeDialog = {
+            showAddDialog = false
+            editingBatch = null
+        }
 
         AlertDialog(
-            onDismissRequest = { showAddDialog = false },
-            title = { Text(str(language, "गोबर व खाद उत्पादन बैच", "New Compost / Production Batch"), fontWeight = FontWeight.Bold) },
+            onDismissRequest = closeDialog,
+            title = {
+                Text(
+                    if (isEdit) str(language, "उत्पादन बैच संपादित करें", "Edit Production Batch")
+                    else str(language, "गोबर व खाद उत्पादन बैच", "New Compost / Production Batch"),
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        listOf("DUNG_COLLECTION" to "गोबर", "COMPOST" to "कम्पोस्ट", "VERMICOMPOST" to "वर्मी", "NURSERY_PLANTS" to "नर्सरी").forEach { (k, l) ->
+                    batchError?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold) }
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf("DUNG_COLLECTION" to "गोबर", "COMPOST" to "कम्पोस्ट", "VERMICOMPOST" to "वर्मी", "DRY_MANURE" to "सूखी खाद", "NURSERY_PLANTS" to "नर्सरी", "PACKAGED_PRODUCT" to "पैकेज्ड").forEach { (k, l) ->
                             FilterChip(selected = productType == k, onClick = { productType = k }, label = { Text(l, style = MaterialTheme.typography.labelSmall) })
                         }
                     }
-                    OutlinedTextField(value = qty, onValueChange = { qty = it }, label = { Text(str(language, "उत्पाद मात्रा *", "Output Quantity *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
+                    OutlinedTextField(value = qty, onValueChange = { qty = it; batchError = null }, label = { Text(str(language, "उत्पाद मात्रा *", "Output Quantity *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
                     OutlinedTextField(value = unit, onValueChange = { unit = it }, label = { Text(str(language, "इकाई (KG/BAG/PLANT)", "Unit")) }, singleLine = true)
                     OutlinedTextField(value = rawDung, onValueChange = { rawDung = it }, label = { Text(str(language, "कच्चा गोबर (किग्रा)", "Raw Dung (kg)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
                     OutlinedTextField(value = prodCost, onValueChange = { prodCost = it }, label = { Text(str(language, "उत्पादन लागत (₹)", "Production Cost (₹)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
                     OutlinedTextField(value = packCost, onValueChange = { packCost = it }, label = { Text(str(language, "पैकेजिंग लागत (₹)", "Packaging Cost (₹)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
                     OutlinedTextField(value = sellPrice, onValueChange = { sellPrice = it }, label = { Text(str(language, "विक्रय मूल्य प्रति इकाई (₹)", "Selling Price / Unit (₹)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
+                    if (isEdit) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            listOf("IN_PROGRESS" to "प्रगति पर", "PACKAGED" to "पैकेज्ड", "READY_FOR_SALE" to "बिक्री हेतु", "SOLD_OUT" to "समाप्त").forEach { (k, l) ->
+                                FilterChip(selected = status == k, onClick = { status = k }, label = { Text(l, style = MaterialTheme.typography.labelSmall) })
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
                         val q = qty.toDoubleOrNull() ?: 0.0
-                        onAddBatch(
-                            CompostBatch(
-                                productType = productType,
-                                quantity = q,
-                                unit = unit.trim().ifBlank { "KG" },
-                                rawDungKg = rawDung.toDoubleOrNull() ?: 0.0,
-                                productionCostInr = prodCost.toDoubleOrNull() ?: 0.0,
-                                packagingCostInr = packCost.toDoubleOrNull() ?: 0.0,
-                                sellingPricePerUnitInr = sellPrice.toDoubleOrNull() ?: 0.0,
-                                soldQuantity = 0.0,
-                                stockRemaining = q,
-                                status = status,
-                                dateStr = QrAndExportUtils.todayIso()
+                        if (q <= 0.0) {
+                            batchError = str(language, "कृपया सही उत्पाद मात्रा (>0) दर्ज करें।", "Please enter a valid output quantity (>0).")
+                            return@Button
+                        }
+                        if (currentEdit != null) {
+                            onUpdateBatch(
+                                currentEdit.copy(
+                                    productType = productType,
+                                    quantity = q,
+                                    unit = unit.trim().ifBlank { "KG" },
+                                    rawDungKg = rawDung.toDoubleOrNull() ?: 0.0,
+                                    productionCostInr = prodCost.toDoubleOrNull() ?: 0.0,
+                                    packagingCostInr = packCost.toDoubleOrNull() ?: 0.0,
+                                    sellingPricePerUnitInr = sellPrice.toDoubleOrNull() ?: 0.0,
+                                    stockRemaining = (q - currentEdit.soldQuantity).coerceAtLeast(0.0),
+                                    status = status
+                                )
                             )
-                        )
-                        showAddDialog = false
+                        } else {
+                            onAddBatch(
+                                CompostBatch(
+                                    productType = productType,
+                                    quantity = q,
+                                    unit = unit.trim().ifBlank { "KG" },
+                                    rawDungKg = rawDung.toDoubleOrNull() ?: 0.0,
+                                    productionCostInr = prodCost.toDoubleOrNull() ?: 0.0,
+                                    packagingCostInr = packCost.toDoubleOrNull() ?: 0.0,
+                                    sellingPricePerUnitInr = sellPrice.toDoubleOrNull() ?: 0.0,
+                                    soldQuantity = 0.0,
+                                    stockRemaining = q,
+                                    status = status,
+                                    dateStr = QrAndExportUtils.todayIso()
+                                )
+                            )
+                        }
+                        closeDialog()
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = ForestGreen)
-                ) { Text(str(language, "सहेजें", "Save")) }
+                    colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                    modifier = Modifier.testTag("compost_save_button")
+                ) { Text(if (isEdit) str(language, "अपडेट करें", "Update") else str(language, "सहेजें", "Save")) }
             },
-            dismissButton = { TextButton(onClick = { showAddDialog = false }) { Text(str(language, "रद्द करें", "Cancel")) } }
+            dismissButton = { TextButton(onClick = closeDialog) { Text(str(language, "रद्द करें", "Cancel")) } }
+        )
+    }
+
+    deletingBatch?.let { target ->
+        ConfirmActionDialog(
+            title = str(language, "उत्पादन बैच हटाएं", "Delete Production Batch"),
+            message = str(
+                language,
+                "क्या आप वाकई बैच ${target.batchCode} (${target.productType}) को हटाना चाहते हैं?",
+                "Are you sure you want to delete batch ${target.batchCode} (${target.productType})?"
+            ),
+            confirmLabel = str(language, "हटाएं", "Delete"),
+            cancelLabel = str(language, "रद्द करें", "Cancel"),
+            onConfirm = {
+                onDeleteBatch(target)
+                deletingBatch = null
+            },
+            onDismiss = { deletingBatch = null }
         )
     }
 
     sellBatch?.let { batch ->
         var sellQty by remember { mutableStateOf("") }
+        var saleError by remember { mutableStateOf<String?>(null) }
         AlertDialog(
             onDismissRequest = { sellBatch = null },
             title = { Text(str(language, "बिक्री दर्ज करें (${batch.batchCode})", "Record Sale (${batch.batchCode})")) },
             text = {
-                OutlinedTextField(
-                    value = sellQty,
-                    onValueChange = { sellQty = it },
-                    label = { Text("${str(language, "बिक्री मात्रा", "Sell Quantity")} (Max ${batch.stockRemaining} ${batch.unit})") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    singleLine = true
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(
+                        value = sellQty,
+                        onValueChange = { sellQty = it; saleError = null },
+                        label = { Text("${str(language, "बिक्री मात्रा", "Sell Quantity")} (Max ${batch.stockRemaining} ${batch.unit})") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true
+                    )
+                    saleError?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall) }
+                }
             },
             confirmButton = {
                 Button(
                     onClick = {
                         val sq = sellQty.toDoubleOrNull() ?: 0.0
-                        if (sq > 0 && sq <= batch.stockRemaining) {
-                            onRecordSale(batch, sq)
-                            sellBatch = null
+                        if (sq <= 0.0 || sq > batch.stockRemaining) {
+                            saleError = str(language, "मात्रा 0 से अधिक और शेष स्टॉक (${batch.stockRemaining}) के अंदर होनी चाहिए।", "Enter quantity between 0 and ${batch.stockRemaining}.")
+                            return@Button
                         }
+                        onRecordSale(batch, sq)
+                        sellBatch = null
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = ForestGreen)
                 ) { Text(str(language, "सहेजें", "Save")) }
