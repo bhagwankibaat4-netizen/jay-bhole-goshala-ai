@@ -309,8 +309,36 @@ service cloud.firestore {
              data.durationMonths is int && data.durationMonths >= 1 && data.durationMonths <= 120 &&
              (data.totalSupportInr is int || data.totalSupportInr is float) && data.totalSupportInr > 0 &&
              data.status in ['PENDING', 'APPROVED', 'REJECTED'] &&
+             isOptString(data, 'message', 300) &&
+             (!('paymentMode' in data) || data.paymentMode in ['CASH', 'UPI', 'ONLINE']) &&
+             (!('paymentStatus' in data) || data.paymentStatus in ['PENDING', 'PAID', 'VERIFIED']) &&
+             isOptString(data, 'paymentRef', 120) &&
              isOptString(data, 'certificateNumber', 60) &&
              data.disclaimerAccepted is bool &&
+             data.dateStr is string && data.dateStr.size() >= 4 && data.dateStr.size() <= 30 &&
+             isOptString(data, 'reviewedBy', 128) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidProductOrder(data) {
+      return data.orderNumber is string && data.orderNumber.size() >= 3 && data.orderNumber.size() <= 40 &&
+             data.buyerUid is string && data.buyerUid.size() >= 1 && data.buyerUid.size() <= 128 &&
+             data.buyerName is string && data.buyerName.size() >= 1 && data.buyerName.size() <= 100 &&
+             data.buyerPhone is string && data.buyerPhone.size() >= 6 && data.buyerPhone.size() <= 20 &&
+             data.buyerAddress is string && data.buyerAddress.size() >= 2 && data.buyerAddress.size() <= 300 &&
+             data.productId is string && data.productId.size() >= 1 && data.productId.size() <= 60 &&
+             data.productName is string && data.productName.size() >= 1 && data.productName.size() <= 120 &&
+             data.unitLabel is string && data.unitLabel.size() >= 1 && data.unitLabel.size() <= 60 &&
+             (data.unitPriceInr is int || data.unitPriceInr is float) && data.unitPriceInr > 0 && data.unitPriceInr <= 1000000 &&
+             data.quantity is int && data.quantity >= 1 && data.quantity <= 500 &&
+             (data.totalAmountInr is int || data.totalAmountInr is float) && data.totalAmountInr > 0 && data.totalAmountInr <= 500000000 &&
+             data.orderStatus in ['NEW', 'APPROVED', 'READY', 'DELIVERY', 'COMPLETED', 'CANCELLED'] &&
+             data.paymentMode in ['CASH', 'UPI', 'ONLINE'] &&
+             data.paymentStatus in ['PENDING', 'PAID', 'VERIFIED'] &&
+             isOptString(data, 'paymentRef', 120) &&
+             isOptString(data, 'notes', 400) &&
+             isOptString(data, 'adminNote', 300) &&
              data.dateStr is string && data.dateStr.size() >= 4 && data.dateStr.size() <= 30 &&
              isOptString(data, 'reviewedBy', 128) &&
              isValidTimestamp(data.createdAt) &&
@@ -375,19 +403,48 @@ service cloud.firestore {
       allow delete: if isAdmin() && isValidId(uid);
     }
 
+    function hasMatchingStaffInvite() {
+      return isSignedIn() &&
+             request.auth.token.email is string &&
+             (
+               exists(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower())) ||
+               exists(/databases/$(database)/documents/staffInvites/$(request.auth.token.email))
+             );
+    }
+
+    function matchingStaffInviteData() {
+      return exists(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower()))
+        ? get(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower())).data
+        : get(/databases/$(database)/documents/staffInvites/$(request.auth.token.email)).data;
+    }
+
     match /staffInvites/{emailKey} {
       allow get: if isSignedIn() && isValidEmailKey(emailKey) && (
         isAdmin() ||
         (request.auth.token.email is string && request.auth.token.email.lower() == emailKey.lower())
       );
-      allow list: if isAdmin();
+      allow list: if isAdmin() || (
+        isSignedIn() &&
+        request.auth.token.email is string &&
+        (
+          resource.data.email == request.auth.token.email.lower() ||
+          resource.data.email == request.auth.token.email
+        )
+      );
       allow create, update: if isAdmin() && isValidEmailKey(emailKey) && isValidStaffInvite(incoming());
       allow delete: if isAdmin() && isValidEmailKey(emailKey);
     }
 
     match /staffAccounts/{uid} {
       allow get: if isSignedIn() && isValidId(uid) && (request.auth.uid == uid || isAdmin());
-      allow list: if isAdmin();
+      allow list: if isAdmin() || (
+        isSignedIn() &&
+        request.auth.token.email is string &&
+        (
+          resource.data.email == request.auth.token.email.lower() ||
+          resource.data.email == request.auth.token.email
+        )
+      );
       allow create: if isSignedIn() &&
                        isValidId(uid) &&
                        isValidStaffAccount(incoming()) &&
@@ -396,18 +453,21 @@ service cloud.firestore {
                          isAdmin() ||
                          (
                            request.auth.uid == uid &&
-                           request.auth.token.email is string &&
+                           hasMatchingStaffInvite() &&
                            incoming().email.lower() == request.auth.token.email.lower() &&
                            incoming().active == true &&
-                           exists(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower())) &&
                            (
-                             !('active' in get(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower())).data) ||
-                             get(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower())).data.active == true
+                             !('active' in matchingStaffInviteData()) ||
+                             matchingStaffInviteData().active == true
                            ) &&
-                           incoming().permissions == get(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower())).data.permissions &&
                            (
-                             !('employeeId' in get(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower())).data) ||
-                             incoming().employeeId == get(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower())).data.employeeId
+                             !('permissions' in matchingStaffInviteData()) ||
+                             incoming().permissions == matchingStaffInviteData().permissions
+                           ) &&
+                           (
+                             !('employeeId' in matchingStaffInviteData()) ||
+                             matchingStaffInviteData().employeeId == null ||
+                             incoming().employeeId == matchingStaffInviteData().employeeId
                            )
                          )
                        );
@@ -632,7 +692,8 @@ service cloud.firestore {
                          (
                            !hasStaffDoc() &&
                            incoming().applicantUid == request.auth.uid &&
-                           incoming().status == 'PENDING'
+                           incoming().status == 'PENDING' &&
+                           (!('paymentStatus' in incoming()) || incoming().paymentStatus in ['PENDING', 'PAID'])
                          )
                        );
       allow update: if isSignedIn() &&
@@ -642,6 +703,35 @@ service cloud.firestore {
                        incoming().createdAt == existing().createdAt &&
                        (isAdmin() || hasStaffPermission('donations', 'EDIT'));
       allow delete: if isSignedIn() && isValidId(sponsorshipId) && (isAdmin() || hasStaffPermission('donations', 'DELETE'));
+    }
+
+    match /productOrders/{orderId} {
+      allow get: if isSignedIn() && isValidId(orderId) && (
+        isAdmin() ||
+        (!hasStaffDoc() && existing().buyerUid == request.auth.uid)
+      );
+      allow list: if isSignedIn() && (
+        isAdmin() ||
+        (!hasStaffDoc() && resource.data.buyerUid == request.auth.uid)
+      );
+      allow create: if isSignedIn() &&
+                       isValidId(orderId) &&
+                       isValidProductOrder(incoming()) &&
+                       (
+                         isAdmin() ||
+                         (
+                           !hasStaffDoc() &&
+                           incoming().buyerUid == request.auth.uid &&
+                           incoming().orderStatus == 'NEW' &&
+                           incoming().paymentStatus in ['PENDING', 'PAID']
+                         )
+                       );
+      allow update: if isAdmin() &&
+                       isValidId(orderId) &&
+                       isValidProductOrder(incoming()) &&
+                       incoming().buyerUid == existing().buyerUid &&
+                       incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin() && isValidId(orderId);
     }
 
     match /notifications/{notifId} {

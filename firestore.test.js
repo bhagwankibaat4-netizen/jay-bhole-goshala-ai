@@ -1013,4 +1013,298 @@ test("Donations & Go-Seva Sponsorship granular Staff CRUD enforcement (VIEW vs A
   await assertFails(fullDb.collection("auditLogs").get());
 });
 
+test("Staff UID/Email authorization: own-email query allowed, cross-user denied, mixed-case invite claimed, and Admin pre-syncs existing user UID", async () => {
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID, {
+    email: ADMIN_EMAIL,
+    email_verified: true,
+  }).firestore();
+
+  const existingUserUid = "existing_user_uid_501";
+  const existingEmail = "preuser@gosala.org";
+  const mixedEmail = "MixedStaff@Gosala.org";
+  const mixedStaffUid = "mixed_staff_uid_502";
+
+  // Seed existing /users/{uid} (user signed up before Admin added them as staff)
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("users").doc(existingUserUid).set({
+      userId: existingUserUid,
+      displayName: "पूर्व पंजीकृत कर्मचारी",
+      email: existingEmail,
+      role: "PUBLIC",
+      preferredLanguage: "hi",
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+  });
+
+  // Admin creates invite AND immediately syncs /staffAccounts/{existingUserUid} + /users/{uid}.role
+  await assertSucceeds(
+    adminDb.collection("staffInvites").doc(existingEmail).set({
+      employeeId: "EMP-501",
+      email: existingEmail,
+      name: "पूर्व पंजीकृत कर्मचारी",
+      phone: "9876500501",
+      designation: "गौ सेवक",
+      monthlySalary: 12000,
+      active: true,
+      permissions: { cattle: ["VIEW", "ADD"], feed: ["VIEW", "ADD"] },
+      createdBy: ADMIN_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+  await assertSucceeds(adminDb.collection("users").where("email", "==", existingEmail).get());
+  await assertSucceeds(
+    adminDb.collection("staffAccounts").doc(existingUserUid).set({
+      uid: existingUserUid,
+      employeeId: "EMP-501",
+      email: existingEmail,
+      name: "पूर्व पंजीकृत कर्मचारी",
+      phone: "9876500501",
+      designation: "गौ सेवक",
+      monthlySalary: 12000,
+      active: true,
+      permissions: { cattle: ["VIEW", "ADD"], feed: ["VIEW", "ADD"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("users").doc(existingUserUid).update({
+      role: "STAFF",
+      updatedAt: pastDate(500),
+    })
+  );
+
+  // Already-registered employee logs in -> immediately reads own /staffAccounts/{uid} and own email query, denied other users
+  const preUserDb = testEnv.authenticatedContext(existingUserUid, {
+    email: existingEmail,
+    email_verified: false,
+  }).firestore();
+  await assertSucceeds(preUserDb.collection("staffAccounts").doc(existingUserUid).get());
+  await assertSucceeds(preUserDb.collection("staffAccounts").where("email", "==", existingEmail).get());
+  await assertSucceeds(preUserDb.collection("staffInvites").where("email", "==", existingEmail).get());
+  await assertSucceeds(preUserDb.collection("cattle").get());
+  await assertFails(preUserDb.collection("staffAccounts").where("email", "==", "someoneelse@gosala.org").get());
+  await assertFails(preUserDb.collection("staffInvites").where("email", "==", "someoneelse@gosala.org").get());
+  await assertFails(preUserDb.collection("admins").doc(ADMIN_UID).get());
+  await assertFails(preUserDb.collection("financialTransactions").get());
+
+  // Mixed-case invite key can be read and claimed cleanly by matching email account
+  await assertSucceeds(
+    adminDb.collection("staffInvites").doc(mixedEmail).set({
+      employeeId: "EMP-502",
+      email: mixedEmail,
+      name: "केस सेवक",
+      phone: "9876500502",
+      designation: "सहायक",
+      monthlySalary: 11000,
+      active: true,
+      permissions: { feed: ["VIEW"] },
+      createdBy: ADMIN_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+  const mixedDb = testEnv.authenticatedContext(mixedStaffUid, {
+    email: mixedEmail,
+    email_verified: false,
+  }).firestore();
+  await assertSucceeds(mixedDb.collection("staffInvites").doc(mixedEmail).get());
+  await assertSucceeds(
+    mixedDb.collection("staffAccounts").doc(mixedStaffUid).set({
+      uid: mixedStaffUid,
+      employeeId: "EMP-502",
+      email: mixedEmail.toLowerCase(),
+      name: "केस सेवक",
+      phone: "9876500502",
+      designation: "सहायक",
+      monthlySalary: 11000,
+      active: true,
+      permissions: { feed: ["VIEW"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+  await assertSucceeds(mixedDb.collection("feedAndOperations").get());
+  await assertFails(mixedDb.collection("admins").get());
+});
+
+test("Phase 2 Product Orders & Cow Adoption Payment Verification: strict UID isolation, anti-self-verify, Staff denied, Admin full control", async () => {
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID, {
+    email: ADMIN_EMAIL,
+    email_verified: true,
+  }).firestore();
+  const publicDb = testEnv.authenticatedContext(PUBLIC_UID, {
+    email: PUBLIC_EMAIL,
+    email_verified: true,
+  }).firestore();
+  const otherPublicDb = testEnv.authenticatedContext(OTHER_PUBLIC_UID, {
+    email: "other@example.com",
+    email_verified: true,
+  }).firestore();
+
+  // Seed an active Staff account (must NOT gain Admin rights over productOrders)
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.firestore().collection("staffAccounts").doc(STAFF_UID).set({
+      uid: STAFF_UID,
+      employeeId: "EMP-900",
+      email: STAFF_EMAIL,
+      name: "सामान्य कर्मचारी",
+      designation: "गौ सेवक",
+      monthlySalary: 10000,
+      active: true,
+      permissions: { cattle: ["VIEW"], feed: ["VIEW", "ADD"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+  });
+  const staffDb = testEnv.authenticatedContext(STAFF_UID, {
+    email: STAFF_EMAIL,
+    email_verified: true,
+  }).firestore();
+
+  const validOrder = {
+    orderNumber: "JBGS-ORD-1001",
+    buyerUid: PUBLIC_UID,
+    buyerName: "रमेश भक्त",
+    buyerPhone: "9876543210",
+    buyerAddress: "ग्राम गोपी, पोरसा, मुरैना",
+    productId: "compost",
+    productName: "जैविक गोबर खाद",
+    unitLabel: "50 किग्रा बैग",
+    unitPriceInr: 350,
+    quantity: 3,
+    totalAmountInr: 1050,
+    orderStatus: "NEW",
+    paymentMode: "UPI",
+    paymentStatus: "PAID",
+    paymentRef: "UPI123456",
+    notes: "सुबह डिलीवरी",
+    adminNote: "",
+    dateStr: "2026-11-20",
+    reviewedBy: "",
+    createdAt: pastDate(),
+    updatedAt: pastDate(),
+  };
+
+  // 1. Public user CANNOT self-mark orderStatus=APPROVED or paymentStatus=VERIFIED or forge buyerUid
+  await assertFails(
+    publicDb.collection("productOrders").doc("ord_bad_status").set({
+      ...validOrder,
+      orderStatus: "APPROVED",
+    })
+  );
+  await assertFails(
+    publicDb.collection("productOrders").doc("ord_bad_pay").set({
+      ...validOrder,
+      paymentStatus: "VERIFIED",
+    })
+  );
+  await assertFails(
+    publicDb.collection("productOrders").doc("ord_bad_uid").set({
+      ...validOrder,
+      buyerUid: OTHER_PUBLIC_UID,
+    })
+  );
+
+  // 2. Public user creates own valid product order
+  await assertSucceeds(
+    publicDb.collection("productOrders").doc("ord_pub_1").set(validOrder)
+  );
+
+  // 3. Public user reads own orders via buyerUid filter; denied unfiltered list and denied updating/deleting
+  await assertSucceeds(
+    publicDb.collection("productOrders").where("buyerUid", "==", PUBLIC_UID).get()
+  );
+  await assertFails(publicDb.collection("productOrders").get());
+  await assertFails(
+    publicDb.collection("productOrders").doc("ord_pub_1").update({
+      orderStatus: "COMPLETED",
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertFails(publicDb.collection("productOrders").doc("ord_pub_1").delete());
+
+  // 4. Another public user & non-admin Staff CANNOT read or modify Public User's product order
+  await assertFails(otherPublicDb.collection("productOrders").doc("ord_pub_1").get());
+  await assertFails(
+    otherPublicDb.collection("productOrders").where("buyerUid", "==", PUBLIC_UID).get()
+  );
+  await assertFails(staffDb.collection("productOrders").get());
+  await assertFails(staffDb.collection("productOrders").doc("ord_pub_1").get());
+  await assertFails(
+    staffDb.collection("productOrders").doc("ord_pub_1").update({
+      orderStatus: "APPROVED",
+      updatedAt: pastDate(500),
+    })
+  );
+
+  // 5. Admin reads all product orders, updates lifecycle statuses, verifies payment
+  await assertSucceeds(adminDb.collection("productOrders").get());
+  for (const nextStatus of ["APPROVED", "READY", "DELIVERY", "COMPLETED", "CANCELLED"]) {
+    await assertSucceeds(
+      adminDb.collection("productOrders").doc("ord_pub_1").update({
+        orderStatus: nextStatus,
+        paymentStatus: "VERIFIED",
+        adminNote: "भुगतान सत्यापित",
+        reviewedBy: ADMIN_UID,
+        updatedAt: pastDate(400),
+      })
+    );
+  }
+
+  // 6. Enhanced Cow Adoption (sponsorships) with message + paymentStatus anti-self-verify
+  const adoptionPayload = {
+    applicantUid: PUBLIC_UID,
+    applicantName: "रमेश भक्त",
+    applicantPhone: "9876543210",
+    applicantAddress: "पोरसा, मुरैना",
+    cattleId: "cow_1",
+    cattleName: "नंदिनी",
+    animalCode: "JBGS-G-001",
+    monthlySupportInr: 2100,
+    durationMonths: 3,
+    totalSupportInr: 6300,
+    status: "PENDING",
+    message: "गौमाता के उत्तम स्वास्थ्य की कामना",
+    paymentMode: "UPI",
+    paymentStatus: "PAID",
+    paymentRef: "UPI998877",
+    certificateNumber: "",
+    disclaimerAccepted: true,
+    dateStr: "2026-11-20",
+    reviewedBy: "",
+    createdAt: pastDate(),
+    updatedAt: pastDate(),
+  };
+
+  // Public cannot self-verify sponsorship payment
+  await assertFails(
+    publicDb.collection("sponsorships").doc("sp_bad_pay").set({
+      ...adoptionPayload,
+      paymentStatus: "VERIFIED",
+    })
+  );
+  // Public valid adoption with message + PAID succeeds
+  await assertSucceeds(
+    publicDb.collection("sponsorships").doc("sp_phase2_1").set(adoptionPayload)
+  );
+  // Other public user cannot read this adoption
+  await assertFails(otherPublicDb.collection("sponsorships").doc("sp_phase2_1").get());
+  // Admin approves & verifies payment
+  await assertSucceeds(
+    adminDb.collection("sponsorships").doc("sp_phase2_1").update({
+      status: "APPROVED",
+      paymentStatus: "VERIFIED",
+      certificateNumber: "JBGS-GAU-54321",
+      reviewedBy: ADMIN_UID,
+      updatedAt: pastDate(400),
+    })
+  );
+});
+
+
+
 

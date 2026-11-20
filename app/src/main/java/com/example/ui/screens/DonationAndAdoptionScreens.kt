@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,17 +16,23 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import com.example.R
 import com.example.core.AppLanguage
 import com.example.core.GosalaBrand
 import com.example.core.str
 import com.example.data.model.*
 import com.example.ui.components.ConfirmActionDialog
 import com.example.ui.components.EmptyStateCard
+import com.example.ui.components.GosalaAsyncResourceImage
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.DataUiState
 
@@ -44,9 +52,13 @@ fun DonationAndAdoptionScreen(
     onUpdateDonation: (Donation) -> Unit = {},
     onDeleteDonation: (String) -> Unit = {},
     onUpdateSponsorship: (Sponsorship) -> Unit = {},
-    onDeleteSponsorship: (String) -> Unit = {}
+    onDeleteSponsorship: (String) -> Unit = {},
+    initialTabIndex: Int = 0,
+    onVerifySponsorshipPayment: (Sponsorship, String) -> Unit = { _, _ -> }
 ) {
-    var tabIndex by remember { mutableIntStateOf(if (preselectedCattleForSponsor != null) 1 else 0) }
+    var tabIndex by remember {
+        mutableIntStateOf(if (preselectedCattleForSponsor != null || initialTabIndex == 1) 1 else 0)
+    }
     var receiptDonation by remember { mutableStateOf<Donation?>(null) }
     var certSponsorship by remember { mutableStateOf<Sponsorship?>(null) }
     var editingDonation by remember { mutableStateOf<Donation?>(null) }
@@ -54,8 +66,8 @@ fun DonationAndAdoptionScreen(
     var editingSponsorship by remember { mutableStateOf<Sponsorship?>(null) }
     var deletingSponsorship by remember { mutableStateOf<Sponsorship?>(null) }
 
-    LaunchedEffect(preselectedCattleForSponsor) {
-        if (preselectedCattleForSponsor != null) tabIndex = 1
+    LaunchedEffect(preselectedCattleForSponsor, initialTabIndex) {
+        if (preselectedCattleForSponsor != null || initialTabIndex == 1) tabIndex = 1
     }
 
     Column(
@@ -100,6 +112,7 @@ fun DonationAndAdoptionScreen(
                 onClearPreselected = onClearPreselectedCattle,
                 onSubmitSponsorship = onSubmitSponsorship,
                 onReviewSponsorship = onReviewSponsorship,
+                onVerifySponsorshipPayment = onVerifySponsorshipPayment,
                 onOpenCertificate = { certSponsorship = it },
                 onEditSponsorship = { editingSponsorship = it },
                 onDeleteSponsorship = { deletingSponsorship = it }
@@ -538,10 +551,12 @@ private fun SponsorshipTabContent(
     onClearPreselected: () -> Unit,
     onSubmitSponsorship: (Sponsorship) -> Unit,
     onReviewSponsorship: (Sponsorship, Boolean) -> Unit,
+    onVerifySponsorshipPayment: (Sponsorship, String) -> Unit,
     onOpenCertificate: (Sponsorship) -> Unit,
     onEditSponsorship: (Sponsorship) -> Unit,
     onDeleteSponsorship: (Sponsorship) -> Unit
 ) {
+    val isHindi = language == AppLanguage.HINDI
     val sponsorable = cattleList.filter { it.publicApproved && it.sponsorshipAvailable }
     var selectedCow by remember(preselectedCattle, sponsorable) {
         mutableStateOf(preselectedCattle ?: sponsorable.firstOrNull())
@@ -551,8 +566,15 @@ private fun SponsorshipTabContent(
     var address by remember { mutableStateOf("") }
     var durationMonths by remember { mutableStateOf("3") }
     var monthlySupport by remember(selectedCow) { mutableStateOf((selectedCow?.monthlySupportInr ?: 2100L).toString()) }
+    var message by remember { mutableStateOf("") }
+    var paymentMode by remember { mutableStateOf("CASH") }
+    var paymentRef by remember { mutableStateOf("") }
     var disclaimerChecked by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
+
+    val parsedMonths = (durationMonths.toLongOrNull() ?: 3L).coerceIn(1L, 120L)
+    val parsedMonthly = (monthlySupport.toDoubleOrNull() ?: (selectedCow?.monthlySupportInr?.toDouble() ?: 2100.0)).coerceAtLeast(100.0)
+    val totalAdoptionAmount = (parsedMonthly * parsedMonths).toInt()
 
     val canAdd = session.role == UserRole.PUBLIC || session.canAdd(AppModule.DONATIONS)
     val canEdit = session.canEdit(AppModule.DONATIONS)
@@ -570,8 +592,13 @@ private fun SponsorshipTabContent(
                     shape = RoundedCornerShape(18.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
-                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(str(language, "गौ-गोद (सेवा प्रायोजन) आवेदन", "Cow Sponsorship Application"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ForestGreen)
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = str(language, "गौ-गोद योजना (सेवा प्रायोजन) आवेदन", "Cow Adoption (Seva Sponsorship) Application"),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = ForestGreen
+                        )
                         if (sponsorable.isEmpty()) {
                             Text(
                                 text = str(language, "अभी कोई स्वीकृत गाय प्रायोजन हेतु सूचीबद्ध नहीं है।", "No public cows are currently listed for sponsorship."),
@@ -579,32 +606,220 @@ private fun SponsorshipTabContent(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         } else {
-                            Text(str(language, "गौवंश चुनें:", "Select Cow:"), style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                text = str(language, "उपलब्ध गाय चुनें (फोटो, ID व विवरण):", "Select an Available Cow (Photo, ID & Details):"),
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold
+                            )
                             Row(
-                                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                sponsorable.take(4).forEach { cow ->
-                                    FilterChip(
-                                        selected = selectedCow?.id == cow.id,
+                                sponsorable.forEach { cow ->
+                                    val isSelected = selectedCow?.id == cow.id
+                                    val healthColor = if (cow.healthStatus == "HEALTHY") GoshalaGreen else Saffron
+                                    val healthLabel = if (cow.healthStatus == "HEALTHY") {
+                                        str(language, "स्वस्थ", "Healthy")
+                                    } else {
+                                        str(language, "निगरानी में", "Under Care")
+                                    }
+                                    Card(
                                         onClick = {
                                             selectedCow = cow
                                             monthlySupport = cow.monthlySupportInr.toString()
                                             onClearPreselected()
                                         },
-                                        label = { Text(cow.name) }
-                                    )
+                                        shape = RoundedCornerShape(16.dp),
+                                        border = BorderStroke(
+                                            width = if (isSelected) 2.dp else 1.dp,
+                                            color = if (isSelected) ForestGreen else MaterialTheme.colorScheme.outlineVariant
+                                        ),
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = if (isSelected) SoftGreenTint else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                                        ),
+                                        modifier = Modifier
+                                            .width(210.dp)
+                                            .testTag("sponsor_cow_card_${cow.animalCode}")
+                                    ) {
+                                        Column {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(104.dp)
+                                            ) {
+                                                if (!cow.photoUri.isNullOrBlank()) {
+                                                    AsyncImage(
+                                                        model = cow.photoUri,
+                                                        contentDescription = cow.name,
+                                                        contentScale = ContentScale.Crop,
+                                                        modifier = Modifier.fillMaxSize()
+                                                    )
+                                                } else {
+                                                    GosalaAsyncResourceImage(
+                                                        resId = R.drawable.img_hero_goshala,
+                                                        contentDescription = cow.name,
+                                                        contentScale = ContentScale.Crop,
+                                                        placeholderColor = SoftGreenTint,
+                                                        modifier = Modifier.fillMaxSize()
+                                                    )
+                                                }
+                                                Surface(
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    color = healthColor,
+                                                    modifier = Modifier
+                                                        .align(Alignment.TopStart)
+                                                        .padding(6.dp)
+                                                ) {
+                                                    Text(
+                                                        text = healthLabel,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = Color.White,
+                                                        fontWeight = FontWeight.Bold,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                                if (isSelected) {
+                                                    Surface(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        color = ForestGreen,
+                                                        modifier = Modifier
+                                                            .align(Alignment.TopEnd)
+                                                            .padding(6.dp)
+                                                    ) {
+                                                        Icon(
+                                                            Icons.Default.Check,
+                                                            contentDescription = str(language, "चयनित", "Selected"),
+                                                            tint = Color.White,
+                                                            modifier = Modifier
+                                                                .padding(4.dp)
+                                                                .size(14.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            Column(
+                                                modifier = Modifier.padding(10.dp),
+                                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                                            ) {
+                                                Text(
+                                                    text = cow.name,
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = ForestGreen,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = "ID: ${cow.animalCode}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = DarkText
+                                                )
+                                                Text(
+                                                    text = listOf(cow.breed, cow.ageText).filter { it.isNotBlank() }.joinToString(" • ").ifBlank { str(language, "देशी गौवंश", "Indigenous Cow") },
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                if (!cow.notes.isNullOrBlank()) {
+                                                    Text(
+                                                        text = cow.notes,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                                Text(
+                                                    text = "₹${cow.monthlySupportInr} / ${str(language, "माह", "month")}",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    color = Saffron
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                            OutlinedTextField(value = applicantName, onValueChange = { applicantName = it }, label = { Text(str(language, "आवेदक का नाम *", "Applicant Name *")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                            OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text(str(language, "मोबाइल नंबर *", "Phone *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), singleLine = true, modifier = Modifier.fillMaxWidth())
-                            OutlinedTextField(value = address, onValueChange = { address = it }, label = { Text(str(language, "पता *", "Address *")) }, modifier = Modifier.fillMaxWidth())
+
+                            selectedCow?.let { cow ->
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = SoftGoldTint,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("sponsor_total_amount_box")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "${str(language, "चयनित गाय", "Selected Cow")}: ${cow.name} (${cow.animalCode})",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                fontWeight = FontWeight.Bold,
+                                                color = DarkText
+                                            )
+                                            Text(
+                                                text = "₹${parsedMonthly.toInt()}/${str(language, "माह", "mo")} × $parsedMonths ${str(language, "माह", "mo")}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = DarkText.copy(alpha = 0.8f)
+                                            )
+                                        }
+                                        Text(
+                                            text = "₹$totalAdoptionAmount",
+                                            style = MaterialTheme.typography.titleLarge,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = ForestGreen
+                                        )
+                                    }
+                                }
+                            }
+
+                            OutlinedTextField(
+                                value = applicantName,
+                                onValueChange = { applicantName = it; errorMsg = null },
+                                label = { Text(str(language, "आवेदक का नाम *", "Applicant Name *")) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("sponsor_name_input")
+                            )
+                            OutlinedTextField(
+                                value = phone,
+                                onValueChange = { phone = it; errorMsg = null },
+                                label = { Text(str(language, "मोबाइल नंबर *", "Phone *")) },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("sponsor_phone_input")
+                            )
+                            OutlinedTextField(
+                                value = address,
+                                onValueChange = { address = it; errorMsg = null },
+                                label = { Text(str(language, "पता *", "Address *")) },
+                                modifier = Modifier.fillMaxWidth().testTag("sponsor_address_input")
+                            )
+                            Text(
+                                text = str(language, "गोद लेने की अवधि चुनें:", "Select Adoption Duration:"),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
                             Row(
-                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 listOf("1", "3", "6", "12").forEach { m ->
-                                    FilterChip(selected = durationMonths == m, onClick = { durationMonths = m }, label = { Text("$m ${str(language, "माह", "Mo")}") })
+                                    FilterChip(
+                                        selected = durationMonths == m,
+                                        onClick = { durationMonths = m },
+                                        label = { Text("$m ${str(language, "माह", "Mo")}", maxLines = 1) },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("sponsor_duration_$m")
+                                    )
                                 }
                             }
                             OutlinedTextField(
@@ -613,10 +828,60 @@ private fun SponsorshipTabContent(
                                 label = { Text(str(language, "मासिक सेवा राशि (₹)", "Monthly Support (₹)")) },
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier.fillMaxWidth().testTag("sponsor_monthly_input")
                             )
+                            OutlinedTextField(
+                                value = message,
+                                onValueChange = { message = it },
+                                label = { Text(str(language, "संदेश / संकल्प (वैकल्पिक)", "Message / Dedication (Optional)")) },
+                                modifier = Modifier.fillMaxWidth().testTag("sponsor_message_input")
+                            )
+
+                            Text(
+                                text = str(language, "भुगतान माध्यम चुनें:", "Select Payment Mode:"),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                ProductOrder.ALL_PAYMENT_MODES.forEach { mode ->
+                                    FilterChip(
+                                        selected = paymentMode == mode,
+                                        onClick = { paymentMode = mode },
+                                        label = { Text(paymentModeLabel(mode, isHindi), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("sponsor_pay_mode_${mode.lowercase()}")
+                                    )
+                                }
+                            }
+                            if (paymentMode != "CASH") {
+                                OutlinedTextField(
+                                    value = paymentRef,
+                                    onValueChange = { paymentRef = it },
+                                    label = { Text(str(language, "UPI / ऑनलाइन ट्रांज़ैक्शन संदर्भ (यदि भुगतान किया हो)", "UPI / Online Ref (if paid)")) },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth().testTag("sponsor_payment_ref_input")
+                                )
+                            }
+                            Text(
+                                text = str(
+                                    language,
+                                    "भुगतान सत्यापन: नकद या ऑनलाइन भुगतान संदर्भ की पुष्टि प्रशासक द्वारा की जाएगी (Pending → Paid → Verified)।",
+                                    "Payment Verification: Cash/Online payments are verified by Admin (Pending → Paid → Verified)."
+                                ),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(checked = disclaimerChecked, onCheckedChange = { disclaimerChecked = it })
+                                Checkbox(
+                                    checked = disclaimerChecked,
+                                    onCheckedChange = { disclaimerChecked = it },
+                                    modifier = Modifier.testTag("sponsor_disclaimer_checkbox")
+                                )
                                 Text(
                                     text = str(
                                         language,
@@ -630,11 +895,14 @@ private fun SponsorshipTabContent(
                             Button(
                                 onClick = {
                                     val cow = selectedCow
-                                    if (cow == null || applicantName.isBlank() || phone.length < 6 || address.isBlank() || !disclaimerChecked) {
+                                    if (cow == null || applicantName.isBlank() || phone.filter { it.isDigit() }.length < 6 || address.isBlank() || !disclaimerChecked) {
                                         errorMsg = str(language, "कृपया सभी विवरण भरें और कानूनी अस्वीकरण स्वीकार करें।", "Fill all fields and accept the ownership disclaimer.")
                                         return@Button
                                     }
                                     errorMsg = null
+                                    val initialPayStatus = if (paymentMode != "CASH" && paymentRef.trim().isNotBlank()) "PAID" else "PENDING"
+                                    val monthlyVal = monthlySupport.toDoubleOrNull()?.coerceAtLeast(100.0) ?: 2100.0
+                                    val monthsVal = durationMonths.toLongOrNull()?.coerceIn(1L, 120L) ?: 3L
                                     onSubmitSponsorship(
                                         Sponsorship(
                                             applicantName = applicantName.trim(),
@@ -643,8 +911,13 @@ private fun SponsorshipTabContent(
                                             cattleId = cow.id,
                                             cattleName = cow.name,
                                             animalCode = cow.animalCode,
-                                            monthlySupportInr = monthlySupport.toDoubleOrNull() ?: 2100.0,
-                                            durationMonths = durationMonths.toLongOrNull() ?: 3L,
+                                            monthlySupportInr = monthlyVal,
+                                            durationMonths = monthsVal,
+                                            totalSupportInr = monthlyVal * monthsVal,
+                                            message = message.trim(),
+                                            paymentMode = paymentMode,
+                                            paymentStatus = initialPayStatus,
+                                            paymentRef = paymentRef.trim(),
                                             disclaimerAccepted = true
                                         )
                                     )
@@ -652,7 +925,7 @@ private fun SponsorshipTabContent(
                                 modifier = Modifier.fillMaxWidth().testTag("submit_sponsorship_button"),
                                 colors = ButtonDefaults.buttonColors(containerColor = ForestGreen)
                             ) {
-                                Text(str(language, "आवेदन जमा करें", "Submit Application"))
+                                Text(str(language, "आवेदन जमा करें (₹$totalAdoptionAmount)", "Submit Application (₹$totalAdoptionAmount)"))
                             }
                         }
                     }
@@ -699,12 +972,22 @@ private fun SponsorshipTabContent(
                     }
                 } else {
                     items(sponsorshipsState.data, key = { it.id }) { sp ->
+                        val payColor = when (sp.paymentStatus) {
+                            "VERIFIED" -> GoshalaGreen
+                            "PAID" -> Color(0xFF1565C0)
+                            else -> Saffron
+                        }
                         Card(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("sponsorship_card_${sp.id}"),
                             shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                         ) {
-                            Column(modifier = Modifier.padding(14.dp)) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                     Text("${sp.cattleName} (${sp.animalCode})", fontWeight = FontWeight.Bold)
                                     Text(
@@ -718,10 +1001,45 @@ private fun SponsorshipTabContent(
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
-                                Text("${sp.applicantName} • ₹${sp.monthlySupportInr.toInt()}/माह × ${sp.durationMonths} माह", style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    text = "${sp.applicantName} • ₹${sp.monthlySupportInr.toInt()}/माह × ${sp.durationMonths} माह = ₹${sp.totalSupportInr.toInt()}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = payColor.copy(alpha = 0.12f)
+                                    ) {
+                                        Text(
+                                            text = "${paymentModeLabel(sp.paymentMode, isHindi)} • ${paymentStatusLabel(sp.paymentStatus, isHindi)}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = payColor,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                        )
+                                    }
+                                    if (sp.paymentRef.isNotBlank()) {
+                                        Text(
+                                            text = "Ref: ${sp.paymentRef}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                if (sp.message.isNotBlank()) {
+                                    Text(
+                                        text = "${str(language, "संदेश", "Message")}: ${sp.message}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                                 Row(
                                     modifier = Modifier
-                                        .padding(top = 8.dp)
+                                        .padding(top = 6.dp)
                                         .horizontalScroll(rememberScrollState()),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
@@ -742,6 +1060,16 @@ private fun SponsorshipTabContent(
                                             colors = ButtonDefaults.textButtonColors(contentColor = AlertRed),
                                             modifier = Modifier.testTag("sponsorship_reject_${sp.id}")
                                         ) { Text(str(language, "अस्वीकार", "Reject")) }
+                                    }
+                                    if (canEdit && sp.paymentStatus != "VERIFIED") {
+                                        FilledTonalButton(
+                                            onClick = { onVerifySponsorshipPayment(sp, "VERIFIED") },
+                                            modifier = Modifier.testTag("sponsorship_verify_payment_${sp.id}")
+                                        ) {
+                                            Icon(Icons.Default.Verified, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text(str(language, "भुगतान सत्यापित", "Verify Pay"))
+                                        }
                                     }
                                     if (canEdit) {
                                         IconButton(

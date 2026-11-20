@@ -454,6 +454,7 @@ private fun GosalaAuthenticatedShell(
     val compostState by gosalaViewModel.compostState.collectAsStateWithLifecycle()
     val donationsState by gosalaViewModel.donationsState.collectAsStateWithLifecycle()
     val sponsorshipsState by gosalaViewModel.sponsorshipsState.collectAsStateWithLifecycle()
+    val productOrdersState by gosalaViewModel.productOrdersState.collectAsStateWithLifecycle()
     val notificationsState by gosalaViewModel.notificationsState.collectAsStateWithLifecycle()
     val auditLogsState by gosalaViewModel.auditLogsState.collectAsStateWithLifecycle()
 
@@ -468,6 +469,7 @@ private fun GosalaAuthenticatedShell(
     val compostList = (compostState as? DataUiState.Success)?.data.orEmpty()
     val donationsList = (donationsState as? DataUiState.Success)?.data.orEmpty()
     val sponsorshipsList = (sponsorshipsState as? DataUiState.Success)?.data.orEmpty()
+    val productOrdersList = (productOrdersState as? DataUiState.Success)?.data.orEmpty()
     val notificationsList = (notificationsState as? DataUiState.Success)?.data.orEmpty()
     val unreadNotifCount = remember(notificationsList, session.uid) {
         notificationsList.count { !it.readByUids.contains(session.uid) }
@@ -528,6 +530,7 @@ private fun GosalaAuthenticatedShell(
     var openAddFeedOnStart by remember { mutableStateOf(false) }
     var openAddFinanceOnStart by remember { mutableStateOf(false) }
     var preselectedCattleForSponsor by remember { mutableStateOf<Cattle?>(null) }
+    var openSponsorTabOnDonations by remember { mutableStateOf(false) }
     var initialAiMode by remember { mutableStateOf(AiMode.MANAGEMENT) }
 
     fun navigateTopTab(route: String) {
@@ -552,6 +555,7 @@ private fun GosalaAuthenticatedShell(
         Routes.FARMERS -> str(language, "किसान–गौशाला सहयोग", "Farmer Cooperation")
         Routes.PRODUCTION -> str(language, "गोबर उत्पाद व खाद", "Compost & Products")
         Routes.DONATIONS -> str(language, "दान एवं गौ-गोद", "Donations & Sponsorship")
+        Routes.APPLICATIONS -> str(language, "उत्पाद व गाय गोद आवेदन", "Orders & Adoption Apps")
         Routes.AI_ASSISTANT -> str(language, "AI गौशाला सहायक", "AI Goshala Assistant")
         Routes.REPORTS -> str(language, "रिपोर्ट एवं निर्यात", "Reports & Exports")
         Routes.NOTIFICATIONS -> str(language, "सूचनाएं एवं अलर्ट", "Notifications & Alerts")
@@ -685,6 +689,12 @@ private fun GosalaAuthenticatedShell(
                                 onQuickAddExpense = {
                                     openAddFinanceOnStart = true
                                     navController.navigate(Routes.FINANCE) { launchSingleTop = true }
+                                },
+                                productOrdersState = productOrdersState,
+                                onSubmitProductOrder = { order -> gosalaViewModel.submitProductOrder(order, language) },
+                                onOpenSponsorTab = {
+                                    openSponsorTabOnDonations = true
+                                    navigateTopTab(Routes.DONATIONS)
                                 }
                             )
                         }
@@ -708,6 +718,7 @@ private fun GosalaAuthenticatedShell(
                                 donations = donationsList,
                                 sponsorships = sponsorshipsList,
                                 compost = compostList,
+                                productOrders = productOrdersList,
                                 onNavigate = { route ->
                                     if (primaryTabs.any { it.route == route }) {
                                         navigateTopTab(route)
@@ -961,6 +972,10 @@ private fun GosalaAuthenticatedShell(
                             language = language,
                             onRedirectHome = { navigateTopTab(homeRouteForRole) }
                         ) {
+                            val requestedTab = if (openSponsorTabOnDonations || preselectedCattleForSponsor != null) 1 else 0
+                            LaunchedEffect(openSponsorTabOnDonations) {
+                                if (openSponsorTabOnDonations) openSponsorTabOnDonations = false
+                            }
                             DonationAndAdoptionScreen(
                                 language = language,
                                 session = session,
@@ -976,7 +991,31 @@ private fun GosalaAuthenticatedShell(
                                 onUpdateDonation = { don -> gosalaViewModel.updateDonation(don, language) },
                                 onDeleteDonation = { id -> gosalaViewModel.deleteDonation(id, language) },
                                 onUpdateSponsorship = { sp -> gosalaViewModel.updateSponsorship(sp, language) },
-                                onDeleteSponsorship = { id -> gosalaViewModel.deleteSponsorship(id, language) }
+                                onDeleteSponsorship = { id -> gosalaViewModel.deleteSponsorship(id, language) },
+                                initialTabIndex = requestedTab,
+                                onVerifySponsorshipPayment = { sp, status -> gosalaViewModel.verifySponsorshipPayment(sp, status, language) }
+                            )
+                        }
+                    }
+
+                    composable(Routes.APPLICATIONS) {
+                        ProtectedRoute(
+                            allowed = session.role == UserRole.ADMIN,
+                            language = language,
+                            onRedirectHome = { navigateTopTab(homeRouteForRole) }
+                        ) {
+                            AdminApplicationsScreen(
+                                language = language,
+                                session = session,
+                                productOrdersState = productOrdersState,
+                                sponsorshipsState = sponsorshipsState,
+                                onUpdateOrderStatus = { order, newStatus, newPayStatus, adminNote ->
+                                    gosalaViewModel.updateProductOrderStatus(order, newStatus, newPayStatus, adminNote, language)
+                                },
+                                onDeleteOrder = { orderId -> gosalaViewModel.deleteProductOrder(orderId, language) },
+                                onReviewSponsorship = { sp, approve -> gosalaViewModel.reviewSponsorship(sp, approve, language) },
+                                onVerifySponsorshipPayment = { sp, payStatus -> gosalaViewModel.verifySponsorshipPayment(sp, payStatus, language) },
+                                onDeleteSponsorship = { spId -> gosalaViewModel.deleteSponsorship(spId, language) }
                             )
                         }
                     }

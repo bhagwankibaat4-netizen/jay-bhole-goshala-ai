@@ -433,6 +433,10 @@ data class Sponsorship(
     val durationMonths: Long = 1L,
     val totalSupportInr: Double = 0.0,
     val status: String = "PENDING",
+    val message: String = "",
+    val paymentMode: String = "CASH",
+    val paymentStatus: String = "PENDING",
+    val paymentRef: String = "",
     val certificateNumber: String = "",
     val disclaimerAccepted: Boolean = false,
     val dateStr: String = "",
@@ -452,6 +456,10 @@ data class Sponsorship(
         "durationMonths" to durationMonths,
         "totalSupportInr" to totalSupportInr,
         "status" to status,
+        "message" to message,
+        "paymentMode" to paymentMode,
+        "paymentStatus" to paymentStatus,
+        "paymentRef" to paymentRef,
         "certificateNumber" to certificateNumber,
         "disclaimerAccepted" to disclaimerAccepted,
         "dateStr" to dateStr,
@@ -459,6 +467,87 @@ data class Sponsorship(
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     )
+}
+
+@Keep
+@IgnoreExtraProperties
+data class ProductOrder(
+    @DocumentId val id: String = "",
+    val orderNumber: String = "",
+    val buyerUid: String = "",
+    val buyerName: String = "",
+    val buyerPhone: String = "",
+    val buyerAddress: String = "",
+    val productId: String = "",
+    val productName: String = "",
+    val unitLabel: String = "",
+    val unitPriceInr: Double = 0.0,
+    val quantity: Long = 1L,
+    val totalAmountInr: Double = 0.0,
+    val orderStatus: String = "NEW",
+    val paymentMode: String = "CASH",
+    val paymentStatus: String = "PENDING",
+    val paymentRef: String = "",
+    val notes: String = "",
+    val adminNote: String = "",
+    val dateStr: String = "",
+    val reviewedBy: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun toCreateMap(): Map<String, Any> = mapOf(
+        "orderNumber" to orderNumber,
+        "buyerUid" to buyerUid,
+        "buyerName" to buyerName,
+        "buyerPhone" to buyerPhone,
+        "buyerAddress" to buyerAddress,
+        "productId" to productId,
+        "productName" to productName,
+        "unitLabel" to unitLabel,
+        "unitPriceInr" to unitPriceInr,
+        "quantity" to quantity,
+        "totalAmountInr" to totalAmountInr,
+        "orderStatus" to orderStatus,
+        "paymentMode" to paymentMode,
+        "paymentStatus" to paymentStatus,
+        "paymentRef" to paymentRef,
+        "notes" to notes,
+        "adminNote" to adminNote,
+        "dateStr" to dateStr,
+        "reviewedBy" to reviewedBy,
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp()
+    )
+
+    companion object {
+        val ALL_ORDER_STATUSES = listOf("NEW", "APPROVED", "READY", "DELIVERY", "COMPLETED", "CANCELLED")
+        val ALL_PAYMENT_MODES = listOf("CASH", "UPI", "ONLINE")
+        val ALL_PAYMENT_STATUSES = listOf("PENDING", "PAID", "VERIFIED")
+    }
+}
+
+fun productOrderStatusLabel(status: String, isHindi: Boolean): String = when (status) {
+    "NEW" -> if (isHindi) "नया आवेदन" else "New"
+    "APPROVED" -> if (isHindi) "स्वीकृत" else "Approved"
+    "READY" -> if (isHindi) "तैयार" else "Ready"
+    "DELIVERY" -> if (isHindi) "डिलीवरी" else "Delivery"
+    "COMPLETED" -> if (isHindi) "पूर्ण" else "Completed"
+    "CANCELLED" -> if (isHindi) "रद्द" else "Cancelled"
+    else -> status
+}
+
+fun paymentStatusLabel(status: String, isHindi: Boolean): String = when (status) {
+    "PENDING" -> if (isHindi) "Pending (लंबित)" else "Pending"
+    "PAID" -> if (isHindi) "Paid (भुगतान किया)" else "Paid"
+    "VERIFIED" -> if (isHindi) "Verified (सत्यापित)" else "Verified"
+    else -> status
+}
+
+fun paymentModeLabel(mode: String, isHindi: Boolean): String = when (mode) {
+    "CASH" -> if (isHindi) "नकद (Cash)" else "Cash"
+    "UPI" -> if (isHindi) "UPI" else "UPI"
+    "ONLINE" -> if (isHindi) "ऑनलाइन (Online)" else "Online"
+    else -> mode
 }
 
 @Keep

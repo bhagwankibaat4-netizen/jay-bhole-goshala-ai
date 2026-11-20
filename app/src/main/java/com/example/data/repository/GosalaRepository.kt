@@ -1,6 +1,7 @@
 package com.example.data.repository
 
 import android.content.Context
+import android.util.Log
 import com.example.R
 import com.example.core.OfflineQueuedException
 import com.example.core.OperationType
@@ -29,6 +30,9 @@ class GosalaRepository(
     private val db: FirebaseFirestore,
     private val auth: FirebaseAuth = Firebase.auth
 ) {
+    private companion object {
+        const val TAG = "GosalaRepo"
+    }
     constructor(context: Context) : this(
         FirebaseFirestore.getInstance(
             context.applicationContext.getString(R.string.firestore_database_id)
@@ -289,6 +293,111 @@ class GosalaRepository(
         }.flowOn(Dispatchers.Default)
     }
 
+    /**
+     * Best-effort synchronization so that when an Admin registers or updates an employee by email,
+     * any already-registered user (/users/{uid}) or existing /staffAccounts doc with that email
+     * immediately gets a synced /staffAccounts/{uid} record matching their Firebase Auth UID.
+     */
+    private suspend fun syncExistingUserToStaffAccount(
+        adminUid: String,
+        normalizedEmail: String,
+        employeeId: String,
+        name: String,
+        phone: String,
+        designation: String,
+        monthlySalary: Double,
+        active: Boolean,
+        permissions: Map<String, List<String>>
+    ) {
+        val syncedUids = mutableSetOf<String>()
+        // 1. Update any existing /staffAccounts docs matching this email
+        try {
+            val existingStaffDocs = db.collection("staffAccounts")
+                .whereEqualTo("email", normalizedEmail)
+                .limit(5)
+                .get()
+                .await()
+            for (doc in existingStaffDocs.documents) {
+                if (doc.id == adminUid) continue
+                syncedUids.add(doc.id)
+                db.collection("staffAccounts").document(doc.id).update(
+                    mapOf(
+                        "employeeId" to employeeId,
+                        "name" to name,
+                        "phone" to phone,
+                        "designation" to designation,
+                        "monthlySalary" to monthlySalary,
+                        "active" to active,
+                        "permissions" to permissions,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Non-fatal staffAccounts sync notice for $normalizedEmail: ${e.message}")
+        }
+
+        // 2. If the employee already signed up earlier (/users/{uid} exists), create /staffAccounts/{uid} immediately
+        try {
+            val matchingUsers = db.collection("users")
+                .whereEqualTo("email", normalizedEmail)
+                .limit(5)
+                .get()
+                .await()
+            for (userDoc in matchingUsers.documents) {
+                val targetUid = userDoc.id
+                if (targetUid == adminUid || userDoc.getString("role") == "ADMIN") continue
+                if (!syncedUids.contains(targetUid)) {
+                    val staffDocRef = db.collection("staffAccounts").document(targetUid)
+                    val existingSnap = staffDocRef.get().await()
+                    if (existingSnap.exists()) {
+                        staffDocRef.update(
+                            mapOf(
+                                "employeeId" to employeeId,
+                                "name" to name,
+                                "phone" to phone,
+                                "designation" to designation,
+                                "monthlySalary" to monthlySalary,
+                                "active" to active,
+                                "permissions" to permissions,
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            )
+                        ).await()
+                    } else {
+                        staffDocRef.set(
+                            mapOf(
+                                "uid" to targetUid,
+                                "employeeId" to employeeId,
+                                "email" to normalizedEmail,
+                                "name" to name,
+                                "phone" to phone,
+                                "designation" to designation,
+                                "monthlySalary" to monthlySalary,
+                                "active" to active,
+                                "permissions" to permissions,
+                                "createdAt" to FieldValue.serverTimestamp(),
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            )
+                        ).await()
+                    }
+                }
+                // Keep /users/{uid}.role synced (never downgrade Admin)
+                try {
+                    db.collection("users").document(targetUid).update(
+                        mapOf(
+                            "role" to if (active) "STAFF" else "PUBLIC",
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Non-fatal /users role sync notice for $targetUid: ${e.message}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Non-fatal /users lookup during staff sync for $normalizedEmail: ${e.message}")
+        }
+    }
+
     suspend fun createStaffInvite(
         session: UserSession,
         email: String,
@@ -306,15 +415,19 @@ class GosalaRepository(
         val uid = requireUid()
         val normalizedEmail = email.trim().lowercase()
         val cleanEmpId = employeeId.trim().ifBlank { "EMP-${(100..999).random()}" }.take(40)
+        val cleanName = name.trim().take(100)
+        val cleanPhone = phone.trim().take(20)
+        val cleanDesignation = designation.trim().ifBlank { "गौ सेवक" }.take(80)
+        val cleanSalary = monthlySalary.coerceIn(0.0, 1000000.0)
         return safeWrite("staffInvites/$normalizedEmail", OperationType.WRITE) {
             require(normalizedEmail.contains("@") && normalizedEmail.contains(".")) { "Valid email required" }
             val payload = mapOf(
                 "employeeId" to cleanEmpId,
                 "email" to normalizedEmail,
-                "name" to name.trim().take(100),
-                "phone" to phone.trim().take(20),
-                "designation" to designation.trim().ifBlank { "गौ सेवक" }.take(80),
-                "monthlySalary" to monthlySalary.coerceIn(0.0, 1000000.0),
+                "name" to cleanName,
+                "phone" to cleanPhone,
+                "designation" to cleanDesignation,
+                "monthlySalary" to cleanSalary,
                 "active" to active,
                 "permissions" to permissions,
                 "createdBy" to uid,
@@ -322,7 +435,19 @@ class GosalaRepository(
                 "updatedAt" to FieldValue.serverTimestamp()
             )
             db.collection("staffInvites").document(normalizedEmail).set(payload).await()
-            logAudit(session, "CREATE", "staff", normalizedEmail, "Invited staff $name ($cleanEmpId / $normalizedEmail)")
+            // Immediately link /staffAccounts/{uid} if this employee already has a Firebase Auth account in /users
+            syncExistingUserToStaffAccount(
+                adminUid = uid,
+                normalizedEmail = normalizedEmail,
+                employeeId = cleanEmpId,
+                name = cleanName,
+                phone = cleanPhone,
+                designation = cleanDesignation,
+                monthlySalary = cleanSalary,
+                active = active,
+                permissions = permissions
+            )
+            logAudit(session, "CREATE", "staff", normalizedEmail, "Invited staff $cleanName ($cleanEmpId / $normalizedEmail)")
         }
     }
 
@@ -340,23 +465,40 @@ class GosalaRepository(
         if (session.role != UserRole.ADMIN) {
             return Result.failure(SecurityException("केवल प्रशासक (Admin) स्टाफ आमंत्रण संपादित कर सकते हैं।"))
         }
+        val adminUid = requireUid()
         val normalizedEmail = email.trim().lowercase()
         if (normalizedEmail.isBlank()) {
             return Result.failure(IllegalArgumentException("अमान्य ईमेल।"))
         }
+        val cleanEmpId = employeeId.trim().take(40)
+        val cleanName = name.trim().take(100)
+        val cleanPhone = phone.trim().take(20)
+        val cleanDesignation = designation.trim().ifBlank { "गौ सेवक" }.take(80)
+        val cleanSalary = monthlySalary.coerceIn(0.0, 1000000.0)
         return safeWrite("staffInvites/$normalizedEmail", OperationType.UPDATE) {
             db.collection("staffInvites").document(normalizedEmail).update(
                 mapOf(
-                    "employeeId" to employeeId.trim().take(40),
-                    "name" to name.trim().take(100),
-                    "phone" to phone.trim().take(20),
-                    "designation" to designation.trim().ifBlank { "गौ सेवक" }.take(80),
-                    "monthlySalary" to monthlySalary.coerceIn(0.0, 1000000.0),
+                    "employeeId" to cleanEmpId,
+                    "name" to cleanName,
+                    "phone" to cleanPhone,
+                    "designation" to cleanDesignation,
+                    "monthlySalary" to cleanSalary,
                     "active" to active,
                     "permissions" to permissions,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             ).await()
+            syncExistingUserToStaffAccount(
+                adminUid = adminUid,
+                normalizedEmail = normalizedEmail,
+                employeeId = cleanEmpId,
+                name = cleanName,
+                phone = cleanPhone,
+                designation = cleanDesignation,
+                monthlySalary = cleanSalary,
+                active = active,
+                permissions = permissions
+            )
             logAudit(session, "UPDATE", "staff", normalizedEmail, "Updated invite active=$active")
         }
     }
@@ -376,9 +518,12 @@ class GosalaRepository(
             return Result.failure(SecurityException("केवल प्रशासक (Admin) स्टाफ अनुमतियाँ बदल सकते हैं।"))
         }
         return safeWrite("staffAccounts/$staffUid", OperationType.UPDATE) {
+            val staffRef = db.collection("staffAccounts").document(staffUid)
+            val existingSnap = staffRef.get().await()
+            val cleanSalary = monthlySalary.coerceIn(0.0, 1000000.0)
             val updates = mutableMapOf<String, Any>(
                 "active" to active,
-                "monthlySalary" to monthlySalary.coerceIn(0.0, 1000000.0),
+                "monthlySalary" to cleanSalary,
                 "permissions" to permissions,
                 "updatedAt" to FieldValue.serverTimestamp()
             )
@@ -386,7 +531,34 @@ class GosalaRepository(
             name?.takeIf { it.isNotBlank() }?.let { updates["name"] = it.trim().take(100) }
             phone?.let { updates["phone"] = it.trim().take(20) }
             designation?.takeIf { it.isNotBlank() }?.let { updates["designation"] = it.trim().take(80) }
-            db.collection("staffAccounts").document(staffUid).update(updates).await()
+            staffRef.update(updates).await()
+
+            // Keep matching /staffInvites/{email} & /users/{uid} synced so deactivation/permissions cannot drift
+            val staffEmail = existingSnap.getString("email")?.trim()?.lowercase().orEmpty()
+            if (staffEmail.isNotBlank()) {
+                try {
+                    val inviteRef = db.collection("staffInvites").document(staffEmail)
+                    if (inviteRef.get().await().exists()) {
+                        inviteRef.update(updates).await()
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Non-fatal staffInvite sync notice for $staffEmail: ${e.message}")
+                }
+            }
+            try {
+                val userRef = db.collection("users").document(staffUid)
+                val userSnap = userRef.get().await()
+                if (userSnap.exists() && userSnap.getString("role") != "ADMIN") {
+                    userRef.update(
+                        mapOf(
+                            "role" to if (active) "STAFF" else "PUBLIC",
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Non-fatal user role sync notice for $staffUid: ${e.message}")
+            }
             logAudit(session, "UPDATE", "staff", staffUid, "Updated permissions/active=$active")
         }
     }
@@ -399,7 +571,34 @@ class GosalaRepository(
             return Result.failure(IllegalArgumentException("अमान्य स्टाफ खाता।"))
         }
         return safeWrite("staffAccounts/$staffUid", OperationType.DELETE) {
-            db.collection("staffAccounts").document(staffUid).delete().await()
+            val staffRef = db.collection("staffAccounts").document(staffUid)
+            val existingEmail = try {
+                staffRef.get().await().getString("email")?.trim()?.lowercase().orEmpty()
+            } catch (_: Exception) {
+                ""
+            }
+            staffRef.delete().await()
+            if (existingEmail.isNotBlank()) {
+                try {
+                    db.collection("staffInvites").document(existingEmail).delete().await()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Non-fatal staffInvite cleanup notice for $existingEmail: ${e.message}")
+                }
+            }
+            try {
+                val userRef = db.collection("users").document(staffUid)
+                val userSnap = userRef.get().await()
+                if (userSnap.exists() && userSnap.getString("role") != "ADMIN") {
+                    userRef.update(
+                        mapOf(
+                            "role" to "PUBLIC",
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Non-fatal user role reset notice for $staffUid: ${e.message}")
+            }
             logAudit(session, "DELETE", "staff", staffUid, "Deleted staff account")
         }
     }
@@ -821,13 +1020,36 @@ class GosalaRepository(
         }
         val uid = requireUid()
         val docRef = db.collection("sponsorships").document()
+        val safePaymentMode = if (sponsorship.paymentMode in ProductOrder.ALL_PAYMENT_MODES) {
+            sponsorship.paymentMode
+        } else {
+            "CASH"
+        }
+        // SECURITY: Public users can NEVER self-verify payments; only Admin/authorized editor can set VERIFIED.
+        val safePaymentStatus = when {
+            session.role == UserRole.ADMIN && sponsorship.paymentStatus in ProductOrder.ALL_PAYMENT_STATUSES ->
+                sponsorship.paymentStatus
+            sponsorship.paymentStatus == "PAID" -> "PAID"
+            else -> "PENDING"
+        }
+        val cleanMonths = sponsorship.durationMonths.coerceIn(1L, 120L)
+        val cleanMonthly = sponsorship.monthlySupportInr.coerceAtLeast(100.0)
         return safeWrite(docRef.path, OperationType.CREATE) {
             require(sponsorship.disclaimerAccepted) { "गौ-गोद अस्वीकरण सहमति आवश्यक है / Disclaimer required" }
             docRef.set(
                 sponsorship.copy(
                     applicantUid = uid,
+                    applicantName = sponsorship.applicantName.trim().take(100),
+                    applicantPhone = sponsorship.applicantPhone.trim().take(20),
+                    applicantAddress = sponsorship.applicantAddress.trim().take(250),
+                    monthlySupportInr = cleanMonthly,
+                    durationMonths = cleanMonths,
+                    totalSupportInr = cleanMonthly * cleanMonths,
                     status = "PENDING",
-                    totalSupportInr = sponsorship.monthlySupportInr * sponsorship.durationMonths,
+                    message = sponsorship.message.trim().take(300),
+                    paymentMode = safePaymentMode,
+                    paymentStatus = safePaymentStatus,
+                    paymentRef = sponsorship.paymentRef.trim().take(120),
                     dateStr = QrAndExportUtils.todayIso(),
                     certificateNumber = "",
                     reviewedBy = ""
@@ -837,9 +1059,9 @@ class GosalaRepository(
                 targetRole = "ADMIN",
                 category = "ADOPTION",
                 title = "नया गौ-गोद (प्रायोजन) आवेदन",
-                message = "${sponsorship.applicantName} ने ${sponsorship.cattleName} (${sponsorship.animalCode}) के लिए आवेदन किया।"
+                message = "${sponsorship.applicantName} ने ${sponsorship.cattleName} (${sponsorship.animalCode}) के लिए ₹${(cleanMonthly * cleanMonths).toInt()} का आवेदन किया।"
             )
-            logAudit(session, "CREATE", "sponsorships", docRef.id, "Applied for ${sponsorship.cattleName}")
+            logAudit(session, "CREATE", "sponsorships", docRef.id, "Applied for ${sponsorship.cattleName} ($safePaymentMode/$safePaymentStatus)")
         }
     }
 
@@ -898,6 +1120,37 @@ class GosalaRepository(
         }
     }
 
+    suspend fun verifySponsorshipPayment(
+        session: UserSession,
+        sponsorship: Sponsorship,
+        newPaymentStatus: String
+    ): Result<Unit> {
+        if (!session.canEdit(AppModule.DONATIONS)) {
+            return Result.failure(SecurityException("गौ-गोद भुगतान सत्यापित करने की अनुमति नहीं है।"))
+        }
+        if (sponsorship.id.isBlank() || newPaymentStatus !in ProductOrder.ALL_PAYMENT_STATUSES) {
+            return Result.failure(IllegalArgumentException("अमान्य भुगतान स्थिति या प्रायोजन आईडी।"))
+        }
+        return safeWrite("sponsorships/${sponsorship.id}", OperationType.UPDATE) {
+            val uid = requireUid()
+            db.collection("sponsorships").document(sponsorship.id).update(
+                mapOf(
+                    "paymentStatus" to newPaymentStatus,
+                    "reviewedBy" to uid,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            createNotificationInternal(
+                targetRole = "PUBLIC",
+                targetUid = sponsorship.applicantUid,
+                category = "ADOPTION_PAYMENT",
+                title = "गौ-गोद भुगतान स्थिति अपडेट",
+                message = "${sponsorship.cattleName} (${sponsorship.animalCode}) हेतु भुगतान स्थिति अब ${paymentStatusLabel(newPaymentStatus, true)} है।"
+            )
+            logAudit(session, "VERIFY_PAYMENT", "sponsorships", sponsorship.id, "Payment -> $newPaymentStatus")
+        }
+    }
+
     suspend fun deleteSponsorship(session: UserSession, sponsorshipId: String): Result<Unit> {
         if (!session.canDelete(AppModule.DONATIONS)) {
             return Result.failure(SecurityException("गौ-गोद आवेदन हटाने की अनुमति नहीं है।"))
@@ -908,6 +1161,128 @@ class GosalaRepository(
         return safeWrite("sponsorships/$sponsorshipId", OperationType.DELETE) {
             db.collection("sponsorships").document(sponsorshipId).delete().await()
             logAudit(session, "DELETE", "sponsorships", sponsorshipId, "Deleted sponsorship")
+        }
+    }
+
+    // --- PRODUCT PURCHASE APPLICATIONS (PUBLIC ORDERS & ADMIN MANAGEMENT) ---
+    fun observeProductOrders(session: UserSession): Flow<List<ProductOrder>> {
+        val query = when (session.role) {
+            UserRole.ADMIN -> db.collection("productOrders").limit(150)
+            UserRole.PUBLIC -> db.collection("productOrders").whereEqualTo("buyerUid", session.uid).limit(100)
+            UserRole.STAFF -> return flowOf(emptyList())
+        }
+        return query.snapshots().map { snap ->
+            snap.toObjects(ProductOrder::class.java, ServerTimestampBehavior.ESTIMATE)
+                .sortedByDescending { it.createdAt?.seconds ?: 0L }
+        }.flowOn(Dispatchers.Default)
+    }
+
+    suspend fun submitProductOrder(session: UserSession, order: ProductOrder): Result<String> {
+        if (session.role != UserRole.PUBLIC && session.role != UserRole.ADMIN) {
+            return Result.failure(SecurityException("उत्पाद खरीद आवेदन केवल Public User या Admin द्वारा जमा किया जा सकता है।"))
+        }
+        val uid = requireUid()
+        val docRef = db.collection("productOrders").document()
+        val orderNo = order.orderNumber.trim().ifBlank {
+            "JBGS-ORD-${(1000..9999).random()}"
+        }.take(40)
+        val qty = order.quantity.coerceIn(1L, 500L)
+        val unitPrice = order.unitPriceInr.coerceIn(1.0, 1000000.0)
+        val total = (unitPrice * qty).coerceIn(1.0, 500000000.0)
+        val safePaymentMode = if (order.paymentMode in ProductOrder.ALL_PAYMENT_MODES) order.paymentMode else "CASH"
+        val safePaymentStatus = when {
+            session.role == UserRole.ADMIN && order.paymentStatus in ProductOrder.ALL_PAYMENT_STATUSES -> order.paymentStatus
+            order.paymentStatus == "PAID" -> "PAID"
+            else -> "PENDING"
+        }
+        return safeWrite(docRef.path, OperationType.CREATE) {
+            require(order.buyerName.trim().length >= 2) { "सही नाम आवश्यक है।" }
+            require(order.buyerPhone.filter { it.isDigit() }.length >= 6) { "सही मोबाइल नंबर आवश्यक है।" }
+            require(order.buyerAddress.trim().length >= 2) { "सही पता आवश्यक है।" }
+            require(order.productId.isNotBlank() && order.productName.isNotBlank()) { "उत्पाद विवरण आवश्यक है।" }
+
+            docRef.set(
+                order.copy(
+                    orderNumber = orderNo,
+                    buyerUid = uid,
+                    buyerName = order.buyerName.trim().take(100),
+                    buyerPhone = order.buyerPhone.trim().take(20),
+                    buyerAddress = order.buyerAddress.trim().take(300),
+                    productId = order.productId.trim().take(60),
+                    productName = order.productName.trim().take(120),
+                    unitLabel = order.unitLabel.trim().ifBlank { "इकाई" }.take(60),
+                    unitPriceInr = unitPrice,
+                    quantity = qty,
+                    totalAmountInr = total,
+                    orderStatus = "NEW",
+                    paymentMode = safePaymentMode,
+                    paymentStatus = safePaymentStatus,
+                    paymentRef = order.paymentRef.trim().take(120),
+                    notes = order.notes.trim().take(400),
+                    adminNote = "",
+                    dateStr = QrAndExportUtils.todayIso(),
+                    reviewedBy = ""
+                ).toCreateMap()
+            ).await()
+            createNotificationInternal(
+                targetRole = "ADMIN",
+                category = "PRODUCT_ORDER",
+                title = "नया उत्पाद खरीद आवेदन ($orderNo)",
+                message = "${order.buyerName.trim()} • ${order.productName.trim()} × $qty (₹${total.toInt()})"
+            )
+            logAudit(session, "CREATE", "productOrders", docRef.id, "$orderNo ${order.productName} x$qty ₹${total.toInt()}")
+            orderNo
+        }
+    }
+
+    suspend fun updateProductOrderStatus(
+        session: UserSession,
+        order: ProductOrder,
+        newOrderStatus: String,
+        newPaymentStatus: String,
+        adminNote: String = order.adminNote
+    ): Result<Unit> {
+        if (session.role != UserRole.ADMIN) {
+            return Result.failure(SecurityException("केवल प्रशासक (Admin) उत्पाद ऑर्डर स्थिति अपडेट कर सकते हैं।"))
+        }
+        if (order.id.isBlank() ||
+            newOrderStatus !in ProductOrder.ALL_ORDER_STATUSES ||
+            newPaymentStatus !in ProductOrder.ALL_PAYMENT_STATUSES
+        ) {
+            return Result.failure(IllegalArgumentException("अमान्य ऑर्डर या भुगतान स्थिति।"))
+        }
+        return safeWrite("productOrders/${order.id}", OperationType.UPDATE) {
+            val uid = requireUid()
+            db.collection("productOrders").document(order.id).update(
+                mapOf(
+                    "orderStatus" to newOrderStatus,
+                    "paymentStatus" to newPaymentStatus,
+                    "adminNote" to adminNote.trim().take(300),
+                    "reviewedBy" to uid,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            createNotificationInternal(
+                targetRole = "PUBLIC",
+                targetUid = order.buyerUid,
+                category = "PRODUCT_ORDER",
+                title = "ऑर्डर अपडेट: ${order.orderNumber}",
+                message = "${order.productName} × ${order.quantity} — स्थिति: ${productOrderStatusLabel(newOrderStatus, true)} | भुगतान: ${paymentStatusLabel(newPaymentStatus, true)}"
+            )
+            logAudit(session, "UPDATE", "productOrders", order.id, "${order.orderNumber} -> $newOrderStatus / $newPaymentStatus")
+        }
+    }
+
+    suspend fun deleteProductOrder(session: UserSession, orderId: String): Result<Unit> {
+        if (session.role != UserRole.ADMIN) {
+            return Result.failure(SecurityException("केवल प्रशासक (Admin) उत्पाद ऑर्डर हटा सकते हैं।"))
+        }
+        if (orderId.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य ऑर्डर आईडी।"))
+        }
+        return safeWrite("productOrders/$orderId", OperationType.DELETE) {
+            db.collection("productOrders").document(orderId).delete().await()
+            logAudit(session, "DELETE", "productOrders", orderId, "Deleted product order")
         }
     }
 

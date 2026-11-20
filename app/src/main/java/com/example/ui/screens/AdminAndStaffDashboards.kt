@@ -51,7 +51,8 @@ fun AdminDashboardScreen(
     onNavigate: (String) -> Unit,
     onQuickAddCattle: () -> Unit,
     onQuickAddFeed: () -> Unit,
-    onQuickAddExpense: () -> Unit
+    onQuickAddExpense: () -> Unit,
+    productOrders: List<ProductOrder> = emptyList()
 ) {
     val today = QrAndExportUtils.todayIso()
     val cowCount = cattle.count { it.category == "COW" }
@@ -65,10 +66,12 @@ fun AdminDashboardScreen(
     val verifiedDonations = donations.filter { it.paymentStatus == "VERIFIED_SUCCESS" }.sumOf { it.amountInr }
     val pendingDonations = donations.count { it.paymentStatus == "PENDING_VERIFICATION" }
     val pendingSponsorships = sponsorships.count { it.status == "PENDING" }
+    val pendingOrders = productOrders.count { it.orderStatus == "NEW" }
     val activeStaff = staffAccounts.count { it.active }
     val readyStock = compost.sumOf { it.stockRemaining }.toInt()
 
     val adminModules = listOf(
+        HomeModuleTile(Routes.APPLICATIONS, str(language, "उत्पाद व गोद\nआवेदन", "Orders &\nAdoptions"), Icons.Default.ShoppingBag, Saffron, SoftSaffronTint, "admin_mod_applications"),
         HomeModuleTile(Routes.CATTLE, str(language, "गाय-बैल\nप्रबंधन व QR", "Cattle, Edit\n& QR Cards"), Icons.Default.Pets, ForestGreen, SoftGreenTint, "admin_mod_cattle"),
         HomeModuleTile(Routes.HEALTH, str(language, "स्वास्थ्य व\nटीकाकरण", "Health &\nVaccines"), Icons.Default.MedicalServices, AlertRed, SoftRedTint, "admin_mod_health"),
         HomeModuleTile(Routes.FEED, str(language, "चारा, पानी व\nदैनिक कार्य", "Feed, Water\n& Daily Ops"), Icons.Default.Grass, GoshalaGreen, SoftGreenTint, "admin_mod_feed"),
@@ -151,13 +154,15 @@ fun AdminDashboardScreen(
             }
         }
 
-        // 2. Pending Approvals Banner (Donations & Cow Sponsorships)
-        if (pendingDonations > 0 || pendingSponsorships > 0) {
+        // 2. Pending Approvals Banner (Product Orders, Donations & Cow Sponsorships)
+        if (pendingOrders > 0 || pendingDonations > 0 || pendingSponsorships > 0) {
             item {
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onNavigate(Routes.DONATIONS) }
+                        .clickable {
+                            onNavigate(if (pendingOrders > 0 || pendingSponsorships > 0) Routes.APPLICATIONS else Routes.DONATIONS)
+                        }
                         .testTag("admin_pending_approvals_card"),
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = SoftSaffronTint)
@@ -178,8 +183,8 @@ fun AdminDashboardScreen(
                             Text(
                                 text = str(
                                     language,
-                                    "सत्यापन हेतु दान: $pendingDonations | गौ-गोद आवेदन: $pendingSponsorships",
-                                    "Pending Donations: $pendingDonations | Sponsorship Apps: $pendingSponsorships"
+                                    "नए उत्पाद ऑर्डर: $pendingOrders | गौ-गोद आवेदन: $pendingSponsorships | दान: $pendingDonations",
+                                    "New Product Orders: $pendingOrders | Adoptions: $pendingSponsorships | Donations: $pendingDonations"
                                 ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = DarkText

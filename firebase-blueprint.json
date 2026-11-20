@@ -302,6 +302,10 @@
         "durationMonths": { "type": "integer" },
         "totalSupportInr": { "type": "number" },
         "status": { "type": "string", "enum": ["PENDING", "APPROVED", "REJECTED"] },
+        "message": { "type": "string" },
+        "paymentMode": { "type": "string", "enum": ["CASH", "UPI", "ONLINE"] },
+        "paymentStatus": { "type": "string", "enum": ["PENDING", "PAID", "VERIFIED"] },
+        "paymentRef": { "type": "string" },
         "certificateNumber": { "type": "string" },
         "disclaimerAccepted": { "type": "boolean" },
         "dateStr": { "type": "string" },
@@ -310,6 +314,35 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["applicantUid", "applicantName", "applicantPhone", "applicantAddress", "cattleId", "cattleName", "animalCode", "monthlySupportInr", "durationMonths", "totalSupportInr", "status", "disclaimerAccepted", "dateStr", "createdAt", "updatedAt"]
+    },
+    "ProductOrder": {
+      "title": "ProductOrder",
+      "description": "Public user goshala product purchase application with order lifecycle and admin payment verification.",
+      "type": "object",
+      "properties": {
+        "orderNumber": { "type": "string" },
+        "buyerUid": { "type": "string" },
+        "buyerName": { "type": "string" },
+        "buyerPhone": { "type": "string" },
+        "buyerAddress": { "type": "string" },
+        "productId": { "type": "string" },
+        "productName": { "type": "string" },
+        "unitLabel": { "type": "string" },
+        "unitPriceInr": { "type": "number" },
+        "quantity": { "type": "integer" },
+        "totalAmountInr": { "type": "number" },
+        "orderStatus": { "type": "string", "enum": ["NEW", "APPROVED", "READY", "DELIVERY", "COMPLETED", "CANCELLED"] },
+        "paymentMode": { "type": "string", "enum": ["CASH", "UPI", "ONLINE"] },
+        "paymentStatus": { "type": "string", "enum": ["PENDING", "PAID", "VERIFIED"] },
+        "paymentRef": { "type": "string" },
+        "notes": { "type": "string" },
+        "adminNote": { "type": "string" },
+        "dateStr": { "type": "string" },
+        "reviewedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderNumber", "buyerUid", "buyerName", "buyerPhone", "buyerAddress", "productId", "productName", "unitLabel", "unitPriceInr", "quantity", "totalAmountInr", "orderStatus", "paymentMode", "paymentStatus", "dateStr", "createdAt", "updatedAt"]
     },
     "NotificationItem": {
       "title": "NotificationItem",
@@ -359,6 +392,7 @@
     "/compostProduction/{batchId}": { "schema": "CompostBatch", "description": "Gobar and compost production batches" },
     "/donations/{donationId}": { "schema": "Donation", "description": "Donation records and receipts" },
     "/sponsorships/{sponsorshipId}": { "schema": "Sponsorship", "description": "Cow sponsorship applications and certificates" },
+    "/productOrders/{orderId}": { "schema": "ProductOrder", "description": "Public product purchase applications managed by Admin" },
     "/notifications/{notifId}": { "schema": "NotificationItem", "description": "Goshala alerts and reminders" },
     "/auditLogs/{logId}": { "schema": "AuditLog", "description": "Immutable audit trail" }
   }

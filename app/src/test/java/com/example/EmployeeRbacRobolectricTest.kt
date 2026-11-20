@@ -427,4 +427,17 @@ class EmployeeRbacRobolectricTest {
         composeRule.onNodeWithTag("admin_dashboard_root").assertExists()
         composeRule.onNodeWithTag("staff_dashboard_root").assertDoesNotExist()
     }
+
+    @Test
+    fun `staff active status evaluator checks active approved and status fields accurately`() {
+        assertTrue(com.example.data.repository.isStaffDocActive(true, null, null))
+        assertTrue(com.example.data.repository.isStaffDocActive(null, true, "ACTIVE"))
+        assertTrue(com.example.data.repository.isStaffDocActive(true, true, "APPROVED"))
+        assertFalse(com.example.data.repository.isStaffDocActive(false, true, "ACTIVE"))
+        assertFalse(com.example.data.repository.isStaffDocActive(true, false, "ACTIVE"))
+        assertFalse(com.example.data.repository.isStaffDocActive(true, true, "INACTIVE"))
+        assertFalse(com.example.data.repository.isStaffDocActive(null, null, "DISABLED"))
+        assertFalse(com.example.data.repository.isStaffDocActive(null, null, "BLOCKED"))
+        assertFalse(com.example.data.repository.isStaffDocActive(null, null, "SUSPENDED"))
+    }
 }

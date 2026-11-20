@@ -93,6 +93,9 @@ class GosalaViewModel(
     val sponsorshipsState: StateFlow<DataUiState<List<Sponsorship>>> =
         repository.observeSponsorships(session).toUiStateFlow("sponsorships")
 
+    val productOrdersState: StateFlow<DataUiState<List<ProductOrder>>> =
+        repository.observeProductOrders(session).toUiStateFlow("productOrders")
+
     val notificationsState: StateFlow<DataUiState<List<NotificationItem>>> =
         repository.observeNotifications(session).toUiStateFlow("notifications")
 
@@ -378,9 +381,51 @@ class GosalaViewModel(
         }
     }
 
+    fun verifySponsorshipPayment(sponsorship: Sponsorship, paymentStatus: String, language: AppLanguage) {
+        runMutation(
+            language,
+            "गौ-गोद भुगतान स्थिति अपडेट हुई।",
+            "Cow adoption payment status updated."
+        ) {
+            repository.verifySponsorshipPayment(session, sponsorship, paymentStatus)
+        }
+    }
+
     fun deleteSponsorship(sponsorshipId: String, language: AppLanguage) {
         runMutation(language, "गौ-गोद आवेदन हटाया गया।", "Sponsorship deleted.") {
             repository.deleteSponsorship(session, sponsorshipId)
+        }
+    }
+
+    fun submitProductOrder(order: ProductOrder, language: AppLanguage) {
+        runMutation(
+            language,
+            "उत्पाद खरीद आवेदन सफलतापूर्वक जमा हुआ।",
+            "Product purchase application submitted."
+        ) {
+            repository.submitProductOrder(session, order)
+        }
+    }
+
+    fun updateProductOrderStatus(
+        order: ProductOrder,
+        newOrderStatus: String,
+        newPaymentStatus: String,
+        adminNote: String,
+        language: AppLanguage
+    ) {
+        runMutation(
+            language,
+            "ऑर्डर स्थिति अपडेट हुई।",
+            "Product order status updated."
+        ) {
+            repository.updateProductOrderStatus(session, order, newOrderStatus, newPaymentStatus, adminNote)
+        }
+    }
+
+    fun deleteProductOrder(orderId: String, language: AppLanguage) {
+        runMutation(language, "उत्पाद ऑर्डर हटाया गया।", "Product order deleted.") {
+            repository.deleteProductOrder(session, orderId)
         }
     }
 

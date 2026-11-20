@@ -12,6 +12,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,6 +39,7 @@ import com.example.ui.components.MetricStatCard
 import com.example.ui.components.ModuleGridCard
 import com.example.ui.components.RoleBadgeChip
 import com.example.ui.theme.*
+import com.example.ui.viewmodel.DataUiState
 
 data class HomeModuleTile(
     val route: String,
@@ -57,10 +62,23 @@ fun HomeScreen(
     onNavigate: (String) -> Unit,
     onQuickAddCattle: () -> Unit,
     onQuickAddFeed: () -> Unit,
-    onQuickAddExpense: () -> Unit
+    onQuickAddExpense: () -> Unit,
+    productOrdersState: DataUiState<List<ProductOrder>> = DataUiState.Success(emptyList()),
+    onSubmitProductOrder: (ProductOrder) -> Unit = {},
+    onOpenSponsorTab: (() -> Unit)? = null
 ) {
     val isPublic = session.role == UserRole.PUBLIC
     val today = QrAndExportUtils.todayIso()
+
+    val publicProducts = remember { defaultPublicGoshalaProducts() }
+    var selectedProductCategory by remember { mutableStateOf("ALL") }
+    val filteredPublicProducts = remember(publicProducts, selectedProductCategory) {
+        if (selectedProductCategory == "ALL") publicProducts
+        else publicProducts.filter { it.categoryKey == selectedProductCategory }
+    }
+    var purchasingProduct by remember { mutableStateOf<PublicGoshalaProduct?>(null) }
+    var showFarmerDialog by remember { mutableStateOf(false) }
+    var latestRequestBanner by remember { mutableStateOf<PublicRequestSummary?>(null) }
 
     val totalCattle = if (isPublic) summary.totalCattle.toInt().coerceAtLeast(cattle.size) else cattle.size
     val healthyCattle = if (isPublic) summary.healthyCattle.toInt().coerceAtLeast(cattle.count { it.healthStatus == "HEALTHY" })
@@ -321,6 +339,58 @@ fun HomeScreen(
             }
         }
 
+        // Optional Confirmation Banner after Public Product Buy or Farmer Application
+        if (isPublic && latestRequestBanner != null) {
+            item(key = "public_request_confirmation") {
+                val banner = latestRequestBanner!!
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, ForestGreen.copy(alpha = 0.45f), RoundedCornerShape(18.dp))
+                        .testTag("public_request_confirmation_card"),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = SoftGreenTint)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = ForestGreen,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = banner.title,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = ForestGreen
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                text = banner.detail,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = DarkText
+                            )
+                        }
+                        IconButton(
+                            onClick = { latestRequestBanner = null },
+                            modifier = Modifier.testTag("dismiss_public_request_banner")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = str(language, "बंद करें", "Dismiss"),
+                                tint = ForestGreen
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         // 2. LIVE KPI SUMMARY CARDS (6 Metrics from Prompt)
         item {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -452,7 +522,7 @@ fun HomeScreen(
                             QuickActionPill(
                                 label = str(language, "गौ-गोद लें", "Sponsor Cow"),
                                 icon = Icons.Default.Favorite,
-                                onClick = { onNavigate(Routes.DONATIONS) },
+                                onClick = { onOpenSponsorTab?.invoke() ?: onNavigate(Routes.DONATIONS) },
                                 modifier = Modifier.weight(1f),
                                 testTag = "quick_sponsor"
                             )
@@ -547,6 +617,96 @@ fun HomeScreen(
                 }
             }
         }
+        // 6. PHASE 1 PUBLIC USER SECTIONS (Read-Only Info, Products Catalog & Farmer-Goshala Cooperation)
+        if (isPublic) {
+            item(key = "public_goshala_overview") {
+                PublicGoshalaOverviewCard(
+                    language = language,
+                    totalCattle = totalCattle,
+                    healthyCattle = healthyCattle,
+                    approvedCowsCount = cattle.size,
+                    onOpenCattle = { onNavigate(Routes.CATTLE) }
+                )
+            }
+
+            item(key = "public_production_process") {
+                PublicProductionProcessCard(language = language)
+            }
+
+            item(key = "public_schemes") {
+                PublicSchemesCard(
+                    language = language,
+                    onOpenDonations = { onNavigate(Routes.DONATIONS) },
+                    onOpenFarmerForm = { showFarmerDialog = true },
+                    onOpenSponsor = { onOpenSponsorTab?.invoke() ?: onNavigate(Routes.DONATIONS) }
+                )
+            }
+
+            item(key = "public_products_header") {
+                PublicProductsHeaderAndFilters(
+                    language = language,
+                    selectedCategory = selectedProductCategory,
+                    onSelectCategory = { selectedProductCategory = it }
+                )
+            }
+
+            items(
+                items = filteredPublicProducts,
+                key = { product -> "public_product_${product.id}" }
+            ) { product ->
+                PublicProductCard(
+                    language = language,
+                    product = product,
+                    onBuyClick = { purchasingProduct = product }
+                )
+            }
+
+            item(key = "public_my_orders") {
+                PublicMyProductOrdersSection(
+                    language = language,
+                    ordersState = productOrdersState
+                )
+            }
+
+            item(key = "public_farmer_relation_details") {
+                PublicFarmerRelationDetailsCard(language = language)
+            }
+
+            item(key = "public_farmer_relation_cta") {
+                PublicFarmerApplicationCtaCard(
+                    language = language,
+                    onOpenFarmerApplication = { showFarmerDialog = true }
+                )
+            }
+        }
+    }
+
+    if (isPublic) {
+        purchasingProduct?.let { selectedProd ->
+            ProductPurchaseRequestDialog(
+                language = language,
+                session = session,
+                product = selectedProd,
+                onDismiss = { purchasingProduct = null },
+                onSubmitted = { summaryResult ->
+                    latestRequestBanner = summaryResult
+                    purchasingProduct = null
+                },
+                onSubmitOrder = onSubmitProductOrder
+            )
+        }
+
+        if (showFarmerDialog) {
+            FarmerContactApplicationDialog(
+                language = language,
+                session = session,
+                onDismiss = { showFarmerDialog = false },
+                onSubmitted = { summaryResult ->
+                    latestRequestBanner = summaryResult
+                    showFarmerDialog = false
+                }
+            )
+        }
     }
 }
 
@@ -599,6 +759,7 @@ object Routes {
     const val FARMERS = "farmers"
     const val PRODUCTION = "production"
     const val DONATIONS = "donations"
+    const val APPLICATIONS = "applications"
     const val AI_ASSISTANT = "ai_assistant"
     const val REPORTS = "reports"
     const val NOTIFICATIONS = "notifications"
