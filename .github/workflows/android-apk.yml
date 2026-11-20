@@ -50,16 +50,33 @@ jobs:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
           GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
         run: |
-          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
-            printf '%s\n' "$GOOGLE_SERVICES_JSON" > app/google-services.json
-            echo "Restored app/google-services.json from GOOGLE_SERVICES_JSON secret"
+          set +x
+          mkdir -p app
+
+          if [ -f app/google-services.json ]; then
+            echo "Using existing app/google-services.json from repository"
+          elif [ -f google-services.json ]; then
+            cp google-services.json app/google-services.json
+            echo "Copied google-services.json from repository root to app/google-services.json"
+          elif [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            if printf '%s' "$GOOGLE_SERVICES_JSON" | grep -q '^[[:space:]]*{'; then
+              printf '%s\n' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+            else
+              printf '%s' "$GOOGLE_SERVICES_JSON" | tr -d '\r\n' | base64 --decode > app/google-services.json
+            fi
+            chmod 600 app/google-services.json
+            echo "Created app/google-services.json from GOOGLE_SERVICES_JSON secret"
           elif [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
-            echo "$GOOGLE_SERVICES_JSON_BASE64" | tr -d '\r\n' | base64 --decode > app/google-services.json
-            echo "Restored app/google-services.json from GOOGLE_SERVICES_JSON_BASE64 secret"
+            printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | tr -d '\r\n' | base64 --decode > app/google-services.json
+            chmod 600 app/google-services.json
+            echo "Created app/google-services.json from GOOGLE_SERVICES_JSON_BASE64 secret"
+          else
+            echo "::error::app/google-services.json not found and GOOGLE_SERVICES_JSON secret is not configured. In GitHub go to Settings -> Secrets and variables -> Actions -> New repository secret, create GOOGLE_SERVICES_JSON, and paste your downloaded google-services.json content."
+            exit 1
           fi
 
-          if [ ! -f app/google-services.json ]; then
-            echo "::error::Missing app/google-services.json! Add GitHub Secret GOOGLE_SERVICES_JSON (paste raw app/google-services.json) or GOOGLE_SERVICES_JSON_BASE64, or commit app/google-services.json for com.aistudio.gosalasamiti.jbgsxk."
+          if ! python3 -m json.tool app/google-services.json > /dev/null 2>&1; then
+            echo "::error::app/google-services.json is not valid JSON. Re-check the GOOGLE_SERVICES_JSON secret value."
             exit 1
           fi
 
@@ -69,9 +86,11 @@ jobs:
           fi
 
           if ! grep -q '"client_type"[[:space:]]*:[[:space:]]*3' app/google-services.json; then
-            echo "::error::app/google-services.json is missing OAuth client_type 3 (Web Client ID) needed to generate R.string.default_web_client_id."
+            echo "::error::app/google-services.json is missing OAuth client_type 3 (Web Client ID) required to generate R.string.default_web_client_id."
             exit 1
           fi
+
+          echo "Verified app/google-services.json structure (package_name and OAuth client_type 3 present)"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
