@@ -44,12 +44,16 @@ fun StaffManagementScreen(
     onUpdateStaff: (String, Boolean, Double, Map<String, List<String>>) -> Unit,
     onAddStaffOperation: (StaffOperation) -> Unit,
     onDeleteStaff: (String) -> Unit = {},
-    onDeleteInvite: (String) -> Unit = {}
+    onDeleteInvite: (String) -> Unit = {},
+    onCreateEmployeeWithDetails: ((employeeId: String, email: String, name: String, phone: String, designation: String, salary: Double, active: Boolean, perms: Map<String, List<String>>) -> Unit)? = null,
+    onUpdateStaffWithDetails: ((uid: String, employeeId: String, name: String, phone: String, designation: String, active: Boolean, salary: Double, perms: Map<String, List<String>>) -> Unit)? = null,
+    onUpdateInvite: ((email: String, employeeId: String, name: String, phone: String, designation: String, salary: Double, active: Boolean, perms: Map<String, List<String>>) -> Unit)? = null
 ) {
-    var selectedTab by remember { mutableIntStateOf(0) }
+    var selectedTab by remember { mutableIntStateOf(if (session.role == UserRole.ADMIN) 0 else 1) }
     var showInviteDialog by remember { mutableStateOf(false) }
     var showOpsDialog by remember { mutableStateOf(false) }
     var editingStaff by remember { mutableStateOf<StaffAccount?>(null) }
+    var editingInvite by remember { mutableStateOf<StaffInvite?>(null) }
     var deletingStaff by remember { mutableStateOf<StaffAccount?>(null) }
     var deletingInvite by remember { mutableStateOf<StaffInvite?>(null) }
 
@@ -64,7 +68,7 @@ fun StaffManagementScreen(
                 ) {
                     Icon(Icons.Default.PersonAdd, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
-                    Text(str(language, "स्टाफ जोड़ें", "Authorize Staff"))
+                    Text(str(language, "कर्मचारी जोड़ें", "Add Employee"))
                 }
             } else if (selectedTab == 1 && (session.role == UserRole.ADMIN || session.canAdd(AppModule.STAFF))) {
                 ExtendedFloatingActionButton(
@@ -90,7 +94,7 @@ fun StaffManagementScreen(
                 Tab(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    text = { Text(str(language, "स्टाफ व अनुमतियाँ", "Staff & Permissions")) }
+                    text = { Text(str(language, "कर्मचारी व अनुमतियाँ", "Employees & Roles")) }
                 )
                 Tab(
                     selected = selectedTab == 1,
@@ -105,7 +109,7 @@ fun StaffManagementScreen(
                     EmptyStateCard(
                         icon = Icons.Default.Lock,
                         title = str(language, "केवल प्रशासक के लिए", "Admin Access Only"),
-                        subtitle = str(language, "स्टाफ खाते व अनुमतियाँ केवल प्रशासक प्रबंधित कर सकते हैं।", "Only Admin can create or edit staff accounts and module permissions.")
+                        subtitle = str(language, "कर्मचारी खाते व अनुमतियाँ केवल प्रशासक प्रबंधित कर सकते हैं।", "Only Admin can create or edit employee accounts and module permissions.")
                     )
                 } else {
                     val accounts = (staffAccountsState as? DataUiState.Success)?.data.orEmpty()
@@ -113,12 +117,12 @@ fun StaffManagementScreen(
                     if (accounts.isEmpty() && invites.isEmpty()) {
                         EmptyStateCard(
                             icon = Icons.Default.Groups,
-                            title = str(language, "कोई स्टाफ पंजीकृत नहीं", "No staff accounts yet"),
-                            subtitle = str(language, "Google ईमेल द्वारा नया स्टाफ जोड़ें और मॉड्यूल-वार VIEW/ADD/EDIT/DELETE अनुमतियाँ तय करें।", "Authorize staff via Google email and assign granular CRUD permissions.")
+                            title = str(language, "कोई कर्मचारी पंजीकृत नहीं", "No employees registered yet"),
+                            subtitle = str(language, "नया कर्मचारी पंजीकृत करें, Employee ID व ईमेल दें और मॉड्यूल-वार VIEW/ADD/EDIT/DELETE अनुमतियाँ तय करें।", "Register employees with Employee ID & Email and assign granular CRUD permissions.")
                         )
                     } else {
                         LazyColumn(
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                             contentPadding = PaddingValues(bottom = 84.dp)
                         ) {
                             items(accounts, key = { it.id }) { staff ->
@@ -127,23 +131,48 @@ fun StaffManagementScreen(
                                     shape = RoundedCornerShape(16.dp),
                                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                                 ) {
-                                    Column(modifier = Modifier.padding(14.dp)) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Column(modifier = Modifier.weight(1f)) {
-                                                Text(staff.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                                                Text("${staff.designation} • ${staff.email}", style = MaterialTheme.typography.bodySmall)
-                                                Text("${str(language, "वेतन", "Salary")}: ₹${staff.monthlySalary.toInt()}/माह", style = MaterialTheme.typography.labelSmall, color = ForestGreen)
+                                                Row(
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(staff.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, maxLines = 1)
+                                                    Surface(
+                                                        shape = RoundedCornerShape(6.dp),
+                                                        color = if (staff.active) SoftGreenTint else SoftRedTint
+                                                    ) {
+                                                        Text(
+                                                            text = if (staff.active) str(language, "सक्रिय", "Active") else str(language, "निष्क्रिय", "Inactive"),
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = if (staff.active) ForestGreen else AlertRed,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
+                                                val empMeta = listOfNotNull(
+                                                    staff.employeeId.takeIf { it.isNotBlank() }?.let { "ID: $it" },
+                                                    staff.designation.takeIf { it.isNotBlank() },
+                                                    staff.phone.takeIf { it.isNotBlank() }
+                                                ).joinToString(" • ")
+                                                if (empMeta.isNotBlank()) {
+                                                    Text(empMeta, style = MaterialTheme.typography.bodySmall, color = ForestGreen, fontWeight = FontWeight.Medium, maxLines = 1)
+                                                }
+                                                Text("${staff.email} • ₹${staff.monthlySalary.toInt()}/माह", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                                             }
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 FilledTonalButton(
                                                     onClick = { editingStaff = staff },
+                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                                                     modifier = Modifier.testTag("staff_edit_${staff.uid}")
                                                 ) {
-                                                    Text(str(language, "अनुमतियाँ", "Edit"))
+                                                    Text(str(language, "संपादित", "Edit"), maxLines = 1)
                                                 }
                                                 if (staff.uid != session.uid) {
                                                     IconButton(
@@ -159,19 +188,22 @@ fun StaffManagementScreen(
                                                 }
                                             }
                                         }
-                                        Spacer(Modifier.height(6.dp))
-                                        Text(
-                                            text = staff.permissions.entries.joinToString(" | ") { "${it.key}:${it.value.joinToString(",")}" }.ifBlank { "No permissions" },
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
+                                        if (staff.permissions.isNotEmpty()) {
+                                            Spacer(Modifier.height(4.dp))
+                                            Text(
+                                                text = staff.permissions.entries.joinToString(" | ") { "${it.key}:${it.value.joinToString(",")}" },
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 2
+                                            )
+                                        }
                                     }
                                 }
                             }
                             if (invites.isNotEmpty()) {
                                 item {
                                     Text(
-                                        text = str(language, "पूर्व-स्वीकृत स्टाफ आमंत्रण (लॉगिन प्रतीक्षित)", "Pre-Authorized Invites (Pending Sign-In)"),
+                                        text = str(language, "पंजीकृत कर्मचारी आमंत्रण (प्रथम लॉगिन प्रतीक्षित)", "Pre-Authorized Employee Invites (Pending First Login)"),
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -184,27 +216,66 @@ fun StaffManagementScreen(
                                         Row(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .padding(12.dp),
+                                                .padding(horizontal = 12.dp, vertical = 10.dp),
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Column(modifier = Modifier.weight(1f)) {
-                                                Text("${inv.name} (${inv.designation})", fontWeight = FontWeight.Bold)
-                                                Text(inv.email, style = MaterialTheme.typography.bodySmall)
-                                                Text(
-                                                    text = inv.permissions.entries.joinToString(" | ") { "${it.key}: ${it.value.joinToString("/")}" },
-                                                    style = MaterialTheme.typography.labelSmall
-                                                )
+                                                Row(
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text("${inv.name} (${inv.designation})", fontWeight = FontWeight.Bold, maxLines = 1)
+                                                    Surface(
+                                                        shape = RoundedCornerShape(6.dp),
+                                                        color = if (inv.active) SoftGreenTint else SoftRedTint
+                                                    ) {
+                                                        Text(
+                                                            text = if (inv.active) str(language, "सक्रिय", "Active") else str(language, "निष्क्रिय", "Inactive"),
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = if (inv.active) ForestGreen else AlertRed,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
+                                                val meta = listOfNotNull(
+                                                    inv.employeeId.takeIf { it.isNotBlank() }?.let { "ID: $it" },
+                                                    inv.phone.takeIf { it.isNotBlank() }
+                                                ).joinToString(" • ")
+                                                if (meta.isNotBlank()) {
+                                                    Text(meta, style = MaterialTheme.typography.labelSmall, color = ForestGreen, maxLines = 1)
+                                                }
+                                                Text(inv.email, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                                                if (inv.permissions.isNotEmpty()) {
+                                                    Text(
+                                                        text = inv.permissions.entries.joinToString(" | ") { "${it.key}: ${it.value.joinToString("/")}" },
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        maxLines = 2
+                                                    )
+                                                }
                                             }
-                                            IconButton(
-                                                onClick = { deletingInvite = inv },
-                                                modifier = Modifier.testTag("invite_delete_${inv.email}")
-                                            ) {
-                                                Icon(
-                                                    Icons.Default.DeleteOutline,
-                                                    contentDescription = str(language, "आमंत्रण हटाएं", "Delete invite"),
-                                                    tint = AlertRed
-                                                )
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                IconButton(
+                                                    onClick = { editingInvite = inv },
+                                                    modifier = Modifier.testTag("invite_edit_${inv.email}")
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.Edit,
+                                                        contentDescription = str(language, "आमंत्रण संपादित करें", "Edit invite"),
+                                                        tint = ForestGreen
+                                                    )
+                                                }
+                                                IconButton(
+                                                    onClick = { deletingInvite = inv },
+                                                    modifier = Modifier.testTag("invite_delete_${inv.email}")
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.DeleteOutline,
+                                                        contentDescription = str(language, "आमंत्रण हटाएं", "Delete invite"),
+                                                        tint = AlertRed
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -274,8 +345,12 @@ fun StaffManagementScreen(
         StaffInvitePermissionDialog(
             language = language,
             onDismiss = { showInviteDialog = false },
-            onSave = { email, name, phone, desig, salary, perms ->
-                onCreateInvite(email, name, phone, desig, salary, perms)
+            onSave = { employeeId, email, name, phone, desig, salary, active, perms ->
+                if (onCreateEmployeeWithDetails != null) {
+                    onCreateEmployeeWithDetails(employeeId, email, name, phone, desig, salary, active, perms)
+                } else {
+                    onCreateInvite(email, name, phone, desig, salary, perms)
+                }
                 showInviteDialog = false
             }
         )
@@ -286,20 +361,40 @@ fun StaffManagementScreen(
             language = language,
             staff = staff,
             onDismiss = { editingStaff = null },
-            onSave = { active, salary, perms ->
-                onUpdateStaff(staff.uid, active, salary, perms)
+            onSave = { empId, name, phone, desig, active, salary, perms ->
+                if (onUpdateStaffWithDetails != null) {
+                    onUpdateStaffWithDetails(staff.uid, empId, name, phone, desig, active, salary, perms)
+                } else {
+                    onUpdateStaff(staff.uid, active, salary, perms)
+                }
                 editingStaff = null
+            }
+        )
+    }
+
+    editingInvite?.let { inv ->
+        EditInvitePermissionDialog(
+            language = language,
+            invite = inv,
+            onDismiss = { editingInvite = null },
+            onSave = { empId, name, phone, desig, active, salary, perms ->
+                if (onUpdateInvite != null) {
+                    onUpdateInvite(inv.email, empId, name, phone, desig, salary, active, perms)
+                } else {
+                    onCreateInvite(inv.email, name, phone, desig, salary, perms)
+                }
+                editingInvite = null
             }
         )
     }
 
     deletingStaff?.let { staff ->
         ConfirmActionDialog(
-            title = str(language, "स्टाफ खाता हटाएं", "Delete Staff Account"),
+            title = str(language, "कर्मचारी खाता हटाएं", "Delete Employee Account"),
             message = str(
                 language,
-                "क्या आप वाकई ${staff.name} (${staff.email}) का स्टाफ खाता हटाना चाहते हैं?",
-                "Are you sure you want to delete staff account ${staff.name} (${staff.email})?"
+                "क्या आप वाकई ${staff.name} (${staff.email}) का कर्मचारी खाता हटाना चाहते हैं?",
+                "Are you sure you want to delete employee account ${staff.name} (${staff.email})?"
             ),
             confirmLabel = str(language, "हटाएं", "Delete"),
             cancelLabel = str(language, "रद्द करें", "Cancel"),
@@ -313,11 +408,11 @@ fun StaffManagementScreen(
 
     deletingInvite?.let { inv ->
         ConfirmActionDialog(
-            title = str(language, "स्टाफ आमंत्रण हटाएं", "Delete Staff Invite"),
+            title = str(language, "कर्मचारी आमंत्रण हटाएं", "Delete Employee Invite"),
             message = str(
                 language,
                 "क्या आप वाकई ${inv.name} (${inv.email}) का आमंत्रण रद्द करना चाहते हैं?",
-                "Are you sure you want to remove staff invite for ${inv.name} (${inv.email})?"
+                "Are you sure you want to remove employee invite for ${inv.name} (${inv.email})?"
             ),
             confirmLabel = str(language, "हटाएं", "Delete"),
             cancelLabel = str(language, "रद्द करें", "Cancel"),
@@ -331,7 +426,7 @@ fun StaffManagementScreen(
 
     if (showOpsDialog) {
         val activeStaffList = (staffAccountsState as? DataUiState.Success)?.data.orEmpty()
-        var staffName by remember { mutableStateOf(activeStaffList.firstOrNull()?.name ?: "") }
+        var staffName by remember { mutableStateOf(activeStaffList.firstOrNull()?.name ?: session.displayName) }
         var staffUid by remember { mutableStateOf(activeStaffList.firstOrNull()?.uid ?: session.uid) }
         var entryType by remember { mutableStateOf("ATTENDANCE") }
         var attStatus by remember { mutableStateOf("PRESENT") }
@@ -428,13 +523,15 @@ fun StaffManagementScreen(
 private fun StaffInvitePermissionDialog(
     language: AppLanguage,
     onDismiss: () -> Unit,
-    onSave: (String, String, String, String, Double, Map<String, List<String>>) -> Unit
+    onSave: (String, String, String, String, String, Double, Boolean, Map<String, List<String>>) -> Unit
 ) {
+    var employeeId by remember { mutableStateOf("EMP-${(101..999).random()}") }
     var email by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
     var designation by remember { mutableStateOf("गौ सेवक") }
     var salary by remember { mutableStateOf("10000") }
+    var active by remember { mutableStateOf(true) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     val permState = remember {
         mutableStateMapOf<String, Set<String>>().apply {
@@ -445,15 +542,75 @@ private fun StaffInvitePermissionDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(str(language, "नया स्टाफ व अनुमतियाँ", "Authorize Staff & Permissions"), fontWeight = FontWeight.Bold) },
+        title = { Text(str(language, "नया कर्मचारी पंजीकरण व अनुमतियाँ", "Register Employee & Permissions"), fontWeight = FontWeight.Bold) },
         text = {
             Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 errorMsg?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold) }
-                OutlinedTextField(value = email, onValueChange = { email = it; errorMsg = null }, label = { Text(str(language, "Google ईमेल *", "Staff Google Email *")) }, singleLine = true)
-                OutlinedTextField(value = name, onValueChange = { name = it; errorMsg = null }, label = { Text(str(language, "पूरा नाम *", "Full Name *")) }, singleLine = true)
-                OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text(str(language, "मोबाइल नंबर", "Mobile")) }, singleLine = true)
-                OutlinedTextField(value = designation, onValueChange = { designation = it }, label = { Text(str(language, "पद / जिम्मेदारी", "Designation")) }, singleLine = true)
-                OutlinedTextField(value = salary, onValueChange = { salary = it }, label = { Text(str(language, "मासिक वेतन (₹)", "Monthly Salary (₹)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
+                OutlinedTextField(
+                    value = employeeId,
+                    onValueChange = { employeeId = it },
+                    label = { Text(str(language, "कर्मचारी आईडी (Employee ID)", "Employee ID")) },
+                    singleLine = true,
+                    modifier = Modifier.testTag("staff_employee_id_input")
+                )
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it; errorMsg = null },
+                    label = { Text(str(language, "लॉगिन ईमेल / Gmail *", "Login Email / Gmail *")) },
+                    singleLine = true,
+                    modifier = Modifier.testTag("staff_email_input")
+                )
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it; errorMsg = null },
+                    label = { Text(str(language, "कर्मचारी का पूरा नाम *", "Full Name *")) },
+                    singleLine = true,
+                    modifier = Modifier.testTag("staff_name_input")
+                )
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = { phone = it },
+                    label = { Text(str(language, "मोबाइल नंबर", "Mobile Number")) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    singleLine = true,
+                    modifier = Modifier.testTag("staff_phone_input")
+                )
+                OutlinedTextField(
+                    value = designation,
+                    onValueChange = { designation = it },
+                    label = { Text(str(language, "पद / जिम्मेदारी", "Designation")) },
+                    singleLine = true,
+                    modifier = Modifier.testTag("staff_designation_input")
+                )
+                OutlinedTextField(
+                    value = salary,
+                    onValueChange = { salary = it },
+                    label = { Text(str(language, "मासिक वेतन (₹)", "Monthly Salary (₹)")) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.testTag("staff_salary_input")
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = active,
+                        onCheckedChange = { active = it },
+                        modifier = Modifier.testTag("staff_invite_active_switch")
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (active) str(language, "खाता सक्रिय (Active)", "Account Active")
+                        else str(language, "खाता निष्क्रिय (Inactive)", "Account Inactive")
+                    )
+                }
+                Text(
+                    text = str(
+                        language,
+                        "नोट: कर्मचारी इस ईमेल से Email/Password (साइनअप/लॉगिन) या Google Sign-In द्वारा अपने Employee Dashboard में प्रवेश करेंगे।",
+                        "Note: Employee signs in with this Email via Email/Password or Google Sign-In to open Employee Dashboard."
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Spacer(Modifier.height(4.dp))
                 Text(str(language, "मॉड्यूल अनुमतियाँ (अनअसाइन डिफ़ॉल्ट रूप से बंद हैं):", "Module Permissions (Unassigned denied by default):"), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                 PermissionMatrixEditor(language = language, permState = permState)
@@ -462,17 +619,18 @@ private fun StaffInvitePermissionDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    if (!email.contains("@") || name.isBlank()) {
-                        errorMsg = str(language, "कृपया सही Google ईमेल और पूरा नाम दर्ज करें।", "Please enter a valid Google email and full name.")
+                    val cleanEmail = email.trim().lowercase()
+                    if (!cleanEmail.contains("@") || !cleanEmail.contains(".") || name.isBlank()) {
+                        errorMsg = str(language, "कृपया सही ईमेल और पूरा नाम दर्ज करें।", "Please enter a valid email and full name.")
                         return@Button
                     }
                     val cleanMap = permState.filterValues { it.isNotEmpty() }.mapValues { it.value.toList() }
                     val cleanDesignation = designation.trim().ifBlank { "गौ सेवक" }
-                    onSave(email.trim().lowercase(), name.trim(), phone.trim(), cleanDesignation, salary.toDoubleOrNull() ?: 0.0, cleanMap)
+                    onSave(employeeId.trim(), cleanEmail, name.trim(), phone.trim(), cleanDesignation, salary.toDoubleOrNull() ?: 0.0, active, cleanMap)
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
                 modifier = Modifier.testTag("staff_invite_save_button")
-            ) { Text(str(language, "स्वीकृत करें", "Authorize")) }
+            ) { Text(str(language, "पंजीकृत करें", "Register")) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(str(language, "रद्द करें", "Cancel")) } }
     )
@@ -483,8 +641,12 @@ private fun EditStaffPermissionDialog(
     language: AppLanguage,
     staff: StaffAccount,
     onDismiss: () -> Unit,
-    onSave: (Boolean, Double, Map<String, List<String>>) -> Unit
+    onSave: (String, String, String, String, Boolean, Double, Map<String, List<String>>) -> Unit
 ) {
+    var employeeId by remember { mutableStateOf(staff.employeeId) }
+    var name by remember { mutableStateOf(staff.name) }
+    var phone by remember { mutableStateOf(staff.phone) }
+    var designation by remember { mutableStateOf(staff.designation) }
     var active by remember { mutableStateOf(staff.active) }
     var salary by remember { mutableStateOf(staff.monthlySalary.toInt().toString()) }
     val permState = remember {
@@ -495,14 +657,22 @@ private fun EditStaffPermissionDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("${staff.name} — ${str(language, "अनुमतियाँ", "Permissions")}", fontWeight = FontWeight.Bold) },
+        title = { Text("${staff.name} — ${str(language, "विवरण व अनुमतियाँ", "Details & Permissions")}", fontWeight = FontWeight.Bold) },
         text = {
             Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(checked = active, onCheckedChange = { active = it })
+                    Switch(
+                        checked = active,
+                        onCheckedChange = { active = it },
+                        modifier = Modifier.testTag("staff_edit_active_switch")
+                    )
                     Spacer(Modifier.width(8.dp))
-                    Text(if (active) str(language, "खाता सक्रिय", "Account Active") else str(language, "खाता निष्क्रिय", "Account Suspended"))
+                    Text(if (active) str(language, "खाता सक्रिय (Active)", "Account Active") else str(language, "खाता निष्क्रिय (Inactive)", "Account Inactive"))
                 }
+                OutlinedTextField(value = employeeId, onValueChange = { employeeId = it }, label = { Text(str(language, "कर्मचारी आईडी (Employee ID)", "Employee ID")) }, singleLine = true)
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text(str(language, "नाम", "Name")) }, singleLine = true)
+                OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text(str(language, "मोबाइल नंबर", "Mobile")) }, singleLine = true)
+                OutlinedTextField(value = designation, onValueChange = { designation = it }, label = { Text(str(language, "पद / जिम्मेदारी", "Designation")) }, singleLine = true)
                 OutlinedTextField(value = salary, onValueChange = { salary = it }, label = { Text(str(language, "मासिक वेतन (₹)", "Monthly Salary")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
                 PermissionMatrixEditor(language = language, permState = permState)
             }
@@ -511,7 +681,59 @@ private fun EditStaffPermissionDialog(
             Button(
                 onClick = {
                     val cleanMap = permState.filterValues { it.isNotEmpty() }.mapValues { it.value.toList() }
-                    onSave(active, salary.toDoubleOrNull() ?: staff.monthlySalary, cleanMap)
+                    onSave(employeeId.trim(), name.trim().ifBlank { staff.name }, phone.trim(), designation.trim().ifBlank { staff.designation }, active, salary.toDoubleOrNull() ?: staff.monthlySalary, cleanMap)
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                modifier = Modifier.testTag("staff_edit_save_button")
+            ) { Text(str(language, "अपडेट करें", "Update")) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(str(language, "रद्द करें", "Cancel")) } }
+    )
+}
+
+@Composable
+private fun EditInvitePermissionDialog(
+    language: AppLanguage,
+    invite: StaffInvite,
+    onDismiss: () -> Unit,
+    onSave: (String, String, String, String, Boolean, Double, Map<String, List<String>>) -> Unit
+) {
+    var employeeId by remember { mutableStateOf(invite.employeeId) }
+    var name by remember { mutableStateOf(invite.name) }
+    var phone by remember { mutableStateOf(invite.phone) }
+    var designation by remember { mutableStateOf(invite.designation) }
+    var active by remember { mutableStateOf(invite.active) }
+    var salary by remember { mutableStateOf(invite.monthlySalary.toInt().toString()) }
+    val permState = remember {
+        mutableStateMapOf<String, Set<String>>().apply {
+            invite.permissions.forEach { (k, v) -> put(k, v.toSet()) }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("${invite.name} — ${str(language, "आमंत्रण संपादन", "Edit Invite")}", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(invite.email, style = MaterialTheme.typography.labelSmall, color = ForestGreen)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = active, onCheckedChange = { active = it })
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (active) str(language, "आमंत्रण सक्रिय (Active)", "Invite Active") else str(language, "निष्क्रिय (Inactive)", "Inactive"))
+                }
+                OutlinedTextField(value = employeeId, onValueChange = { employeeId = it }, label = { Text(str(language, "कर्मचारी आईडी", "Employee ID")) }, singleLine = true)
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text(str(language, "नाम", "Name")) }, singleLine = true)
+                OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text(str(language, "मोबाइल नंबर", "Mobile")) }, singleLine = true)
+                OutlinedTextField(value = designation, onValueChange = { designation = it }, label = { Text(str(language, "पद", "Designation")) }, singleLine = true)
+                OutlinedTextField(value = salary, onValueChange = { salary = it }, label = { Text(str(language, "मासिक वेतन (₹)", "Monthly Salary")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
+                PermissionMatrixEditor(language = language, permState = permState)
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val cleanMap = permState.filterValues { it.isNotEmpty() }.mapValues { it.value.toList() }
+                    onSave(employeeId.trim(), name.trim().ifBlank { invite.name }, phone.trim(), designation.trim().ifBlank { invite.designation }, active, salary.toDoubleOrNull() ?: invite.monthlySalary, cleanMap)
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = ForestGreen)
             ) { Text(str(language, "अपडेट करें", "Update")) }
@@ -525,10 +747,10 @@ private fun PermissionMatrixEditor(
     language: AppLanguage,
     permState: MutableMap<String, Set<String>>
 ) {
-    val modules = AppModule.entries.filter { it != AppModule.STAFF }
+    val modules = AppModule.entries
     modules.forEach { mod ->
         val current = permState[mod.key].orEmpty()
-        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp).testTag("perm_row_${mod.key}")) {
             Text(mod.label(language), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -539,9 +761,15 @@ private fun PermissionMatrixEditor(
                     FilterChip(
                         selected = selected,
                         onClick = {
-                            permState[mod.key] = if (selected) current - action.name else current + action.name
+                            permState[mod.key] = when {
+                                selected && action == CrudAction.VIEW -> emptySet()
+                                selected -> current - action.name
+                                action != CrudAction.VIEW -> current + action.name + CrudAction.VIEW.name
+                                else -> current + action.name
+                            }
                         },
-                        label = { Text(action.label(language), style = MaterialTheme.typography.labelSmall) }
+                        label = { Text(action.label(language), style = MaterialTheme.typography.labelSmall) },
+                        modifier = Modifier.testTag("perm_${mod.key}_${action.name}")
                     )
                 }
             }

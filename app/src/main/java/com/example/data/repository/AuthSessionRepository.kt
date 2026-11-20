@@ -21,14 +21,19 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.auth
 import com.google.firebase.auth.userProfileChangeRequest
+import com.google.firebase.firestore.DocumentSnapshot.ServerTimestampBehavior
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -46,6 +51,14 @@ sealed interface SessionResolution {
         val uid: String,
         val email: String
     ) : SessionResolution
+}
+
+sealed interface LiveStaffUpdate {
+    data class Updated(val session: UserSession) : LiveStaffUpdate
+    data class Deactivated(
+        val messageHi: String,
+        val messageEn: String
+    ) : LiveStaffUpdate
 }
 
 class AuthSessionRepository(
@@ -303,10 +316,11 @@ class AuthSessionRepository(
                     )
                 }
 
-                // 3. Check Staff account (/staffAccounts/{uid}); if absent, check Admin-issued invite for verified email
+                // 3. Check Staff account (/staffAccounts/{uid}); if absent, check Admin-issued invite for matching email
+                // Works for BOTH Google Sign-In and Email/Password staff accounts
                 val staffRef = db.collection("staffAccounts").document(uid)
                 var staffSnap = staffRef.get().await()
-                if (!staffSnap.exists() && user.isEmailVerified && email.isNotBlank()) {
+                if (!staffSnap.exists() && email.isNotBlank()) {
                     val inviteSnap = try {
                         db.collection("staffInvites").document(email).get().await()
                     } catch (_: Exception) {
@@ -315,12 +329,23 @@ class AuthSessionRepository(
                     if (inviteSnap != null && inviteSnap.exists()) {
                         val invite = inviteSnap.toObject(StaffInvite::class.java)
                         if (invite != null) {
+                            if (!invite.active) {
+                                return@withTimeout Result.success(
+                                    SessionResolution.UnauthorizedPortal(
+                                        messageHi = "आपका कर्मचारी खाता प्रशासक द्वारा निष्क्रिय (Inactive) रखा गया है। कृपया गौशाला प्रशासक से संपर्क करें।",
+                                        messageEn = "Your employee account is marked inactive by the Administrator. Please contact the Goshala Admin.",
+                                        uid = uid,
+                                        email = email
+                                    )
+                                )
+                            }
                             val claimPayload = mapOf(
                                 "uid" to uid,
+                                "employeeId" to invite.employeeId.trim().take(40),
                                 "email" to email,
-                                "name" to invite.name.ifBlank { displayName },
-                                "phone" to invite.phone,
-                                "designation" to invite.designation.ifBlank { "गौ सेवक" },
+                                "name" to invite.name.ifBlank { displayName }.take(100),
+                                "phone" to invite.phone.take(20),
+                                "designation" to invite.designation.ifBlank { "गौ सेवक" }.take(80),
                                 "monthlySalary" to invite.monthlySalary,
                                 "active" to true,
                                 "permissions" to invite.permissions,
@@ -335,7 +360,17 @@ class AuthSessionRepository(
 
                 if (staffSnap.exists()) {
                     val staff = staffSnap.toObject(StaffAccount::class.java)
-                    if (staff != null && staff.active) {
+                    if (staff != null) {
+                        if (!staff.active) {
+                            return@withTimeout Result.success(
+                                SessionResolution.UnauthorizedPortal(
+                                    messageHi = "आपका कर्मचारी खाता प्रशासक द्वारा निष्क्रिय (Inactive) कर दिया गया है। कृपया गौशाला प्रशासक से संपर्क करें।",
+                                    messageEn = "Your employee account has been deactivated by the Administrator. Please contact the Goshala Admin.",
+                                    uid = uid,
+                                    email = email
+                                )
+                            )
+                        }
                         return@withTimeout Result.success(
                             SessionResolution.Authorized(
                                 UserSession(
@@ -345,7 +380,9 @@ class AuthSessionRepository(
                                     photoUrl = photoUrl,
                                     role = UserRole.STAFF,
                                     permissions = staff.permissions,
-                                    staffActive = true
+                                    staffActive = true,
+                                    employeeId = staff.employeeId,
+                                    designation = staff.designation
                                 )
                             )
                         )
@@ -389,6 +426,36 @@ class AuthSessionRepository(
             Result.failure(e)
         }
     }
+
+    fun observeLiveStaffSession(uid: String, baseSession: UserSession): Flow<LiveStaffUpdate> =
+        db.collection("staffAccounts").document(uid)
+            .snapshots()
+            .map { snap ->
+                val staff = snap.toObject(StaffAccount::class.java, ServerTimestampBehavior.ESTIMATE)
+                if (!snap.exists() || staff == null || !staff.active) {
+                    LiveStaffUpdate.Deactivated(
+                        messageHi = "आपका कर्मचारी खाता प्रशासक द्वारा निष्क्रिय या हटा दिया गया है। पुनः प्रवेश हेतु प्रशासक से संपर्क करें।",
+                        messageEn = "Your employee account was deactivated or removed by the Administrator. Please contact Admin."
+                    )
+                } else {
+                    LiveStaffUpdate.Updated(
+                        baseSession.copy(
+                            displayName = staff.name.ifBlank { baseSession.displayName },
+                            permissions = staff.permissions,
+                            staffActive = staff.active,
+                            employeeId = staff.employeeId,
+                            designation = staff.designation
+                        )
+                    )
+                }
+            }
+            .catch { error ->
+                val fsErr = generateSequence(error) { it.cause }
+                    .filterIsInstance<FirebaseFirestoreException>()
+                    .firstOrNull()
+                if (fsErr == null && error is CancellationException) throw error
+                Log.w(TAG, "Live staff session stream notice", fsErr ?: error)
+            }
 
     suspend fun signOut(credentialManager: CredentialManager) {
         withContext(NonCancellable) {

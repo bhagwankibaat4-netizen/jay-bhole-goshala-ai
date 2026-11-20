@@ -28,11 +28,13 @@ data class UserProfile(
 @IgnoreExtraProperties
 data class StaffInvite(
     @DocumentId val id: String = "",
+    val employeeId: String = "",
     val email: String = "",
     val name: String = "",
     val phone: String = "",
     val designation: String = "",
     val monthlySalary: Double = 0.0,
+    val active: Boolean = true,
     val permissions: Map<String, List<String>> = emptyMap(),
     val createdBy: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
@@ -44,6 +46,7 @@ data class StaffInvite(
 data class StaffAccount(
     @DocumentId val id: String = "",
     val uid: String = "",
+    val employeeId: String = "",
     val email: String = "",
     val name: String = "",
     val phone: String = "",

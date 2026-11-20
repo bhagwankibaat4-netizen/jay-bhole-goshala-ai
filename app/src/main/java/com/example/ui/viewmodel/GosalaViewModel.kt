@@ -199,10 +199,28 @@ class GosalaViewModel(
         designation: String,
         salary: Double,
         permissions: Map<String, List<String>>,
+        language: AppLanguage,
+        employeeId: String = "",
+        active: Boolean = true
+    ) {
+        runMutation(language, "कर्मचारी पंजीकरण व अनुमतियां सहेजी गईं।", "Employee registration & permissions saved.") {
+            repository.createStaffInvite(session, email, name, phone, designation, salary, permissions, employeeId, active)
+        }
+    }
+
+    fun updateStaffInvite(
+        email: String,
+        employeeId: String,
+        name: String,
+        phone: String,
+        designation: String,
+        salary: Double,
+        active: Boolean,
+        permissions: Map<String, List<String>>,
         language: AppLanguage
     ) {
-        runMutation(language, "कर्मचारी आमंत्रण व अनुमतियां सहेजी गईं।", "Staff invite & permissions saved.") {
-            repository.createStaffInvite(session, email, name, phone, designation, salary, permissions)
+        runMutation(language, "कर्मचारी आमंत्रण अपडेट हुआ।", "Employee invite updated.") {
+            repository.updateStaffInvite(session, email, employeeId, name, phone, designation, salary, active, permissions)
         }
     }
 
@@ -211,10 +229,14 @@ class GosalaViewModel(
         active: Boolean,
         salary: Double,
         permissions: Map<String, List<String>>,
-        language: AppLanguage
+        language: AppLanguage,
+        employeeId: String? = null,
+        name: String? = null,
+        phone: String? = null,
+        designation: String? = null
     ) {
-        runMutation(language, "कर्मचारी अनुमतियां अपडेट हुईं।", "Staff permissions updated.") {
-            repository.updateStaffAccount(session, staffUid, active, salary, permissions)
+        runMutation(language, "कर्मचारी विवरण व अनुमतियां अपडेट हुईं।", "Employee details & permissions updated.") {
+            repository.updateStaffAccount(session, staffUid, active, salary, permissions, employeeId, name, phone, designation)
         }
     }
 
@@ -318,6 +340,18 @@ class GosalaViewModel(
         }
     }
 
+    fun updateDonation(donation: Donation, language: AppLanguage) {
+        runMutation(language, "दान विवरण अपडेट हुआ।", "Donation updated.") {
+            repository.updateDonation(session, donation)
+        }
+    }
+
+    fun deleteDonation(donationId: String, language: AppLanguage) {
+        runMutation(language, "दान प्रविष्टि हटाई गई।", "Donation deleted.") {
+            repository.deleteDonation(session, donationId)
+        }
+    }
+
     fun submitSponsorship(sponsorship: Sponsorship, language: AppLanguage) {
         runMutation(
             language,
@@ -328,6 +362,12 @@ class GosalaViewModel(
         }
     }
 
+    fun updateSponsorship(sponsorship: Sponsorship, language: AppLanguage) {
+        runMutation(language, "गौ-गोद विवरण अपडेट हुआ।", "Sponsorship updated.") {
+            repository.updateSponsorship(session, sponsorship)
+        }
+    }
+
     fun reviewSponsorship(sponsorship: Sponsorship, approve: Boolean, language: AppLanguage) {
         runMutation(
             language,
@@ -335,6 +375,12 @@ class GosalaViewModel(
             if (approve) "Application approved and certificate issued." else "Application rejected."
         ) {
             repository.reviewSponsorship(session, sponsorship, approve)
+        }
+    }
+
+    fun deleteSponsorship(sponsorshipId: String, language: AppLanguage) {
+        runMutation(language, "गौ-गोद आवेदन हटाया गया।", "Sponsorship deleted.") {
+            repository.deleteSponsorship(session, sponsorshipId)
         }
     }
 

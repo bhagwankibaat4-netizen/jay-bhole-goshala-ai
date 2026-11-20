@@ -42,6 +42,7 @@ import com.example.data.model.UserRole
 import com.example.data.model.UserSession
 import com.example.data.repository.AuthSessionRepository
 import com.example.data.repository.GosalaRepository
+import com.example.data.repository.LiveStaffUpdate
 import com.example.data.repository.SessionResolution
 import com.example.ui.auth.AuthScreen
 import com.example.ui.components.EmptyStateCard
@@ -184,6 +185,36 @@ class MainActivity : ComponentActivity() {
                                 isResolving = false
                             }
                         )
+                    }
+
+                    // Real-time staff status & permission sync: immediately apply permission updates or kick deactivated employees
+                    LaunchedEffect(activeBootstrap, sessionState?.uid, sessionState?.role) {
+                        val current = sessionState
+                        val authRepo = activeBootstrap?.authRepo
+                        if (authRepo == null || current == null || current.role != UserRole.STAFF) {
+                            return@LaunchedEffect
+                        }
+                        authRepo.observeLiveStaffSession(current.uid, current).collect { update ->
+                            when (update) {
+                                is LiveStaffUpdate.Updated -> {
+                                    if (sessionState?.uid == current.uid) {
+                                        sessionState = update.session
+                                    }
+                                }
+                                is LiveStaffUpdate.Deactivated -> {
+                                    portalRejectionMsg = str(
+                                        language,
+                                        update.messageHi,
+                                        update.messageEn
+                                    )
+                                    rejectedAccountNote = "Email: ${current.email.ifBlank { "-" }} | UID: ${current.uid}"
+                                    skipAutoSignIn = true
+                                    sessionState = null
+                                    authRepo.signOut(credentialManager)
+                                    authNavController.redirectToLogin()
+                                }
+                            }
+                        }
                     }
 
                     val verifiedSession = sessionState?.takeIf {
@@ -392,8 +423,13 @@ private fun GosalaAuthenticatedShell(
     onSetThemeMode: (AppThemeMode) -> Unit,
     onSignOut: () -> Unit
 ) {
+    val permSignature = remember(session.permissions) {
+        session.permissions.entries
+            .sortedBy { it.key }
+            .joinToString("|") { (k, v) -> "$k:${v.sorted().joinToString(",")}" }
+    }
     val gosalaViewModel: GosalaViewModel = viewModel(
-        key = "${session.uid}_${session.role.name}",
+        key = "${session.uid}_${session.role.name}_${session.staffActive}_${permSignature.hashCode()}",
         factory = viewModelFactory {
             initializer { GosalaViewModel(GosalaRepository(db), session) }
         }
@@ -461,10 +497,17 @@ private fun GosalaAuthenticatedShell(
             )
             UserRole.STAFF -> buildList {
                 add(NavTabItem(Routes.STAFF_DASHBOARD, "कार्य", "Staff", Icons.Default.Badge, "nav_staff_home"))
-                if (session.canView(AppModule.CATTLE)) {
-                    add(NavTabItem(Routes.CATTLE, "गौवंश", "Cattle", Icons.Default.Pets, "nav_cattle"))
-                }
-                add(NavTabItem(Routes.AI_ASSISTANT, "AI सहायक", "AI", Icons.Default.AutoAwesome, "nav_ai"))
+                val candidateTabs = listOf(
+                    AppModule.CATTLE to NavTabItem(Routes.CATTLE, "गौवंश", "Cattle", Icons.Default.Pets, "nav_cattle"),
+                    AppModule.FEED to NavTabItem(Routes.FEED, "चारा", "Feed", Icons.Default.Grass, "nav_feed"),
+                    AppModule.DONATIONS to NavTabItem(Routes.DONATIONS, "दान-गोद", "Donations", Icons.Default.VolunteerActivism, "nav_donations"),
+                    AppModule.FINANCE to NavTabItem(Routes.FINANCE, "वित्त", "Finance", Icons.Default.AccountBalanceWallet, "nav_finance"),
+                    AppModule.AI to NavTabItem(Routes.AI_ASSISTANT, "AI सहायक", "AI", Icons.Default.AutoAwesome, "nav_ai")
+                )
+                candidateTabs
+                    .filter { (module, _) -> session.canView(module) }
+                    .take(3)
+                    .forEach { (_, tab) -> add(tab) }
                 add(NavTabItem(Routes.PROFILE, "प्रोफाइल", "Profile", Icons.Default.Person, "nav_profile"))
             }
             UserRole.PUBLIC -> listOf(
@@ -700,6 +743,12 @@ private fun GosalaAuthenticatedShell(
                                 session = session,
                                 cattle = cattleList,
                                 feedLogs = feedLogsList,
+                                health = healthList,
+                                finance = financeList,
+                                donations = donationsList,
+                                sponsorships = sponsorshipsList,
+                                farmers = farmersList,
+                                compost = compostList,
                                 onNavigate = { route ->
                                     if (primaryTabs.any { it.route == route }) {
                                         navigateTopTab(route)
@@ -800,7 +849,46 @@ private fun GosalaAuthenticatedShell(
                                 },
                                 onAddStaffOperation = { op -> gosalaViewModel.addStaffOperation(op, language) },
                                 onDeleteStaff = { uid -> gosalaViewModel.deleteStaffAccount(uid, language) },
-                                onDeleteInvite = { email -> gosalaViewModel.deleteStaffInvite(email, language) }
+                                onDeleteInvite = { email -> gosalaViewModel.deleteStaffInvite(email, language) },
+                                onCreateEmployeeWithDetails = { empId, email, name, phone, desig, sal, active, perms ->
+                                    gosalaViewModel.createStaffInvite(
+                                        email = email,
+                                        name = name,
+                                        phone = phone,
+                                        designation = desig,
+                                        salary = sal,
+                                        permissions = perms,
+                                        language = language,
+                                        employeeId = empId,
+                                        active = active
+                                    )
+                                },
+                                onUpdateStaffWithDetails = { uid, empId, name, phone, desig, active, sal, perms ->
+                                    gosalaViewModel.updateStaffAccount(
+                                        staffUid = uid,
+                                        active = active,
+                                        salary = sal,
+                                        permissions = perms,
+                                        language = language,
+                                        employeeId = empId,
+                                        name = name,
+                                        phone = phone,
+                                        designation = desig
+                                    )
+                                },
+                                onUpdateInvite = { email, empId, name, phone, desig, sal, active, perms ->
+                                    gosalaViewModel.updateStaffInvite(
+                                        email = email,
+                                        employeeId = empId,
+                                        name = name,
+                                        phone = phone,
+                                        designation = desig,
+                                        salary = sal,
+                                        active = active,
+                                        permissions = perms,
+                                        language = language
+                                    )
+                                }
                             )
                         }
                     }
@@ -866,42 +954,62 @@ private fun GosalaAuthenticatedShell(
                     }
 
                     composable(Routes.DONATIONS) {
-                        DonationAndAdoptionScreen(
+                        ProtectedRoute(
+                            allowed = session.role == UserRole.ADMIN ||
+                                session.role == UserRole.PUBLIC ||
+                                session.canView(AppModule.DONATIONS),
                             language = language,
-                            session = session,
-                            cattleList = cattleList,
-                            donationsState = donationsState,
-                            sponsorshipsState = sponsorshipsState,
-                            preselectedCattleForSponsor = preselectedCattleForSponsor,
-                            onClearPreselectedCattle = { preselectedCattleForSponsor = null },
-                            onSubmitDonation = { don -> gosalaViewModel.submitDonation(don, language) },
-                            onVerifyDonation = { id, status -> gosalaViewModel.verifyDonation(id, status, language) },
-                            onSubmitSponsorship = { sp -> gosalaViewModel.submitSponsorship(sp, language) },
-                            onReviewSponsorship = { sp, approve -> gosalaViewModel.reviewSponsorship(sp, approve, language) }
-                        )
+                            onRedirectHome = { navigateTopTab(homeRouteForRole) }
+                        ) {
+                            DonationAndAdoptionScreen(
+                                language = language,
+                                session = session,
+                                cattleList = cattleList,
+                                donationsState = donationsState,
+                                sponsorshipsState = sponsorshipsState,
+                                preselectedCattleForSponsor = preselectedCattleForSponsor,
+                                onClearPreselectedCattle = { preselectedCattleForSponsor = null },
+                                onSubmitDonation = { don -> gosalaViewModel.submitDonation(don, language) },
+                                onVerifyDonation = { id, status -> gosalaViewModel.verifyDonation(id, status, language) },
+                                onSubmitSponsorship = { sp -> gosalaViewModel.submitSponsorship(sp, language) },
+                                onReviewSponsorship = { sp, approve -> gosalaViewModel.reviewSponsorship(sp, approve, language) },
+                                onUpdateDonation = { don -> gosalaViewModel.updateDonation(don, language) },
+                                onDeleteDonation = { id -> gosalaViewModel.deleteDonation(id, language) },
+                                onUpdateSponsorship = { sp -> gosalaViewModel.updateSponsorship(sp, language) },
+                                onDeleteSponsorship = { id -> gosalaViewModel.deleteSponsorship(id, language) }
+                            )
+                        }
                     }
 
                     composable(Routes.AI_ASSISTANT) {
-                        AiAssistantScreen(
+                        ProtectedRoute(
+                            allowed = session.role == UserRole.ADMIN ||
+                                session.role == UserRole.PUBLIC ||
+                                session.canView(AppModule.AI),
                             language = language,
-                            session = session,
-                            summary = summary,
-                            cattle = cattleList,
-                            health = healthList,
-                            feedLogs = feedLogsList,
-                            finance = financeList,
-                            farmers = farmersList,
-                            farmerTx = farmerTxList,
-                            compost = compostList,
-                            donations = donationsList,
-                            aiViewModel = aiViewModel,
-                            initialMode = initialAiMode,
-                            onSaveCattleDraft = { item -> gosalaViewModel.saveCattle(item, false, language) },
-                            onSaveFeedDraft = { log -> gosalaViewModel.addFeedLog(log, language) },
-                            onSaveExpenseDraft = { tx -> gosalaViewModel.addFinancialTx(tx, language) },
-                            onSaveHealthDraft = { rec -> gosalaViewModel.addHealthRecord(rec, language) },
-                            onNavigateToCattleSearch = { navigateTopTab(Routes.CATTLE) }
-                        )
+                            onRedirectHome = { navigateTopTab(homeRouteForRole) }
+                        ) {
+                            AiAssistantScreen(
+                                language = language,
+                                session = session,
+                                summary = summary,
+                                cattle = cattleList,
+                                health = healthList,
+                                feedLogs = feedLogsList,
+                                finance = financeList,
+                                farmers = farmersList,
+                                farmerTx = farmerTxList,
+                                compost = compostList,
+                                donations = donationsList,
+                                aiViewModel = aiViewModel,
+                                initialMode = initialAiMode,
+                                onSaveCattleDraft = { item -> gosalaViewModel.saveCattle(item, false, language) },
+                                onSaveFeedDraft = { log -> gosalaViewModel.addFeedLog(log, language) },
+                                onSaveExpenseDraft = { tx -> gosalaViewModel.addFinancialTx(tx, language) },
+                                onSaveHealthDraft = { rec -> gosalaViewModel.addHealthRecord(rec, language) },
+                                onNavigateToCattleSearch = { navigateTopTab(Routes.CATTLE) }
+                            )
+                        }
                     }
 
                     composable(Routes.REPORTS) {

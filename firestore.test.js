@@ -683,3 +683,334 @@ test("Edit/Delete enforcement for Finance, Farmers, Compost, Staff + auditLogs r
   );
 });
 
+test("Email/Password staff invite claim with employeeId, inactive invite block, and inactive staff full lockout", async () => {
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID, {
+    email: ADMIN_EMAIL,
+    email_verified: true,
+  }).firestore();
+
+  const activeEmpUid = "emp_email_pass_1";
+  const activeEmpEmail = "karmachari1@gosala.org";
+  const inactiveInviteUid = "emp_inactive_invite";
+  const inactiveInviteEmail = "blocked_invite@gosala.org";
+  const deactivatedEmpUid = "emp_deactivated";
+
+  // Admin creates active invite with employeeId AND an inactive invite
+  await assertSucceeds(
+    adminDb.collection("staffInvites").doc(activeEmpEmail).set({
+      employeeId: "EMP-101",
+      email: activeEmpEmail,
+      name: "सुरेश सेवक",
+      phone: "9876500001",
+      designation: "गौ सेवक",
+      monthlySalary: 11000,
+      active: true,
+      permissions: { feed: ["VIEW", "ADD"], cattle: ["VIEW"] },
+      createdBy: ADMIN_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("staffInvites").doc(inactiveInviteEmail).set({
+      employeeId: "EMP-102",
+      email: inactiveInviteEmail,
+      name: "निष्क्रिय आमंत्रण",
+      phone: "9876500002",
+      designation: "सहायक",
+      monthlySalary: 9000,
+      active: false,
+      permissions: { feed: ["VIEW"] },
+      createdBy: ADMIN_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+
+  // Email/Password employee (email_verified: false) can read and claim their active invite
+  const empDb = testEnv.authenticatedContext(activeEmpUid, {
+    email: activeEmpEmail,
+    email_verified: false,
+  }).firestore();
+  await assertSucceeds(empDb.collection("staffInvites").doc(activeEmpEmail).get());
+  await assertSucceeds(
+    empDb.collection("staffAccounts").doc(activeEmpUid).set({
+      uid: activeEmpUid,
+      employeeId: "EMP-101",
+      email: activeEmpEmail,
+      name: "सुरेश सेवक",
+      phone: "9876500001",
+      designation: "गौ सेवक",
+      monthlySalary: 11000,
+      active: true,
+      permissions: { feed: ["VIEW", "ADD"], cattle: ["VIEW"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+
+  // Inactive invite CANNOT be claimed into staffAccounts
+  const blockedInviteDb = testEnv.authenticatedContext(inactiveInviteUid, {
+    email: inactiveInviteEmail,
+    email_verified: false,
+  }).firestore();
+  await assertFails(
+    blockedInviteDb.collection("staffAccounts").doc(inactiveInviteUid).set({
+      uid: inactiveInviteUid,
+      employeeId: "EMP-102",
+      email: inactiveInviteEmail,
+      name: "निष्क्रिय आमंत्रण",
+      phone: "9876500002",
+      designation: "सहायक",
+      monthlySalary: 9000,
+      active: true,
+      permissions: { feed: ["VIEW"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+
+  // Seed an inactive staff account and test complete backend lockout
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("staffAccounts").doc(deactivatedEmpUid).set({
+      uid: deactivatedEmpUid,
+      employeeId: "EMP-103",
+      email: "deactivated@gosala.org",
+      name: "बंद खाता सेवक",
+      designation: "सेवक",
+      monthlySalary: 10000,
+      active: false,
+      permissions: { cattle: ["VIEW", "ADD"], donations: ["VIEW", "ADD", "EDIT", "DELETE"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    await db.collection("goshalaInfo").doc("public_summary").set({
+      totalCattle: 10,
+      healthyCattle: 9,
+      sickCattle: 1,
+      todayFeedKg: 100,
+      todayExpenseInr: 1200,
+      totalDonationsInr: 25000,
+      updatedAt: pastDate(),
+    });
+  });
+
+  const inactiveStaffDb = testEnv.authenticatedContext(deactivatedEmpUid, {
+    email: "deactivated@gosala.org",
+    email_verified: true,
+  }).firestore();
+
+  // Inactive staff can read own staffAccounts doc (for live client sign-out) but NOTHING else
+  await assertSucceeds(inactiveStaffDb.collection("staffAccounts").doc(deactivatedEmpUid).get());
+  await assertFails(inactiveStaffDb.collection("goshalaInfo").doc("public_summary").get());
+  await assertFails(inactiveStaffDb.collection("cattle").where("publicApproved", "==", true).get());
+  await assertFails(inactiveStaffDb.collection("donations").get());
+  await assertFails(inactiveStaffDb.collection("sponsorships").get());
+  await assertFails(
+    inactiveStaffDb.collection("donations").doc("don_inactive_try").set({
+      donorUid: deactivatedEmpUid,
+      donorName: "Blocked",
+      donorPhone: "9876543210",
+      purpose: "GAU_SEVA",
+      amountInr: 500,
+      paymentProviderRef: "REF",
+      paymentStatus: "PENDING_VERIFICATION",
+      receiptNumber: "RCPT-BLK",
+      dateStr: "2026-11-20",
+      recordedBy: deactivatedEmpUid,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+});
+
+test("Donations & Go-Seva Sponsorship granular Staff CRUD enforcement (VIEW vs ADD/EDIT/DELETE)", async () => {
+  const viewOnlyUid = "staff_don_viewer";
+  const fullCrudUid = "staff_don_manager";
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("staffAccounts").doc(viewOnlyUid).set({
+      uid: viewOnlyUid,
+      employeeId: "EMP-201",
+      email: "donviewer@gosala.org",
+      name: "केवल देखने वाला सेवक",
+      designation: "सहायक",
+      monthlySalary: 9500,
+      active: true,
+      permissions: { donations: ["VIEW"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    await db.collection("staffAccounts").doc(fullCrudUid).set({
+      uid: fullCrudUid,
+      employeeId: "EMP-202",
+      email: "donmanager@gosala.org",
+      name: "दान प्रबंधक",
+      designation: "प्रबंधक",
+      monthlySalary: 16000,
+      active: true,
+      permissions: { donations: ["VIEW", "ADD", "EDIT", "DELETE"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    await db.collection("donations").doc("don_seed_1").set({
+      donorUid: PUBLIC_UID,
+      donorName: "भक्त राम",
+      donorPhone: "9876543210",
+      donorCity: "पोरसा",
+      purpose: "GAU_SEVA",
+      amountInr: 2100,
+      paymentProviderRef: "UPI-101",
+      paymentStatus: "PENDING_VERIFICATION",
+      receiptNumber: "RCPT-SEED-1",
+      dateStr: "2026-11-20",
+      recordedBy: PUBLIC_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    await db.collection("sponsorships").doc("sp_seed_1").set({
+      applicantUid: PUBLIC_UID,
+      applicantName: "भक्त श्याम",
+      applicantPhone: "9876543211",
+      applicantAddress: "मुरैना",
+      cattleId: "cow_1",
+      cattleName: "गौरी",
+      animalCode: "JBGS-G-001",
+      monthlySupportInr: 2100,
+      durationMonths: 3,
+      totalSupportInr: 6300,
+      status: "PENDING",
+      disclaimerAccepted: true,
+      dateStr: "2026-11-20",
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+  });
+
+  const viewDb = testEnv.authenticatedContext(viewOnlyUid, {
+    email: "donviewer@gosala.org",
+    email_verified: false,
+  }).firestore();
+  const fullDb = testEnv.authenticatedContext(fullCrudUid, {
+    email: "donmanager@gosala.org",
+    email_verified: false,
+  }).firestore();
+
+  // VIEW-only staff CAN read donations & sponsorships, CANNOT add/edit/delete either!
+  await assertSucceeds(viewDb.collection("donations").get());
+  await assertSucceeds(viewDb.collection("sponsorships").get());
+  await assertFails(
+    viewDb.collection("donations").doc("don_view_fail").set({
+      donorUid: viewOnlyUid,
+      donorName: "View Staff",
+      donorPhone: "9876543210",
+      purpose: "GAU_SEVA",
+      amountInr: 1100,
+      paymentProviderRef: "UPI",
+      paymentStatus: "PENDING_VERIFICATION",
+      receiptNumber: "RCPT-FAIL",
+      dateStr: "2026-11-20",
+      recordedBy: viewOnlyUid,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+  await assertFails(
+    viewDb.collection("donations").doc("don_seed_1").update({
+      paymentStatus: "VERIFIED_SUCCESS",
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertFails(viewDb.collection("donations").doc("don_seed_1").delete());
+  await assertFails(
+    viewDb.collection("sponsorships").doc("sp_view_fail").set({
+      applicantUid: viewOnlyUid,
+      applicantName: "View Staff",
+      applicantPhone: "9876543210",
+      applicantAddress: "मुरैना",
+      cattleId: "cow_1",
+      cattleName: "गौरी",
+      animalCode: "JBGS-G-001",
+      monthlySupportInr: 2100,
+      durationMonths: 1,
+      totalSupportInr: 2100,
+      status: "PENDING",
+      disclaimerAccepted: true,
+      dateStr: "2026-11-20",
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+  await assertFails(
+    viewDb.collection("sponsorships").doc("sp_seed_1").update({
+      status: "APPROVED",
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertFails(viewDb.collection("sponsorships").doc("sp_seed_1").delete());
+
+  // Full CRUD staff CAN add, edit, and delete donations & sponsorships, but STILL denied admin collections
+  await assertSucceeds(
+    fullDb.collection("donations").doc("don_mgr_new").set({
+      donorUid: fullCrudUid,
+      donorName: "दानदाता मोहन",
+      donorPhone: "9876543215",
+      donorCity: "ग्वालियर",
+      purpose: "FODDER",
+      amountInr: 5100,
+      paymentProviderRef: "CASH-101",
+      paymentStatus: "VERIFIED_SUCCESS",
+      receiptNumber: "RCPT-MGR-1",
+      dateStr: "2026-11-20",
+      recordedBy: fullCrudUid,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+  await assertSucceeds(
+    fullDb.collection("donations").doc("don_seed_1").update({
+      paymentStatus: "VERIFIED_SUCCESS",
+      amountInr: 2500,
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertSucceeds(fullDb.collection("donations").doc("don_seed_1").delete());
+
+  await assertSucceeds(
+    fullDb.collection("sponsorships").doc("sp_mgr_new").set({
+      applicantUid: fullCrudUid,
+      applicantName: "सेवा परिवार",
+      applicantPhone: "9876543222",
+      applicantAddress: "पोरसा, मुरैना",
+      cattleId: "cow_1",
+      cattleName: "गौरी",
+      animalCode: "JBGS-G-001",
+      monthlySupportInr: 2100,
+      durationMonths: 6,
+      totalSupportInr: 12600,
+      status: "PENDING",
+      disclaimerAccepted: true,
+      dateStr: "2026-11-20",
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+  await assertSucceeds(
+    fullDb.collection("sponsorships").doc("sp_seed_1").update({
+      status: "APPROVED",
+      certificateNumber: "JBGS-CERT-2026",
+      reviewedBy: fullCrudUid,
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertSucceeds(fullDb.collection("sponsorships").doc("sp_seed_1").delete());
+
+  // Non-admin staff still denied admin collections
+  await assertFails(fullDb.collection("admins").get());
+  await assertFails(fullDb.collection("staffAccounts").get());
+  await assertFails(fullDb.collection("auditLogs").get());
+});
+
+

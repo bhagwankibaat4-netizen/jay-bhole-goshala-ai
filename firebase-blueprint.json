@@ -33,11 +33,13 @@
       "description": "Admin-created staff pre-authorization keyed by lowercase email.",
       "type": "object",
       "properties": {
+        "employeeId": { "type": "string" },
         "email": { "type": "string" },
         "name": { "type": "string" },
         "phone": { "type": "string" },
         "designation": { "type": "string" },
         "monthlySalary": { "type": "number" },
+        "active": { "type": "boolean" },
         "permissions": { "type": "object" },
         "createdBy": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -51,6 +53,7 @@
       "type": "object",
       "properties": {
         "uid": { "type": "string" },
+        "employeeId": { "type": "string" },
         "email": { "type": "string" },
         "name": { "type": "string" },
         "phone": { "type": "string" },

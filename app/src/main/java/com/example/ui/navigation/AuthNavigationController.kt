@@ -130,7 +130,7 @@ class AuthNavigationController(
             is AuthNavigationState.SessionError -> Routes.AUTH_ERROR
             is AuthNavigationState.Authorized -> {
                 val session = authState.session
-                if (session.uid.isBlank()) {
+                if (session.uid.isBlank() || (session.role == UserRole.STAFF && !session.staffActive)) {
                     Routes.LOGIN
                 } else if (
                     requestedRoute != null &&
@@ -287,7 +287,7 @@ private fun RoleDestinationGuard(
     } else {
         fallbackLoadingContent()
         LaunchedEffect(authState, requiredRole) {
-            if (authorizedSession == null) {
+            if (authorizedSession == null || (authorizedSession.role == UserRole.STAFF && !authorizedSession.staffActive)) {
                 authNavController.redirectToLogin()
             } else {
                 authNavController.redirectToRoleDashboard(authorizedSession.role)

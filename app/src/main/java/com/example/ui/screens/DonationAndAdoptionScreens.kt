@@ -23,6 +23,7 @@ import com.example.core.AppLanguage
 import com.example.core.GosalaBrand
 import com.example.core.str
 import com.example.data.model.*
+import com.example.ui.components.ConfirmActionDialog
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.DataUiState
@@ -39,11 +40,19 @@ fun DonationAndAdoptionScreen(
     onSubmitDonation: (Donation) -> Unit,
     onVerifyDonation: (String, String) -> Unit,
     onSubmitSponsorship: (Sponsorship) -> Unit,
-    onReviewSponsorship: (Sponsorship, Boolean) -> Unit
+    onReviewSponsorship: (Sponsorship, Boolean) -> Unit,
+    onUpdateDonation: (Donation) -> Unit = {},
+    onDeleteDonation: (String) -> Unit = {},
+    onUpdateSponsorship: (Sponsorship) -> Unit = {},
+    onDeleteSponsorship: (String) -> Unit = {}
 ) {
     var tabIndex by remember { mutableIntStateOf(if (preselectedCattleForSponsor != null) 1 else 0) }
     var receiptDonation by remember { mutableStateOf<Donation?>(null) }
     var certSponsorship by remember { mutableStateOf<Sponsorship?>(null) }
+    var editingDonation by remember { mutableStateOf<Donation?>(null) }
+    var deletingDonation by remember { mutableStateOf<Donation?>(null) }
+    var editingSponsorship by remember { mutableStateOf<Sponsorship?>(null) }
+    var deletingSponsorship by remember { mutableStateOf<Sponsorship?>(null) }
 
     LaunchedEffect(preselectedCattleForSponsor) {
         if (preselectedCattleForSponsor != null) tabIndex = 1
@@ -58,12 +67,14 @@ fun DonationAndAdoptionScreen(
             Tab(
                 selected = tabIndex == 0,
                 onClick = { tabIndex = 0 },
-                text = { Text(str(language, "गौ सेवा दान", "Donate")) }
+                text = { Text(str(language, "गौ सेवा दान", "Donate")) },
+                modifier = Modifier.testTag("donations_tab_donate")
             )
             Tab(
                 selected = tabIndex == 1,
                 onClick = { tabIndex = 1 },
-                text = { Text(str(language, "गौ-गोद (प्रायोजन)", "Sponsor a Cow")) }
+                text = { Text(str(language, "गौ-गोद (प्रायोजन)", "Sponsor a Cow")) },
+                modifier = Modifier.testTag("donations_tab_sponsor")
             )
         }
         Spacer(Modifier.height(10.dp))
@@ -75,7 +86,9 @@ fun DonationAndAdoptionScreen(
                 donationsState = donationsState,
                 onSubmitDonation = onSubmitDonation,
                 onVerifyDonation = onVerifyDonation,
-                onOpenReceipt = { receiptDonation = it }
+                onOpenReceipt = { receiptDonation = it },
+                onEditDonation = { editingDonation = it },
+                onDeleteDonation = { deletingDonation = it }
             )
         } else {
             SponsorshipTabContent(
@@ -87,7 +100,9 @@ fun DonationAndAdoptionScreen(
                 onClearPreselected = onClearPreselectedCattle,
                 onSubmitSponsorship = onSubmitSponsorship,
                 onReviewSponsorship = onReviewSponsorship,
-                onOpenCertificate = { certSponsorship = it }
+                onOpenCertificate = { certSponsorship = it },
+                onEditSponsorship = { editingSponsorship = it },
+                onDeleteSponsorship = { deletingSponsorship = it }
             )
         }
     }
@@ -145,6 +160,154 @@ fun DonationAndAdoptionScreen(
             confirmButton = { TextButton(onClick = { certSponsorship = null }) { Text(str(language, "बंद करें", "Close")) } }
         )
     }
+
+    editingDonation?.let { don ->
+        var editName by remember(don.id) { mutableStateOf(don.donorName) }
+        var editPhone by remember(don.id) { mutableStateOf(don.donorPhone) }
+        var editCity by remember(don.id) { mutableStateOf(don.donorCity) }
+        var editAmount by remember(don.id) { mutableStateOf(don.amountInr.toInt().toString()) }
+        var editPurpose by remember(don.id) { mutableStateOf(don.purpose) }
+        var editRef by remember(don.id) { mutableStateOf(don.paymentProviderRef) }
+        var editStatus by remember(don.id) { mutableStateOf(don.paymentStatus) }
+        var editErr by remember(don.id) { mutableStateOf<String?>(null) }
+
+        AlertDialog(
+            onDismissRequest = { editingDonation = null },
+            title = { Text(str(language, "दान विवरण संपादित करें", "Edit Donation"), fontWeight = FontWeight.Bold) },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    editErr?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall) }
+                    OutlinedTextField(value = editName, onValueChange = { editName = it; editErr = null }, label = { Text(str(language, "दाता का नाम *", "Donor Name *")) }, singleLine = true)
+                    OutlinedTextField(value = editAmount, onValueChange = { editAmount = it; editErr = null }, label = { Text(str(language, "राशि (₹) *", "Amount (₹) *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
+                    OutlinedTextField(value = editPhone, onValueChange = { editPhone = it }, label = { Text(str(language, "मोबाइल", "Mobile")) }, singleLine = true)
+                    OutlinedTextField(value = editCity, onValueChange = { editCity = it }, label = { Text(str(language, "शहर / गाँव", "City / Village")) }, singleLine = true)
+                    OutlinedTextField(value = editRef, onValueChange = { editRef = it }, label = { Text(str(language, "UPI / संदर्भ", "Ref")) }, singleLine = true)
+                    Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("GAU_SEVA" to "गौ सेवा", "GREEN_FODDER" to "हरा चारा", "MEDICAL_CARE" to "चिकित्सा").forEach { (k, l) ->
+                            FilterChip(selected = editPurpose == k, onClick = { editPurpose = k }, label = { Text(l) })
+                        }
+                    }
+                    Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("PENDING_VERIFICATION", "VERIFIED_SUCCESS", "FAILED").forEach { st ->
+                            FilterChip(selected = editStatus == st, onClick = { editStatus = st }, label = { Text(st, style = MaterialTheme.typography.labelSmall) })
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val amt = editAmount.toDoubleOrNull() ?: 0.0
+                        if (editName.isBlank() || amt <= 0.0) {
+                            editErr = str(language, "सही नाम व राशि दर्ज करें।", "Enter valid donor name and amount.")
+                            return@Button
+                        }
+                        onUpdateDonation(
+                            don.copy(
+                                donorName = editName.trim(),
+                                donorPhone = editPhone.trim(),
+                                donorCity = editCity.trim(),
+                                amountInr = amt,
+                                purpose = editPurpose,
+                                paymentProviderRef = editRef.trim().ifBlank { "MANUAL_PENDING" },
+                                paymentStatus = editStatus
+                            )
+                        )
+                        editingDonation = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                    modifier = Modifier.testTag("donation_edit_save_button")
+                ) { Text(str(language, "अपडेट करें", "Update")) }
+            },
+            dismissButton = { TextButton(onClick = { editingDonation = null }) { Text(str(language, "रद्द करें", "Cancel")) } }
+        )
+    }
+
+    deletingDonation?.let { don ->
+        ConfirmActionDialog(
+            title = str(language, "दान रिकॉर्ड हटाएं", "Delete Donation Record"),
+            message = str(
+                language,
+                "क्या आप वाकई ${don.donorName} (₹${don.amountInr.toInt()}) की दान प्रविष्टि हटाना चाहते हैं?",
+                "Are you sure you want to delete donation by ${don.donorName} (₹${don.amountInr.toInt()})?"
+            ),
+            confirmLabel = str(language, "हटाएं", "Delete"),
+            cancelLabel = str(language, "रद्द करें", "Cancel"),
+            onConfirm = {
+                onDeleteDonation(don.id)
+                deletingDonation = null
+            },
+            onDismiss = { deletingDonation = null }
+        )
+    }
+
+    editingSponsorship?.let { sp ->
+        var editApplicant by remember(sp.id) { mutableStateOf(sp.applicantName) }
+        var editPhone by remember(sp.id) { mutableStateOf(sp.applicantPhone) }
+        var editAddress by remember(sp.id) { mutableStateOf(sp.applicantAddress) }
+        var editMonthly by remember(sp.id) { mutableStateOf(sp.monthlySupportInr.toInt().toString()) }
+        var editMonths by remember(sp.id) { mutableStateOf(sp.durationMonths.toString()) }
+        var editErr by remember(sp.id) { mutableStateOf<String?>(null) }
+
+        AlertDialog(
+            onDismissRequest = { editingSponsorship = null },
+            title = { Text(str(language, "गौ-गोद विवरण संपादित करें", "Edit Cow Sponsorship"), fontWeight = FontWeight.Bold) },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    editErr?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall) }
+                    OutlinedTextField(value = editApplicant, onValueChange = { editApplicant = it; editErr = null }, label = { Text(str(language, "आवेदक का नाम *", "Applicant Name *")) }, singleLine = true)
+                    OutlinedTextField(value = editPhone, onValueChange = { editPhone = it; editErr = null }, label = { Text(str(language, "मोबाइल नंबर *", "Phone *")) }, singleLine = true)
+                    OutlinedTextField(value = editAddress, onValueChange = { editAddress = it }, label = { Text(str(language, "पता *", "Address *")) })
+                    OutlinedTextField(value = editMonthly, onValueChange = { editMonthly = it }, label = { Text(str(language, "मासिक सहयोग (₹)", "Monthly Support (₹)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
+                    OutlinedTextField(value = editMonths, onValueChange = { editMonths = it }, label = { Text(str(language, "अवधि (माह)", "Duration (Months)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val mAmt = editMonthly.toDoubleOrNull() ?: 0.0
+                        val mDur = editMonths.toLongOrNull() ?: 0L
+                        if (editApplicant.isBlank() || editPhone.trim().length < 6 || mAmt <= 0.0 || mDur < 1L) {
+                            editErr = str(language, "कृपया सभी सही विवरण दर्ज करें।", "Enter valid sponsorship details.")
+                            return@Button
+                        }
+                        onUpdateSponsorship(
+                            sp.copy(
+                                applicantName = editApplicant.trim(),
+                                applicantPhone = editPhone.trim(),
+                                applicantAddress = editAddress.trim().ifBlank { sp.applicantAddress },
+                                monthlySupportInr = mAmt,
+                                durationMonths = mDur,
+                                totalSupportInr = mAmt * mDur
+                            )
+                        )
+                        editingSponsorship = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                    modifier = Modifier.testTag("sponsorship_edit_save_button")
+                ) { Text(str(language, "अपडेट करें", "Update")) }
+            },
+            dismissButton = { TextButton(onClick = { editingSponsorship = null }) { Text(str(language, "रद्द करें", "Cancel")) } }
+        )
+    }
+
+    deletingSponsorship?.let { sp ->
+        ConfirmActionDialog(
+            title = str(language, "गौ-गोद आवेदन हटाएं", "Delete Sponsorship Application"),
+            message = str(
+                language,
+                "क्या आप वाकई ${sp.applicantName} का ${sp.cattleName} हेतु गौ-गोद आवेदन हटाना चाहते हैं?",
+                "Are you sure you want to delete sponsorship by ${sp.applicantName} for ${sp.cattleName}?"
+            ),
+            confirmLabel = str(language, "हटाएं", "Delete"),
+            cancelLabel = str(language, "रद्द करें", "Cancel"),
+            onConfirm = {
+                onDeleteSponsorship(sp.id)
+                deletingSponsorship = null
+            },
+            onDismiss = { deletingSponsorship = null }
+        )
+    }
 }
 
 @Composable
@@ -154,7 +317,9 @@ private fun DonationTabContent(
     donationsState: DataUiState<List<Donation>>,
     onSubmitDonation: (Donation) -> Unit,
     onVerifyDonation: (String, String) -> Unit,
-    onOpenReceipt: (Donation) -> Unit
+    onOpenReceipt: (Donation) -> Unit,
+    onEditDonation: (Donation) -> Unit,
+    onDeleteDonation: (Donation) -> Unit
 ) {
     var donorName by remember(session.displayName) { mutableStateOf(session.displayName) }
     var donorPhone by remember { mutableStateOf("") }
@@ -164,94 +329,120 @@ private fun DonationTabContent(
     var refNote by remember { mutableStateOf("") }
     var errorMsg by remember { mutableStateOf<String?>(null) }
 
-    val canVerify = session.role == UserRole.ADMIN || session.canEdit(AppModule.DONATIONS)
+    val canAdd = session.role == UserRole.PUBLIC || session.canAdd(AppModule.DONATIONS)
+    val canEdit = session.canEdit(AppModule.DONATIONS)
+    val canDelete = session.canDelete(AppModule.DONATIONS)
 
     LazyColumn(
+        modifier = Modifier.testTag("donations_lazy_list"),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(bottom = 24.dp)
     ) {
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(str(language, "गौमाता सेवा हेतु दान करें", "Contribute to Gau Seva"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ForestGreen)
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf("501", "1100", "2100", "5100").forEach { amt ->
-                            FilterChip(
-                                selected = selectedAmount == amt,
-                                onClick = { selectedAmount = amt },
-                                label = { Text("₹$amt") }
-                            )
+        if (canAdd) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(str(language, "गौमाता सेवा हेतु दान करें", "Contribute to Gau Seva"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ForestGreen)
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf("501", "1100", "2100", "5100").forEach { amt ->
+                                FilterChip(
+                                    selected = selectedAmount == amt,
+                                    onClick = { selectedAmount = amt },
+                                    label = { Text("₹$amt") }
+                                )
+                            }
+                        }
+                        OutlinedTextField(
+                            value = selectedAmount,
+                            onValueChange = { selectedAmount = it },
+                            label = { Text(str(language, "दान राशि (₹) *", "Custom Amount (₹) *")) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(value = donorName, onValueChange = { donorName = it }, label = { Text(str(language, "दाता का नाम *", "Donor Name *")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = donorPhone, onValueChange = { donorPhone = it }, label = { Text(str(language, "मोबाइल नंबर", "Mobile")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = donorCity, onValueChange = { donorCity = it }, label = { Text(str(language, "शहर / गाँव", "City / Village")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf("GAU_SEVA" to "गौ सेवा", "GREEN_FODDER" to "हरा चारा", "MEDICAL_CARE" to "चिकित्सा").forEach { (k, l) ->
+                                FilterChip(selected = purpose == k, onClick = { purpose = k }, label = { Text(l, style = MaterialTheme.typography.labelSmall) })
+                            }
+                        }
+                        OutlinedTextField(
+                            value = refNote,
+                            onValueChange = { refNote = it },
+                            label = { Text(str(language, "UPI / बैंक संदर्भ संख्या (यदि भुगतान किया हो)", "UPI / Bank Reference (if paid)")) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            text = str(
+                                language,
+                                "सत्यापन नियम: जब तक प्रशासक द्वारा भुगतान की पुष्टि नहीं होती, दान स्थिति 'सत्यापन लंबित' रहेगी।",
+                                "Verification Policy: Unverified payments remain 'PENDING_VERIFICATION' until verified."
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        errorMsg?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall) }
+                        Button(
+                            onClick = {
+                                val amt = selectedAmount.toDoubleOrNull() ?: 0.0
+                                if (amt <= 0 || donorName.isBlank()) {
+                                    errorMsg = str(language, "कृपया नाम व सही राशि दर्ज करें।", "Enter donor name and valid amount.")
+                                    return@Button
+                                }
+                                errorMsg = null
+                                onSubmitDonation(
+                                    Donation(
+                                        donorName = donorName.trim(),
+                                        donorPhone = donorPhone.trim(),
+                                        donorCity = donorCity.trim(),
+                                        purpose = purpose,
+                                        amountInr = amt,
+                                        paymentProviderRef = refNote.trim().ifBlank { "MANUAL_PENDING" }
+                                    )
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("submit_donation_button"),
+                            colors = ButtonDefaults.buttonColors(containerColor = Saffron)
+                        ) {
+                            Icon(Icons.Default.VolunteerActivism, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(str(language, "दान दर्ज करें", "Submit Donation"))
                         }
                     }
-                    OutlinedTextField(
-                        value = selectedAmount,
-                        onValueChange = { selectedAmount = it },
-                        label = { Text(str(language, "दान राशि (₹) *", "Custom Amount (₹) *")) },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(value = donorName, onValueChange = { donorName = it }, label = { Text(str(language, "दाता का नाम *", "Donor Name *")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = donorPhone, onValueChange = { donorPhone = it }, label = { Text(str(language, "मोबाइल नंबर", "Mobile")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = donorCity, onValueChange = { donorCity = it }, label = { Text(str(language, "शहर / गाँव", "City / Village")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf("GAU_SEVA" to "गौ सेवा", "GREEN_FODDER" to "हरा चारा", "MEDICAL_CARE" to "चिकित्सा").forEach { (k, l) ->
-                            FilterChip(selected = purpose == k, onClick = { purpose = k }, label = { Text(l, style = MaterialTheme.typography.labelSmall) })
-                        }
-                    }
-                    OutlinedTextField(
-                        value = refNote,
-                        onValueChange = { refNote = it },
-                        label = { Text(str(language, "UPI / बैंक संदर्भ संख्या (यदि भुगतान किया हो)", "UPI / Bank Reference (if paid)")) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                }
+            }
+        } else {
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("donations_view_only_banner"),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = SoftGoldTint)
+                ) {
                     Text(
                         text = str(
                             language,
-                            "सत्यापन नियम: जब तक प्रशासक द्वारा भुगतान की पुष्टि नहीं होती, दान स्थिति 'सत्यापन लंबित' रहेगी।",
-                            "Verification Policy: Unverified payments remain 'PENDING_VERIFICATION' until verified."
+                            "आपके खाते को दान रिकॉर्ड केवल देखने (View Only) की अनुमति है। जोड़ने/संपादन/हटाने हेतु प्रशासक से अनुमति लें।",
+                            "Your account has View-Only permission for Donations. Contact Admin for Add/Edit/Delete access."
                         ),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = DarkText,
+                        modifier = Modifier.padding(12.dp)
                     )
-                    errorMsg?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall) }
-                    Button(
-                        onClick = {
-                            val amt = selectedAmount.toDoubleOrNull() ?: 0.0
-                            if (amt <= 0 || donorName.isBlank()) {
-                                errorMsg = str(language, "कृपया नाम व सही राशि दर्ज करें।", "Enter donor name and valid amount.")
-                                return@Button
-                            }
-                            errorMsg = null
-                            onSubmitDonation(
-                                Donation(
-                                    donorName = donorName.trim(),
-                                    donorPhone = donorPhone.trim(),
-                                    donorCity = donorCity.trim(),
-                                    purpose = purpose,
-                                    amountInr = amt,
-                                    paymentProviderRef = refNote.trim().ifBlank { "MANUAL_PENDING" }
-                                )
-                            )
-                        },
-                        modifier = Modifier.fillMaxWidth().testTag("submit_donation_button"),
-                        colors = ButtonDefaults.buttonColors(containerColor = Saffron)
-                    ) {
-                        Icon(Icons.Default.VolunteerActivism, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(str(language, "दान दर्ज करें", "Submit Donation"))
-                    }
                 }
             }
         }
@@ -269,7 +460,7 @@ private fun DonationTabContent(
                         EmptyStateCard(
                             icon = Icons.Default.ReceiptLong,
                             title = str(language, "अभी कोई दान रसीद नहीं", "No donation records yet"),
-                            subtitle = str(language, "ऊपर दिए गए फॉर्म से गौ सेवा सहयोग दर्ज करें।", "Use the form above to record a Gau Seva donation.")
+                            subtitle = str(language, "दान विवरण यहाँ प्रदर्शित होंगे।", "Donation records will appear here.")
                         )
                     }
                 } else {
@@ -290,19 +481,42 @@ private fun DonationTabContent(
                                     )
                                 }
                                 Text("${don.receiptNumber} • ${don.purpose} • ${don.dateStr}", style = MaterialTheme.typography.bodySmall)
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                                Row(
+                                    modifier = Modifier
+                                        .padding(top = 8.dp)
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     OutlinedButton(onClick = { onOpenReceipt(don) }) {
                                         Text(str(language, "रसीद देखें", "Receipt"))
                                     }
-                                    if (canVerify && don.paymentStatus == "PENDING_VERIFICATION") {
+                                    if (canEdit && don.paymentStatus == "PENDING_VERIFICATION") {
                                         Button(
                                             onClick = { onVerifyDonation(don.id, "VERIFIED_SUCCESS") },
-                                            colors = ButtonDefaults.buttonColors(containerColor = GoshalaGreen)
+                                            colors = ButtonDefaults.buttonColors(containerColor = GoshalaGreen),
+                                            modifier = Modifier.testTag("donation_verify_${don.id}")
                                         ) { Text(str(language, "सत्यापित करें", "Verify")) }
                                         TextButton(
                                             onClick = { onVerifyDonation(don.id, "FAILED") },
                                             colors = ButtonDefaults.textButtonColors(contentColor = AlertRed)
                                         ) { Text(str(language, "असफल", "Failed")) }
+                                    }
+                                    if (canEdit) {
+                                        IconButton(
+                                            onClick = { onEditDonation(don) },
+                                            modifier = Modifier.testTag("donation_edit_${don.id}")
+                                        ) {
+                                            Icon(Icons.Default.Edit, contentDescription = str(language, "संपादित करें", "Edit"), tint = ForestGreen)
+                                        }
+                                    }
+                                    if (canDelete) {
+                                        IconButton(
+                                            onClick = { onDeleteDonation(don) },
+                                            modifier = Modifier.testTag("donation_delete_${don.id}")
+                                        ) {
+                                            Icon(Icons.Default.DeleteOutline, contentDescription = str(language, "हटाएं", "Delete"), tint = AlertRed)
+                                        }
                                     }
                                 }
                             }
@@ -324,7 +538,9 @@ private fun SponsorshipTabContent(
     onClearPreselected: () -> Unit,
     onSubmitSponsorship: (Sponsorship) -> Unit,
     onReviewSponsorship: (Sponsorship, Boolean) -> Unit,
-    onOpenCertificate: (Sponsorship) -> Unit
+    onOpenCertificate: (Sponsorship) -> Unit,
+    onEditSponsorship: (Sponsorship) -> Unit,
+    onDeleteSponsorship: (Sponsorship) -> Unit
 ) {
     val sponsorable = cattleList.filter { it.publicApproved && it.sponsorshipAvailable }
     var selectedCow by remember(preselectedCattle, sponsorable) {
@@ -338,101 +554,129 @@ private fun SponsorshipTabContent(
     var disclaimerChecked by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
 
+    val canAdd = session.role == UserRole.PUBLIC || session.canAdd(AppModule.DONATIONS)
+    val canEdit = session.canEdit(AppModule.DONATIONS)
+    val canDelete = session.canDelete(AppModule.DONATIONS)
+
     LazyColumn(
+        modifier = Modifier.testTag("sponsorships_lazy_list"),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(bottom = 24.dp)
     ) {
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(str(language, "गौ-गोद (सेवा प्रायोजन) आवेदन", "Cow Sponsorship Application"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ForestGreen)
-                    if (sponsorable.isEmpty()) {
-                        Text(
-                            text = str(language, "अभी कोई स्वीकृत गाय प्रायोजन हेतु सूचीबद्ध नहीं है।", "No public cows are currently listed for sponsorship."),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    } else {
-                        Text(str(language, "गौवंश चुनें:", "Select Cow:"), style = MaterialTheme.typography.labelMedium)
-                        Row(
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            sponsorable.take(4).forEach { cow ->
-                                FilterChip(
-                                    selected = selectedCow?.id == cow.id,
-                                    onClick = {
-                                        selectedCow = cow
-                                        monthlySupport = cow.monthlySupportInr.toString()
-                                        onClearPreselected()
-                                    },
-                                    label = { Text(cow.name) }
-                                )
-                            }
-                        }
-                        OutlinedTextField(value = applicantName, onValueChange = { applicantName = it }, label = { Text(str(language, "आवेदक का नाम *", "Applicant Name *")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                        OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text(str(language, "मोबाइल नंबर *", "Phone *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), singleLine = true, modifier = Modifier.fillMaxWidth())
-                        OutlinedTextField(value = address, onValueChange = { address = it }, label = { Text(str(language, "पता *", "Address *")) }, modifier = Modifier.fillMaxWidth())
-                        Row(
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            listOf("1", "3", "6", "12").forEach { m ->
-                                FilterChip(selected = durationMonths == m, onClick = { durationMonths = m }, label = { Text("$m ${str(language, "माह", "Mo")}") })
-                            }
-                        }
-                        OutlinedTextField(
-                            value = monthlySupport,
-                            onValueChange = { monthlySupport = it },
-                            label = { Text(str(language, "मासिक सेवा राशि (₹)", "Monthly Support (₹)")) },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = disclaimerChecked, onCheckedChange = { disclaimerChecked = it })
+        if (canAdd) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(str(language, "गौ-गोद (सेवा प्रायोजन) आवेदन", "Cow Sponsorship Application"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ForestGreen)
+                        if (sponsorable.isEmpty()) {
                             Text(
-                                text = str(
-                                    language,
-                                    "मैं समझता/समझती हूँ कि गौ-गोद (प्रायोजन) केवल चारा व सेवा सहयोग है, इससे गाय का कानूनी स्वामित्व हस्तांतरित नहीं होता।",
-                                    "I understand cow sponsorship supports daily care only and does NOT transfer legal ownership of the cow."
-                                ),
-                                style = MaterialTheme.typography.labelSmall
+                                text = str(language, "अभी कोई स्वीकृत गाय प्रायोजन हेतु सूचीबद्ध नहीं है।", "No public cows are currently listed for sponsorship."),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                        }
-                        errorMsg?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall) }
-                        Button(
-                            onClick = {
-                                val cow = selectedCow
-                                if (cow == null || applicantName.isBlank() || phone.length < 6 || address.isBlank() || !disclaimerChecked) {
-                                    errorMsg = str(language, "कृपया सभी विवरण भरें और कानूनी अस्वीकरण स्वीकार करें।", "Fill all fields and accept the ownership disclaimer.")
-                                    return@Button
-                                }
-                                errorMsg = null
-                                onSubmitSponsorship(
-                                    Sponsorship(
-                                        applicantName = applicantName.trim(),
-                                        applicantPhone = phone.trim(),
-                                        applicantAddress = address.trim(),
-                                        cattleId = cow.id,
-                                        cattleName = cow.name,
-                                        animalCode = cow.animalCode,
-                                        monthlySupportInr = monthlySupport.toDoubleOrNull() ?: 2100.0,
-                                        durationMonths = durationMonths.toLongOrNull() ?: 3L,
-                                        disclaimerAccepted = true
+                        } else {
+                            Text(str(language, "गौवंश चुनें:", "Select Cow:"), style = MaterialTheme.typography.labelMedium)
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                sponsorable.take(4).forEach { cow ->
+                                    FilterChip(
+                                        selected = selectedCow?.id == cow.id,
+                                        onClick = {
+                                            selectedCow = cow
+                                            monthlySupport = cow.monthlySupportInr.toString()
+                                            onClearPreselected()
+                                        },
+                                        label = { Text(cow.name) }
                                     )
+                                }
+                            }
+                            OutlinedTextField(value = applicantName, onValueChange = { applicantName = it }, label = { Text(str(language, "आवेदक का नाम *", "Applicant Name *")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text(str(language, "मोबाइल नंबर *", "Phone *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), singleLine = true, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = address, onValueChange = { address = it }, label = { Text(str(language, "पता *", "Address *")) }, modifier = Modifier.fillMaxWidth())
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf("1", "3", "6", "12").forEach { m ->
+                                    FilterChip(selected = durationMonths == m, onClick = { durationMonths = m }, label = { Text("$m ${str(language, "माह", "Mo")}") })
+                                }
+                            }
+                            OutlinedTextField(
+                                value = monthlySupport,
+                                onValueChange = { monthlySupport = it },
+                                label = { Text(str(language, "मासिक सेवा राशि (₹)", "Monthly Support (₹)")) },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = disclaimerChecked, onCheckedChange = { disclaimerChecked = it })
+                                Text(
+                                    text = str(
+                                        language,
+                                        "मैं समझता/समझती हूँ कि गौ-गोद (प्रायोजन) केवल चारा व सेवा सहयोग है, इससे गाय का कानूनी स्वामित्व हस्तांतरित नहीं होता।",
+                                        "I understand cow sponsorship supports daily care only and does NOT transfer legal ownership of the cow."
+                                    ),
+                                    style = MaterialTheme.typography.labelSmall
                                 )
-                            },
-                            modifier = Modifier.fillMaxWidth().testTag("submit_sponsorship_button"),
-                            colors = ButtonDefaults.buttonColors(containerColor = ForestGreen)
-                        ) {
-                            Text(str(language, "आवेदन जमा करें", "Submit Application"))
+                            }
+                            errorMsg?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall) }
+                            Button(
+                                onClick = {
+                                    val cow = selectedCow
+                                    if (cow == null || applicantName.isBlank() || phone.length < 6 || address.isBlank() || !disclaimerChecked) {
+                                        errorMsg = str(language, "कृपया सभी विवरण भरें और कानूनी अस्वीकरण स्वीकार करें।", "Fill all fields and accept the ownership disclaimer.")
+                                        return@Button
+                                    }
+                                    errorMsg = null
+                                    onSubmitSponsorship(
+                                        Sponsorship(
+                                            applicantName = applicantName.trim(),
+                                            applicantPhone = phone.trim(),
+                                            applicantAddress = address.trim(),
+                                            cattleId = cow.id,
+                                            cattleName = cow.name,
+                                            animalCode = cow.animalCode,
+                                            monthlySupportInr = monthlySupport.toDoubleOrNull() ?: 2100.0,
+                                            durationMonths = durationMonths.toLongOrNull() ?: 3L,
+                                            disclaimerAccepted = true
+                                        )
+                                    )
+                                },
+                                modifier = Modifier.fillMaxWidth().testTag("submit_sponsorship_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = ForestGreen)
+                            ) {
+                                Text(str(language, "आवेदन जमा करें", "Submit Application"))
+                            }
                         }
                     }
+                }
+            }
+        } else {
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("sponsorships_view_only_banner"),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = SoftGoldTint)
+                ) {
+                    Text(
+                        text = str(
+                            language,
+                            "आपके खाते को गौ-गोद (गोसेवा) आवेदन केवल देखने (View Only) की अनुमति है।",
+                            "Your account has View-Only permission for Cow Sponsorships."
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = DarkText,
+                        modifier = Modifier.padding(12.dp)
+                    )
                 }
             }
         }
@@ -475,21 +719,45 @@ private fun SponsorshipTabContent(
                                     )
                                 }
                                 Text("${sp.applicantName} • ₹${sp.monthlySupportInr.toInt()}/माह × ${sp.durationMonths} माह", style = MaterialTheme.typography.bodySmall)
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                                Row(
+                                    modifier = Modifier
+                                        .padding(top = 8.dp)
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     if (sp.status == "APPROVED") {
                                         OutlinedButton(onClick = { onOpenCertificate(sp) }) {
                                             Text(str(language, "प्रमाणपत्र", "Certificate"))
                                         }
                                     }
-                                    if (session.role == UserRole.ADMIN && sp.status == "PENDING") {
+                                    if (canEdit && sp.status == "PENDING") {
                                         Button(
                                             onClick = { onReviewSponsorship(sp, true) },
-                                            colors = ButtonDefaults.buttonColors(containerColor = GoshalaGreen)
+                                            colors = ButtonDefaults.buttonColors(containerColor = GoshalaGreen),
+                                            modifier = Modifier.testTag("sponsorship_approve_${sp.id}")
                                         ) { Text(str(language, "स्वीकृत", "Approve")) }
                                         TextButton(
                                             onClick = { onReviewSponsorship(sp, false) },
-                                            colors = ButtonDefaults.textButtonColors(contentColor = AlertRed)
+                                            colors = ButtonDefaults.textButtonColors(contentColor = AlertRed),
+                                            modifier = Modifier.testTag("sponsorship_reject_${sp.id}")
                                         ) { Text(str(language, "अस्वीकार", "Reject")) }
+                                    }
+                                    if (canEdit) {
+                                        IconButton(
+                                            onClick = { onEditSponsorship(sp) },
+                                            modifier = Modifier.testTag("sponsorship_edit_${sp.id}")
+                                        ) {
+                                            Icon(Icons.Default.Edit, contentDescription = str(language, "संपादित करें", "Edit"), tint = ForestGreen)
+                                        }
+                                    }
+                                    if (canDelete) {
+                                        IconButton(
+                                            onClick = { onDeleteSponsorship(sp) },
+                                            modifier = Modifier.testTag("sponsorship_delete_${sp.id}")
+                                        ) {
+                                            Icon(Icons.Default.DeleteOutline, contentDescription = str(language, "हटाएं", "Delete"), tint = AlertRed)
+                                        }
                                     }
                                 }
                             }

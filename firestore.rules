@@ -101,9 +101,11 @@ service cloud.firestore {
 
     function isValidStaffInvite(data) {
       return data.email is string && data.email.size() >= 5 && data.email.size() <= 120 &&
+             isOptString(data, 'employeeId', 40) &&
              data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
              data.designation is string && data.designation.size() >= 1 && data.designation.size() <= 80 &&
              (data.monthlySalary is int || data.monthlySalary is float) && data.monthlySalary >= 0 && data.monthlySalary <= 1000000 &&
+             (!('active' in data) || data.active is bool) &&
              isOptString(data, 'phone', 20) &&
              isValidPermissionsMap(data.permissions) &&
              data.createdBy is string && data.createdBy.size() <= 128 &&
@@ -113,6 +115,7 @@ service cloud.firestore {
 
     function isValidStaffAccount(data) {
       return data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+             isOptString(data, 'employeeId', 40) &&
              data.email is string && data.email.size() >= 5 && data.email.size() <= 120 &&
              data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
              data.designation is string && data.designation.size() >= 1 && data.designation.size() <= 80 &&
@@ -375,7 +378,7 @@ service cloud.firestore {
     match /staffInvites/{emailKey} {
       allow get: if isSignedIn() && isValidEmailKey(emailKey) && (
         isAdmin() ||
-        (request.auth.token.email_verified == true && request.auth.token.email == emailKey)
+        (request.auth.token.email is string && request.auth.token.email.lower() == emailKey.lower())
       );
       allow list: if isAdmin();
       allow create, update: if isAdmin() && isValidEmailKey(emailKey) && isValidStaffInvite(incoming());
@@ -393,11 +396,19 @@ service cloud.firestore {
                          isAdmin() ||
                          (
                            request.auth.uid == uid &&
-                           request.auth.token.email_verified == true &&
-                           incoming().email == request.auth.token.email &&
+                           request.auth.token.email is string &&
+                           incoming().email.lower() == request.auth.token.email.lower() &&
                            incoming().active == true &&
-                           exists(/databases/$(database)/documents/staffInvites/$(request.auth.token.email)) &&
-                           incoming().permissions == get(/databases/$(database)/documents/staffInvites/$(request.auth.token.email)).data.permissions
+                           exists(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower())) &&
+                           (
+                             !('active' in get(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower())).data) ||
+                             get(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower())).data.active == true
+                           ) &&
+                           incoming().permissions == get(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower())).data.permissions &&
+                           (
+                             !('employeeId' in get(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower())).data) ||
+                             incoming().employeeId == get(/databases/$(database)/documents/staffInvites/$(request.auth.token.email.lower())).data.employeeId
+                           )
                          )
                        );
       allow update: if isAdmin() && isValidId(uid) && isValidStaffAccount(incoming()) &&
@@ -407,7 +418,7 @@ service cloud.firestore {
     }
 
     match /goshalaInfo/{docId} {
-      allow get: if isSignedIn() && docId == 'public_summary';
+      allow get: if isSignedIn() && docId == 'public_summary' && (!hasStaffDoc() || isActiveStaff() || isAdmin());
       allow list: if false;
       allow create, update: if isSignedIn() &&
                                docId == 'public_summary' &&
@@ -419,12 +430,12 @@ service cloud.firestore {
       allow get: if isSignedIn() && isValidId(cattleId) && (
         isAdmin() ||
         hasStaffPermission('cattle', 'VIEW') ||
-        existing().publicApproved == true
+        (!hasStaffDoc() && existing().publicApproved == true)
       );
       allow list: if isSignedIn() && (
         isAdmin() ||
         hasStaffPermission('cattle', 'VIEW') ||
-        resource.data.publicApproved == true
+        (!hasStaffDoc() && resource.data.publicApproved == true)
       );
       allow create: if isSignedIn() &&
                        isValidId(cattleId) &&
@@ -478,12 +489,12 @@ service cloud.firestore {
       allow get: if isSignedIn() && isValidId(entryId) && (
         isAdmin() ||
         hasStaffPermission('staff', 'VIEW') ||
-        existing().staffUid == request.auth.uid
+        (isActiveStaff() && existing().staffUid == request.auth.uid)
       );
       allow list: if isSignedIn() && (
         isAdmin() ||
         hasStaffPermission('staff', 'VIEW') ||
-        resource.data.staffUid == request.auth.uid
+        (isActiveStaff() && resource.data.staffUid == request.auth.uid)
       );
       allow create: if isSignedIn() &&
                        isValidId(entryId) &&
@@ -571,12 +582,12 @@ service cloud.firestore {
       allow get: if isSignedIn() && isValidId(donationId) && (
         isAdmin() ||
         hasStaffPermission('donations', 'VIEW') ||
-        existing().donorUid == request.auth.uid
+        (!hasStaffDoc() && existing().donorUid == request.auth.uid)
       );
       allow list: if isSignedIn() && (
         isAdmin() ||
         hasStaffPermission('donations', 'VIEW') ||
-        resource.data.donorUid == request.auth.uid
+        (!hasStaffDoc() && resource.data.donorUid == request.auth.uid)
       );
       allow create: if isSignedIn() &&
                        isValidId(donationId) &&
@@ -586,6 +597,7 @@ service cloud.firestore {
                          isAdmin() ||
                          hasStaffPermission('donations', 'ADD') ||
                          (
+                           !hasStaffDoc() &&
                            incoming().donorUid == request.auth.uid &&
                            incoming().paymentStatus == 'PENDING_VERIFICATION'
                          )
@@ -596,32 +608,40 @@ service cloud.firestore {
                        incoming().donorUid == existing().donorUid &&
                        incoming().createdAt == existing().createdAt &&
                        (isAdmin() || hasStaffPermission('donations', 'EDIT'));
-      allow delete: if isAdmin() && isValidId(donationId);
+      allow delete: if isSignedIn() && isValidId(donationId) && (isAdmin() || hasStaffPermission('donations', 'DELETE'));
     }
 
     match /sponsorships/{sponsorshipId} {
       allow get: if isSignedIn() && isValidId(sponsorshipId) && (
         isAdmin() ||
         hasStaffPermission('donations', 'VIEW') ||
-        existing().applicantUid == request.auth.uid
+        (!hasStaffDoc() && existing().applicantUid == request.auth.uid)
       );
       allow list: if isSignedIn() && (
         isAdmin() ||
         hasStaffPermission('donations', 'VIEW') ||
-        resource.data.applicantUid == request.auth.uid
+        (!hasStaffDoc() && resource.data.applicantUid == request.auth.uid)
       );
       allow create: if isSignedIn() &&
                        isValidId(sponsorshipId) &&
                        isValidSponsorship(incoming()) &&
-                       incoming().applicantUid == request.auth.uid &&
-                       incoming().status == 'PENDING' &&
-                       incoming().disclaimerAccepted == true;
-      allow update: if isAdmin() &&
+                       incoming().disclaimerAccepted == true &&
+                       (
+                         isAdmin() ||
+                         hasStaffPermission('donations', 'ADD') ||
+                         (
+                           !hasStaffDoc() &&
+                           incoming().applicantUid == request.auth.uid &&
+                           incoming().status == 'PENDING'
+                         )
+                       );
+      allow update: if isSignedIn() &&
                        isValidId(sponsorshipId) &&
                        isValidSponsorship(incoming()) &&
                        incoming().applicantUid == existing().applicantUid &&
-                       incoming().createdAt == existing().createdAt;
-      allow delete: if isAdmin() && isValidId(sponsorshipId);
+                       incoming().createdAt == existing().createdAt &&
+                       (isAdmin() || hasStaffPermission('donations', 'EDIT'));
+      allow delete: if isSignedIn() && isValidId(sponsorshipId) && (isAdmin() || hasStaffPermission('donations', 'DELETE'));
     }
 
     match /notifications/{notifId} {
@@ -665,7 +685,7 @@ service cloud.firestore {
                        (
                          (incoming().actorRole == 'ADMIN' && isAdmin()) ||
                          (incoming().actorRole == 'STAFF' && isActiveStaff()) ||
-                         incoming().actorRole == 'PUBLIC'
+                         (incoming().actorRole == 'PUBLIC' && !hasStaffDoc())
                        );
       allow update, delete: if false;
     }

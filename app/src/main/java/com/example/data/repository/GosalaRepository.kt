@@ -69,10 +69,12 @@ class GosalaRepository(
 
     // --- CATTLE ---
     fun observeCattle(session: UserSession, limitCount: Long = 100L): Flow<List<Cattle>> {
-        val query: Query = if (session.role == UserRole.ADMIN || session.hasPermission(AppModule.CATTLE, CrudAction.VIEW)) {
-            db.collection("cattle").limit(limitCount)
-        } else {
-            db.collection("cattle").whereEqualTo("publicApproved", true).limit(limitCount)
+        val query: Query = when {
+            session.role == UserRole.ADMIN || session.hasPermission(AppModule.CATTLE, CrudAction.VIEW) ->
+                db.collection("cattle").limit(limitCount)
+            session.role == UserRole.PUBLIC ->
+                db.collection("cattle").whereEqualTo("publicApproved", true).limit(limitCount)
+            else -> return flowOf(emptyList())
         }
         return query.snapshots().map { snap ->
             snap.toObjects(Cattle::class.java, ServerTimestampBehavior.ESTIMATE)
@@ -178,6 +180,9 @@ class GosalaRepository(
     }
 
     suspend fun addHealthRecord(session: UserSession, record: HealthRecord): Result<Unit> {
+        if (!session.canAdd(AppModule.HEALTH)) {
+            return Result.failure(SecurityException("स्वास्थ्य रिकॉर्ड जोड़ने की अनुमति नहीं है।"))
+        }
         val uid = requireUid()
         val docRef = db.collection("healthRecords").document()
         return safeWrite(docRef.path, OperationType.CREATE) {
@@ -194,11 +199,15 @@ class GosalaRepository(
         }
     }
 
-    suspend fun deleteHealthRecord(session: UserSession, recordId: String): Result<Unit> =
-        safeWrite("healthRecords/$recordId", OperationType.DELETE) {
+    suspend fun deleteHealthRecord(session: UserSession, recordId: String): Result<Unit> {
+        if (!session.canDelete(AppModule.HEALTH)) {
+            return Result.failure(SecurityException("स्वास्थ्य रिकॉर्ड हटाने की अनुमति नहीं है।"))
+        }
+        return safeWrite("healthRecords/$recordId", OperationType.DELETE) {
             db.collection("healthRecords").document(recordId).delete().await()
             logAudit(session, "DELETE", "health", recordId, "Deleted health record")
         }
+    }
 
     // --- FEED & DAILY OPERATIONS ---
     fun observeFeedLogs(session: UserSession): Flow<List<FeedAndOperationLog>> {
@@ -210,6 +219,9 @@ class GosalaRepository(
     }
 
     suspend fun addFeedLog(session: UserSession, log: FeedAndOperationLog): Result<Unit> {
+        if (!session.canAdd(AppModule.FEED)) {
+            return Result.failure(SecurityException("चारा रिकॉर्ड जोड़ने की अनुमति नहीं है।"))
+        }
         val uid = requireUid()
         val docRef = db.collection("feedAndOperations").document()
         return safeWrite(docRef.path, OperationType.CREATE) {
@@ -234,13 +246,17 @@ class GosalaRepository(
         }
     }
 
-    suspend fun toggleFeedTaskCompleted(session: UserSession, logId: String, completed: Boolean): Result<Unit> =
-        safeWrite("feedAndOperations/$logId", OperationType.UPDATE) {
+    suspend fun toggleFeedTaskCompleted(session: UserSession, logId: String, completed: Boolean): Result<Unit> {
+        if (!session.canEdit(AppModule.FEED)) {
+            return Result.failure(SecurityException("दैनिक कार्य संपादित करने की अनुमति नहीं है।"))
+        }
+        return safeWrite("feedAndOperations/$logId", OperationType.UPDATE) {
             db.collection("feedAndOperations").document(logId).update(
                 mapOf("taskCompleted" to completed, "updatedAt" to FieldValue.serverTimestamp())
             ).await()
             logAudit(session, "UPDATE", "feed", logId, "Task completed=$completed")
         }
+    }
 
     // --- STAFF MANAGEMENT (ADMIN & AUTHORIZED STAFF) ---
     fun observeStaffAccounts(session: UserSession): Flow<List<StaffAccount>> {
@@ -280,28 +296,68 @@ class GosalaRepository(
         phone: String,
         designation: String,
         monthlySalary: Double,
-        permissions: Map<String, List<String>>
+        permissions: Map<String, List<String>>,
+        employeeId: String = "",
+        active: Boolean = true
     ): Result<Unit> {
         if (session.role != UserRole.ADMIN) {
             return Result.failure(SecurityException("केवल प्रशासक (Admin) स्टाफ आमंत्रित कर सकते हैं।"))
         }
         val uid = requireUid()
         val normalizedEmail = email.trim().lowercase()
+        val cleanEmpId = employeeId.trim().ifBlank { "EMP-${(100..999).random()}" }.take(40)
         return safeWrite("staffInvites/$normalizedEmail", OperationType.WRITE) {
             require(normalizedEmail.contains("@") && normalizedEmail.contains(".")) { "Valid email required" }
             val payload = mapOf(
+                "employeeId" to cleanEmpId,
                 "email" to normalizedEmail,
                 "name" to name.trim().take(100),
                 "phone" to phone.trim().take(20),
                 "designation" to designation.trim().ifBlank { "गौ सेवक" }.take(80),
                 "monthlySalary" to monthlySalary.coerceIn(0.0, 1000000.0),
+                "active" to active,
                 "permissions" to permissions,
                 "createdBy" to uid,
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
             db.collection("staffInvites").document(normalizedEmail).set(payload).await()
-            logAudit(session, "CREATE", "staff", normalizedEmail, "Invited staff $name ($normalizedEmail)")
+            logAudit(session, "CREATE", "staff", normalizedEmail, "Invited staff $name ($cleanEmpId / $normalizedEmail)")
+        }
+    }
+
+    suspend fun updateStaffInvite(
+        session: UserSession,
+        email: String,
+        employeeId: String,
+        name: String,
+        phone: String,
+        designation: String,
+        monthlySalary: Double,
+        active: Boolean,
+        permissions: Map<String, List<String>>
+    ): Result<Unit> {
+        if (session.role != UserRole.ADMIN) {
+            return Result.failure(SecurityException("केवल प्रशासक (Admin) स्टाफ आमंत्रण संपादित कर सकते हैं।"))
+        }
+        val normalizedEmail = email.trim().lowercase()
+        if (normalizedEmail.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य ईमेल।"))
+        }
+        return safeWrite("staffInvites/$normalizedEmail", OperationType.UPDATE) {
+            db.collection("staffInvites").document(normalizedEmail).update(
+                mapOf(
+                    "employeeId" to employeeId.trim().take(40),
+                    "name" to name.trim().take(100),
+                    "phone" to phone.trim().take(20),
+                    "designation" to designation.trim().ifBlank { "गौ सेवक" }.take(80),
+                    "monthlySalary" to monthlySalary.coerceIn(0.0, 1000000.0),
+                    "active" to active,
+                    "permissions" to permissions,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            logAudit(session, "UPDATE", "staff", normalizedEmail, "Updated invite active=$active")
         }
     }
 
@@ -310,20 +366,27 @@ class GosalaRepository(
         staffUid: String,
         active: Boolean,
         monthlySalary: Double,
-        permissions: Map<String, List<String>>
+        permissions: Map<String, List<String>>,
+        employeeId: String? = null,
+        name: String? = null,
+        phone: String? = null,
+        designation: String? = null
     ): Result<Unit> {
         if (session.role != UserRole.ADMIN) {
             return Result.failure(SecurityException("केवल प्रशासक (Admin) स्टाफ अनुमतियाँ बदल सकते हैं।"))
         }
         return safeWrite("staffAccounts/$staffUid", OperationType.UPDATE) {
-            db.collection("staffAccounts").document(staffUid).update(
-                mapOf(
-                    "active" to active,
-                    "monthlySalary" to monthlySalary.coerceIn(0.0, 1000000.0),
-                    "permissions" to permissions,
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-            ).await()
+            val updates = mutableMapOf<String, Any>(
+                "active" to active,
+                "monthlySalary" to monthlySalary.coerceIn(0.0, 1000000.0),
+                "permissions" to permissions,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            employeeId?.let { updates["employeeId"] = it.trim().take(40) }
+            name?.takeIf { it.isNotBlank() }?.let { updates["name"] = it.trim().take(100) }
+            phone?.let { updates["phone"] = it.trim().take(20) }
+            designation?.takeIf { it.isNotBlank() }?.let { updates["designation"] = it.trim().take(80) }
+            db.collection("staffAccounts").document(staffUid).update(updates).await()
             logAudit(session, "UPDATE", "staff", staffUid, "Updated permissions/active=$active")
         }
     }
@@ -356,6 +419,9 @@ class GosalaRepository(
     }
 
     suspend fun addStaffOperation(session: UserSession, entry: StaffOperation): Result<Unit> {
+        if (!session.canAdd(AppModule.STAFF)) {
+            return Result.failure(SecurityException("कर्मचारी उपस्थिति/वेतन प्रविष्टि जोड़ने की अनुमति नहीं है।"))
+        }
         val uid = requireUid()
         val docRef = db.collection("staffOperations").document()
         return safeWrite(docRef.path, OperationType.CREATE) {
@@ -374,6 +440,9 @@ class GosalaRepository(
     }
 
     suspend fun addFinancialTx(session: UserSession, tx: FinancialTransaction): Result<Unit> {
+        if (!session.canAdd(AppModule.FINANCE)) {
+            return Result.failure(SecurityException("वित्तीय प्रविष्टि जोड़ने की अनुमति नहीं है।"))
+        }
         val uid = requireUid()
         val docRef = db.collection("financialTransactions").document()
         return safeWrite(docRef.path, OperationType.CREATE) {
@@ -446,6 +515,9 @@ class GosalaRepository(
     }
 
     suspend fun addFarmer(session: UserSession, farmer: FarmerRecord): Result<Unit> {
+        if (!session.canAdd(AppModule.FARMERS)) {
+            return Result.failure(SecurityException("किसान रिकॉर्ड जोड़ने की अनुमति नहीं है।"))
+        }
         val uid = requireUid()
         val docRef = db.collection("farmers").document()
         return safeWrite(docRef.path, OperationType.CREATE) {
@@ -493,6 +565,9 @@ class GosalaRepository(
     }
 
     suspend fun addFarmerTransaction(session: UserSession, tx: FarmerTransaction, currentFarmer: FarmerRecord): Result<Unit> {
+        if (!session.canAdd(AppModule.FARMERS)) {
+            return Result.failure(SecurityException("किसान बिल जोड़ने की अनुमति नहीं है।"))
+        }
         val uid = requireUid()
         val docRef = db.collection("farmerTransactions").document()
         val invoice = tx.invoiceNumber.ifBlank { "FG-${System.currentTimeMillis().toString().takeLast(5)}" }
@@ -544,6 +619,9 @@ class GosalaRepository(
     }
 
     suspend fun addCompostBatch(session: UserSession, batch: CompostBatch): Result<Unit> {
+        if (!session.canAdd(AppModule.PRODUCTION)) {
+            return Result.failure(SecurityException("उत्पादन बैच जोड़ने की अनुमति नहीं है।"))
+        }
         val uid = requireUid()
         val docRef = db.collection("compostProduction").document()
         val code = batch.batchCode.ifBlank { "CMP-${System.currentTimeMillis().toString().takeLast(4)}" }
@@ -627,10 +705,12 @@ class GosalaRepository(
 
     // --- DONATIONS & COW SPONSORSHIP ---
     fun observeDonations(session: UserSession): Flow<List<Donation>> {
-        val query = if (session.role == UserRole.ADMIN || session.hasPermission(AppModule.DONATIONS, CrudAction.VIEW)) {
-            db.collection("donations").limit(150)
-        } else {
-            db.collection("donations").whereEqualTo("donorUid", session.uid).limit(100)
+        val query = when {
+            session.role == UserRole.ADMIN || session.hasPermission(AppModule.DONATIONS, CrudAction.VIEW) ->
+                db.collection("donations").limit(150)
+            session.role == UserRole.PUBLIC ->
+                db.collection("donations").whereEqualTo("donorUid", session.uid).limit(100)
+            else -> return flowOf(emptyList())
         }
         return query.snapshots().map { snap ->
             snap.toObjects(Donation::class.java, ServerTimestampBehavior.ESTIMATE)
@@ -639,6 +719,9 @@ class GosalaRepository(
     }
 
     suspend fun submitDonation(session: UserSession, donation: Donation): Result<Unit> {
+        if (session.role != UserRole.PUBLIC && !session.canAdd(AppModule.DONATIONS)) {
+            return Result.failure(SecurityException("दान प्रविष्टि जोड़ने की अनुमति नहीं है।"))
+        }
         val uid = requireUid()
         val docRef = db.collection("donations").document()
         val receipt = "JBGS-RCPT-${System.currentTimeMillis().toString().takeLast(6)}"
@@ -665,8 +748,11 @@ class GosalaRepository(
         }
     }
 
-    suspend fun verifyDonation(session: UserSession, donationId: String, newStatus: String): Result<Unit> =
-        safeWrite("donations/$donationId", OperationType.UPDATE) {
+    suspend fun verifyDonation(session: UserSession, donationId: String, newStatus: String): Result<Unit> {
+        if (!session.canEdit(AppModule.DONATIONS)) {
+            return Result.failure(SecurityException("दान सत्यापित/संपादित करने की अनुमति नहीं है।"))
+        }
+        return safeWrite("donations/$donationId", OperationType.UPDATE) {
             db.collection("donations").document(donationId).update(
                 mapOf(
                     "paymentStatus" to newStatus,
@@ -675,12 +761,53 @@ class GosalaRepository(
             ).await()
             logAudit(session, "UPDATE", "donations", donationId, "Donation status -> $newStatus")
         }
+    }
+
+    suspend fun updateDonation(session: UserSession, donation: Donation): Result<Unit> {
+        if (!session.canEdit(AppModule.DONATIONS)) {
+            return Result.failure(SecurityException("दान प्रविष्टि संपादित करने की अनुमति नहीं है।"))
+        }
+        if (donation.id.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य दान आईडी।"))
+        }
+        return safeWrite("donations/${donation.id}", OperationType.UPDATE) {
+            require(donation.donorName.isNotBlank() && donation.amountInr > 0.0) { "दाता का नाम व सही राशि आवश्यक है।" }
+            db.collection("donations").document(donation.id).update(
+                mapOf(
+                    "donorName" to donation.donorName.trim().take(100),
+                    "donorPhone" to donation.donorPhone.trim().take(20),
+                    "donorCity" to donation.donorCity.trim().take(100),
+                    "purpose" to donation.purpose.trim().ifBlank { "GAU_SEVA" }.take(100),
+                    "amountInr" to donation.amountInr.coerceIn(1.0, 100000000.0),
+                    "paymentProviderRef" to donation.paymentProviderRef.trim().ifBlank { "MANUAL_PENDING" }.take(120),
+                    "paymentStatus" to donation.paymentStatus,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            logAudit(session, "UPDATE", "donations", donation.id, "Updated donation ₹${donation.amountInr}")
+        }
+    }
+
+    suspend fun deleteDonation(session: UserSession, donationId: String): Result<Unit> {
+        if (!session.canDelete(AppModule.DONATIONS)) {
+            return Result.failure(SecurityException("दान प्रविष्टि हटाने की अनुमति नहीं है।"))
+        }
+        if (donationId.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य दान आईडी।"))
+        }
+        return safeWrite("donations/$donationId", OperationType.DELETE) {
+            db.collection("donations").document(donationId).delete().await()
+            logAudit(session, "DELETE", "donations", donationId, "Deleted donation")
+        }
+    }
 
     fun observeSponsorships(session: UserSession): Flow<List<Sponsorship>> {
-        val query = if (session.role == UserRole.ADMIN || session.hasPermission(AppModule.DONATIONS, CrudAction.VIEW)) {
-            db.collection("sponsorships").limit(100)
-        } else {
-            db.collection("sponsorships").whereEqualTo("applicantUid", session.uid).limit(100)
+        val query = when {
+            session.role == UserRole.ADMIN || session.hasPermission(AppModule.DONATIONS, CrudAction.VIEW) ->
+                db.collection("sponsorships").limit(100)
+            session.role == UserRole.PUBLIC ->
+                db.collection("sponsorships").whereEqualTo("applicantUid", session.uid).limit(100)
+            else -> return flowOf(emptyList())
         }
         return query.snapshots().map { snap ->
             snap.toObjects(Sponsorship::class.java, ServerTimestampBehavior.ESTIMATE)
@@ -689,6 +816,9 @@ class GosalaRepository(
     }
 
     suspend fun submitSponsorship(session: UserSession, sponsorship: Sponsorship): Result<Unit> {
+        if (session.role != UserRole.PUBLIC && !session.canAdd(AppModule.DONATIONS)) {
+            return Result.failure(SecurityException("गौ-गोद आवेदन जोड़ने की अनुमति नहीं है।"))
+        }
         val uid = requireUid()
         val docRef = db.collection("sponsorships").document()
         return safeWrite(docRef.path, OperationType.CREATE) {
@@ -713,9 +843,37 @@ class GosalaRepository(
         }
     }
 
+    suspend fun updateSponsorship(session: UserSession, sponsorship: Sponsorship): Result<Unit> {
+        if (!session.canEdit(AppModule.DONATIONS)) {
+            return Result.failure(SecurityException("गौ-गोद विवरण संपादित करने की अनुमति नहीं है।"))
+        }
+        if (sponsorship.id.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य प्रायोजन आईडी।"))
+        }
+        return safeWrite("sponsorships/${sponsorship.id}", OperationType.UPDATE) {
+            require(sponsorship.applicantName.isNotBlank() && sponsorship.applicantPhone.trim().length >= 6) {
+                "आवेदक का नाम व मोबाइल नंबर आवश्यक है।"
+            }
+            val months = sponsorship.durationMonths.coerceIn(1L, 120L)
+            val monthly = sponsorship.monthlySupportInr.coerceAtLeast(100.0)
+            db.collection("sponsorships").document(sponsorship.id).update(
+                mapOf(
+                    "applicantName" to sponsorship.applicantName.trim().take(100),
+                    "applicantPhone" to sponsorship.applicantPhone.trim().take(20),
+                    "applicantAddress" to sponsorship.applicantAddress.trim().take(250),
+                    "monthlySupportInr" to monthly,
+                    "durationMonths" to months,
+                    "totalSupportInr" to (monthly * months),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            logAudit(session, "UPDATE", "sponsorships", sponsorship.id, "Updated sponsorship ${sponsorship.applicantName}")
+        }
+    }
+
     suspend fun reviewSponsorship(session: UserSession, sponsorship: Sponsorship, approve: Boolean): Result<Unit> {
-        if (session.role != UserRole.ADMIN) {
-            return Result.failure(SecurityException("केवल प्रशासक (Admin) गौ-गोद आवेदन स्वीकृत या अस्वीकृत कर सकते हैं।"))
+        if (!session.canEdit(AppModule.DONATIONS)) {
+            return Result.failure(SecurityException("गौ-गोद आवेदन स्वीकृत या अस्वीकृत करने की अनुमति नहीं है।"))
         }
         return safeWrite("sponsorships/${sponsorship.id}", OperationType.UPDATE) {
             val uid = requireUid()
@@ -737,6 +895,19 @@ class GosalaRepository(
                 message = "${sponsorship.cattleName} के लिए आपका प्रायोजन आवेदन ${if (approve) "स्वीकृत (प्रमाणपत्र: $cert)" else "अस्वीकृत"} हुआ।"
             )
             logAudit(session, if (approve) "APPROVE" else "REJECT", "sponsorships", sponsorship.id, "Sponsorship $newStatus")
+        }
+    }
+
+    suspend fun deleteSponsorship(session: UserSession, sponsorshipId: String): Result<Unit> {
+        if (!session.canDelete(AppModule.DONATIONS)) {
+            return Result.failure(SecurityException("गौ-गोद आवेदन हटाने की अनुमति नहीं है।"))
+        }
+        if (sponsorshipId.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य प्रायोजन आईडी।"))
+        }
+        return safeWrite("sponsorships/$sponsorshipId", OperationType.DELETE) {
+            db.collection("sponsorships").document(sponsorshipId).delete().await()
+            logAudit(session, "DELETE", "sponsorships", sponsorshipId, "Deleted sponsorship")
         }
     }
 

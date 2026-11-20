@@ -57,7 +57,9 @@ data class UserSession(
     val photoUrl: String? = null,
     val role: UserRole = UserRole.PUBLIC,
     val permissions: Map<String, List<String>> = emptyMap(),
-    val staffActive: Boolean = false
+    val staffActive: Boolean = false,
+    val employeeId: String = "",
+    val designation: String = ""
 ) {
     fun hasPermission(module: AppModule, action: CrudAction): Boolean {
         if (role == UserRole.ADMIN) return true
