@@ -230,6 +230,7 @@ fun GosalaRootNavHost(
             if (err != null) {
                 sessionErrorContent(err.message)
             } else {
+                loadingContent()
                 LaunchedEffect(authState) { authNavController.syncWithAuthState(authState) }
             }
         }
@@ -239,6 +240,7 @@ fun GosalaRootNavHost(
                 requiredRole = UserRole.ADMIN,
                 authState = authState,
                 authNavController = authNavController,
+                fallbackLoadingContent = loadingContent,
                 content = adminDashboardContent
             )
         }
@@ -248,6 +250,7 @@ fun GosalaRootNavHost(
                 requiredRole = UserRole.STAFF,
                 authState = authState,
                 authNavController = authNavController,
+                fallbackLoadingContent = loadingContent,
                 content = staffDashboardContent
             )
         }
@@ -257,6 +260,7 @@ fun GosalaRootNavHost(
                 requiredRole = UserRole.PUBLIC,
                 authState = authState,
                 authNavController = authNavController,
+                fallbackLoadingContent = loadingContent,
                 content = publicDashboardContent
             )
         }
@@ -268,6 +272,7 @@ private fun RoleDestinationGuard(
     requiredRole: UserRole,
     authState: AuthNavigationState,
     authNavController: AuthNavigationController,
+    fallbackLoadingContent: @Composable () -> Unit,
     content: @Composable (UserSession) -> Unit
 ) {
     val authorizedSession = (authState as? AuthNavigationState.Authorized)
@@ -280,6 +285,7 @@ private fun RoleDestinationGuard(
     ) {
         content(authorizedSession)
     } else {
+        fallbackLoadingContent()
         LaunchedEffect(authState, requiredRole) {
             if (authorizedSession == null) {
                 authNavController.redirectToLogin()

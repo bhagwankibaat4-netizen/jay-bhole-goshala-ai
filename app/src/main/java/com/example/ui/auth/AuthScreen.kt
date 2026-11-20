@@ -66,14 +66,20 @@ fun AuthScreen(
     rejectedAccountNote: String?,
     skipAutoSignIn: Boolean,
     isResolvingSession: Boolean,
-    onAuthSuccess: () -> Unit
+    onAuthSuccess: () -> Unit,
+    onAuthAttemptStart: (LoginPortal?) -> Unit = {},
+    emailAuthGateway: EmailAuthGateway? = null
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val credentialManager = remember(context) { CredentialManager.create(context) }
 
-    var isLoading by remember { mutableStateOf(false) }
+    var isGoogleLoading by remember { mutableStateOf(false) }
+    var isEmailBusy by remember { mutableStateOf(false) }
     var authError by remember { mutableStateOf<String?>(null) }
+    var successBanner by remember { mutableStateOf<String?>(null) }
+
+    val isAnyBusy = isGoogleLoading || isEmailBusy || isResolvingSession
 
     LaunchedEffect(skipAutoSignIn) {
         if (!skipAutoSignIn && selectedPortal == LoginPortal.PUBLIC && sessionError.isNullOrBlank()) {
@@ -98,6 +104,7 @@ fun AuthScreen(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .windowInsetsPadding(WindowInsets.safeDrawing)
+                .imePadding()
                 .padding(horizontal = 20.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -287,7 +294,32 @@ fun AuthScreen(
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(14.dp))
+
+            if (!successBanner.isNullOrBlank()) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 540.dp)
+                        .testTag("auth_success_card"),
+                    colors = CardDefaults.cardColors(containerColor = ForestGreen.copy(alpha = 0.14f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = ForestGreen)
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = successBanner!!,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
 
             val displayedError = authError ?: sessionError
             if (!displayedError.isNullOrBlank()) {
@@ -321,6 +353,40 @@ fun AuthScreen(
                 Spacer(Modifier.height(14.dp))
             }
 
+            // Email & Password Login / Signup / Forgot Password Card
+            EmailAuthCard(
+                language = language,
+                selectedPortal = selectedPortal,
+                isExternalBusy = isGoogleLoading || isResolvingSession,
+                emailAuthGateway = emailAuthGateway,
+                onAuthAttemptStart = onAuthAttemptStart,
+                onAuthSuccess = onAuthSuccess,
+                onAuthError = { err -> authError = err },
+                onSuccessBanner = { msg -> successBanner = msg },
+                onBusyChange = { busy -> isEmailBusy = busy }
+            )
+
+            Spacer(Modifier.height(14.dp))
+
+            // Divider between Email/Password and Google Sign-In
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 540.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                HorizontalDivider(modifier = Modifier.weight(1f))
+                Text(
+                    text = str(language, "  या  ", "  OR  "),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.SemiBold
+                )
+                HorizontalDivider(modifier = Modifier.weight(1f))
+            }
+
+            Spacer(Modifier.height(14.dp))
+
             val buttonLabel = when (selectedPortal) {
                 LoginPortal.ADMIN -> str(language, "Admin Google खाते से साइन इन करें", "Sign in as Admin with Google")
                 LoginPortal.STAFF -> str(language, "Staff Google खाते से साइन इन करें", "Sign in as Staff with Google")
@@ -329,26 +395,31 @@ fun AuthScreen(
 
             Button(
                 onClick = {
+                    if (isAnyBusy) return@Button
                     authError = null
-                    isLoading = true
+                    successBanner = null
+                    isGoogleLoading = true
+                    onAuthAttemptStart(selectedPortal)
                     onGoogleSignInClicked(
                         context = context,
                         credentialManager = credentialManager,
                         onAuthSuccess = {
-                            isLoading = false
+                            isGoogleLoading = false
                             onAuthSuccess()
                         },
                         onAuthError = { msg ->
-                            isLoading = false
+                            isGoogleLoading = false
+                            onAuthAttemptStart(null)
                             authError = msg
                         },
                         scope = scope,
                         onAuthCancelled = {
-                            isLoading = false
+                            isGoogleLoading = false
+                            onAuthAttemptStart(null)
                         }
                     )
                 },
-                enabled = !isLoading && !isResolvingSession,
+                enabled = !isAnyBusy,
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 540.dp)
@@ -359,7 +430,7 @@ fun AuthScreen(
                     containerColor = if (selectedPortal == LoginPortal.ADMIN) ForestGreen else MaterialTheme.colorScheme.primary
                 )
             ) {
-                if (isLoading || isResolvingSession) {
+                if (isGoogleLoading || isResolvingSession) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(22.dp),
                         color = Color.White,

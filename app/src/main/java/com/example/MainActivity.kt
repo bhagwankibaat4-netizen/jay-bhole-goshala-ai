@@ -130,11 +130,12 @@ class MainActivity : ComponentActivity() {
                     val authNavController = rememberAuthNavigationController()
                     val activeBootstrap = bootstrap
 
-                    // Observe FirebaseAuth state once Firebase is bootstrapped
+                    // Observe FirebaseAuth state once Firebase is bootstrapped (use currentUser immediately so persisted sessions never flash Login)
+                    val initialFirebaseUser = remember(activeBootstrap) { activeBootstrap?.authRepo?.currentUser }
                     val firebaseUser by remember(activeBootstrap) {
                         activeBootstrap?.authRepo?.observeAuthState()
                             ?: kotlinx.coroutines.flow.flowOf(null)
-                    }.collectAsStateWithLifecycle(initialValue = null)
+                    }.collectAsStateWithLifecycle(initialValue = initialFirebaseUser)
 
                     var sessionState by remember { mutableStateOf<UserSession?>(null) }
                     var isResolving by remember { mutableStateOf(false) }
@@ -268,8 +269,15 @@ class MainActivity : ComponentActivity() {
                                 rejectedAccountNote = accountNote,
                                 skipAutoSignIn = skipAutoSignIn,
                                 isResolvingSession = false,
+                                onAuthAttemptStart = { portal ->
+                                    activeSignInPortal = portal
+                                    if (portal != null) {
+                                        portalRejectionMsg = null
+                                        rejectedAccountNote = null
+                                    }
+                                },
+                                emailAuthGateway = activeBootstrap?.authRepo,
                                 onAuthSuccess = {
-                                    activeSignInPortal = selectedPortal
                                     portalRejectionMsg = null
                                     rejectedAccountNote = null
                                 }

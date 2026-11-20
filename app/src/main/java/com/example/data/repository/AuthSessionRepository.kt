@@ -13,10 +13,14 @@ import com.example.data.model.StaffInvite
 import com.example.data.model.UserProfile
 import com.example.data.model.UserRole
 import com.example.data.model.UserSession
+import com.example.ui.auth.AuthActionResult
+import com.example.ui.auth.AuthValidator
+import com.example.ui.auth.EmailAuthGateway
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.auth
+import com.google.firebase.auth.userProfileChangeRequest
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.CancellationException
@@ -29,6 +33,7 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentHashMap
 
 private const val BOOTSTRAPPED_ADMIN_EMAIL = "bhagwankibaat4@gmail.com"
 private const val TAG = "AuthSessionRepo"
@@ -46,12 +51,17 @@ sealed interface SessionResolution {
 class AuthSessionRepository(
     private val db: FirebaseFirestore,
     private val auth: FirebaseAuth = Firebase.auth
-) {
+) : EmailAuthGateway {
     constructor(context: Context) : this(
         FirebaseFirestore.getInstance(
             context.applicationContext.getString(R.string.firestore_database_id)
         )
     )
+
+    private val pendingNameByEmail = ConcurrentHashMap<String, String>()
+
+    val currentUser: FirebaseUser?
+        get() = auth.currentUser
 
     fun observeAuthState(): Flow<FirebaseUser?> = callbackFlow {
         val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
@@ -59,6 +69,117 @@ class AuthSessionRepository(
         }
         auth.addAuthStateListener(listener)
         awaitClose { auth.removeAuthStateListener(listener) }
+    }
+
+    override suspend fun signUpWithEmail(
+        name: String,
+        email: String,
+        password: String
+    ): AuthActionResult {
+        val cleanName = name.trim().take(100)
+        val cleanEmail = AuthValidator.normalizeEmail(email)
+        if (cleanName.length < 2) {
+            return AuthActionResult.Failure(
+                messageHi = "कृपया अपना पूरा नाम दर्ज करें।",
+                messageEn = "Please enter your full name."
+            )
+        }
+        if (!AuthValidator.isValidEmailFormat(cleanEmail)) {
+            return AuthActionResult.Failure(
+                messageHi = "कृपया सही ईमेल / Gmail पता दर्ज करें।",
+                messageEn = "Please enter a valid email / Gmail address.",
+                errorCode = "ERROR_INVALID_EMAIL"
+            )
+        }
+        if (password.length < AuthValidator.MIN_PASSWORD_LENGTH) {
+            return AuthActionResult.Failure(
+                messageHi = "पासवर्ड कम से कम 6 अक्षरों का होना चाहिए।",
+                messageEn = "Password must be at least 6 characters long.",
+                errorCode = "ERROR_WEAK_PASSWORD"
+            )
+        }
+
+        // Store pending name BEFORE Firebase createUser fires AuthStateListener so Firestore profile never loses the user's name
+        pendingNameByEmail[cleanEmail] = cleanName
+        return try {
+            val result = auth.createUserWithEmailAndPassword(cleanEmail, password).await()
+            val createdUser = result.user
+            if (createdUser != null) {
+                try {
+                    createdUser.updateProfile(
+                        userProfileChangeRequest { displayName = cleanName }
+                    ).await()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Non-fatal Firebase profile displayName update notice: ${e.message}")
+                }
+            }
+            AuthActionResult.Success(
+                messageHi = "खाता सफलतापूर्वक बन गया है। डैशबोर्ड खुल रहा है...",
+                messageEn = "Account created successfully. Opening dashboard..."
+            )
+        } catch (e: CancellationException) {
+            pendingNameByEmail.remove(cleanEmail)
+            throw e
+        } catch (e: Exception) {
+            pendingNameByEmail.remove(cleanEmail)
+            Log.e(TAG, "Email/Password sign-up failed", e)
+            AuthValidator.mapFirebaseAuthException(e)
+        }
+    }
+
+    override suspend fun signInWithEmail(
+        email: String,
+        password: String
+    ): AuthActionResult {
+        val cleanEmail = AuthValidator.normalizeEmail(email)
+        if (!AuthValidator.isValidEmailFormat(cleanEmail)) {
+            return AuthActionResult.Failure(
+                messageHi = "कृपया सही ईमेल / Gmail पता दर्ज करें।",
+                messageEn = "Please enter a valid email / Gmail address.",
+                errorCode = "ERROR_INVALID_EMAIL"
+            )
+        }
+        if (password.isBlank()) {
+            return AuthActionResult.Failure(
+                messageHi = "कृपया पासवर्ड दर्ज करें।",
+                messageEn = "Please enter your password."
+            )
+        }
+        return try {
+            auth.signInWithEmailAndPassword(cleanEmail, password).await()
+            AuthActionResult.Success(
+                messageHi = "लॉगिन सफल रहा। डैशबोर्ड खुल रहा है...",
+                messageEn = "Login successful. Opening dashboard..."
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Email/Password sign-in failed", e)
+            AuthValidator.mapFirebaseAuthException(e)
+        }
+    }
+
+    override suspend fun sendPasswordReset(email: String): AuthActionResult {
+        val cleanEmail = AuthValidator.normalizeEmail(email)
+        if (!AuthValidator.isValidEmailFormat(cleanEmail)) {
+            return AuthActionResult.Failure(
+                messageHi = "कृपया सही ईमेल / Gmail पता दर्ज करें।",
+                messageEn = "Please enter a valid email / Gmail address.",
+                errorCode = "ERROR_INVALID_EMAIL"
+            )
+        }
+        return try {
+            auth.sendPasswordResetEmail(cleanEmail).await()
+            AuthActionResult.Success(
+                messageHi = "पासवर्ड रीसेट लिंक आपके Gmail ($cleanEmail) पर भेज दिया गया है। कृपया इनबॉक्स या Spam फ़ोल्डर जांचें।",
+                messageEn = "Password reset email sent to $cleanEmail. Please check your inbox or Spam folder."
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Password reset email failed", e)
+            AuthValidator.mapFirebaseAuthException(e)
+        }
     }
 
     suspend fun resolveVerifiedSession(
@@ -70,8 +191,7 @@ class AuthSessionRepository(
             user.email?.takeIf { it.isNotBlank() }
                 ?: user.providerData.firstOrNull { !it.email.isNullOrBlank() }?.email
             )?.trim()?.lowercase().orEmpty()
-        val displayName = user.displayName?.takeIf { it.isNotBlank() }
-            ?: email.substringBefore('@').ifBlank { "भक्त / User" }
+        val pendingName = if (email.isNotBlank()) pendingNameByEmail.remove(email) else null
         val photoUrl = user.photoUrl?.toString()?.take(500)
 
         return try {
@@ -79,6 +199,16 @@ class AuthSessionRepository(
                 // 1. Ensure /users/{uid} exists (always PUBLIC on self-create; rules forbid client role escalation)
                 val userDocRef = db.collection("users").document(uid)
                 val userSnap = userDocRef.get().await()
+                val existingProfileName = if (userSnap.exists()) {
+                    userSnap.getString("displayName")?.takeIf { it.isNotBlank() }
+                } else {
+                    null
+                }
+                val displayName = pendingName
+                    ?: user.displayName?.takeIf { it.isNotBlank() }
+                    ?: existingProfileName
+                    ?: email.substringBefore('@').ifBlank { "भक्त / User" }
+
                 if (!userSnap.exists()) {
                     val payload = mapOf(
                         "userId" to uid,
