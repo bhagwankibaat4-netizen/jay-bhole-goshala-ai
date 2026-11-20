@@ -170,6 +170,7 @@ class AuthNavigationController(
                 Routes.REPORTS -> session.role == UserRole.ADMIN || (session.role == UserRole.STAFF && session.canView(AppModule.REPORTS))
                 Routes.DONATIONS -> session.canView(AppModule.DONATIONS) || session.role == UserRole.PUBLIC
                 Routes.APPLICATIONS -> session.role == UserRole.ADMIN
+                Routes.ADMIN_PRODUCTS -> session.role == UserRole.ADMIN
                 Routes.AI_ASSISTANT -> session.canView(AppModule.AI) || session.role == UserRole.PUBLIC
                 Routes.NOTIFICATIONS, Routes.PROFILE -> true
                 else -> false

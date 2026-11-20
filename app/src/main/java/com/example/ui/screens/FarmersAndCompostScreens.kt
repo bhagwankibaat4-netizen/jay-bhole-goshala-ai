@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -31,6 +33,7 @@ import com.example.ui.components.MetricStatCard
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.DataUiState
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun FarmerCooperationScreen(
     language: AppLanguage,
@@ -40,14 +43,19 @@ fun FarmerCooperationScreen(
     onAddFarmer: (FarmerRecord) -> Unit,
     onAddFarmerTx: (FarmerTransaction, FarmerRecord) -> Unit,
     onUpdateFarmer: (FarmerRecord) -> Unit = {},
-    onDeleteFarmer: (FarmerRecord) -> Unit = {}
+    onDeleteFarmer: (FarmerRecord) -> Unit = {},
+    onUpdateFarmerTx: (FarmerTransaction) -> Unit = {},
+    onDeleteFarmerTx: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
+    val isHindi = language == AppLanguage.HINDI
     var tabIndex by remember { mutableIntStateOf(0) }
     var showAddFarmerDialog by remember { mutableStateOf(false) }
     var editingFarmer by remember { mutableStateOf<FarmerRecord?>(null) }
     var deletingFarmer by remember { mutableStateOf<FarmerRecord?>(null) }
     var selectedFarmerForTx by remember { mutableStateOf<FarmerRecord?>(null) }
+    var editingTx by remember { mutableStateOf<FarmerTransaction?>(null) }
+    var deletingTx by remember { mutableStateOf<FarmerTransaction?>(null) }
 
     val farmers = (farmersState as? DataUiState.Success)?.data.orEmpty()
     val transactions = (farmerTxState as? DataUiState.Success)?.data.orEmpty()
@@ -169,10 +177,22 @@ fun FarmerCooperationScreen(
                                             Text("${farmer.village} • ${farmer.mobile}", style = MaterialTheme.typography.bodySmall)
                                         }
                                         if (session.canAdd(AppModule.FARMERS)) {
-                                            FilledTonalButton(onClick = { selectedFarmerForTx = farmer }) {
+                                            FilledTonalButton(
+                                                onClick = { selectedFarmerForTx = farmer },
+                                                modifier = Modifier.testTag("farmer_add_tx_${farmer.id}")
+                                            ) {
                                                 Text(str(language, "+ बिल/लेनदेन", "+ Invoice"))
                                             }
                                         }
+                                    }
+                                    if (farmer.suppliesOffered.isNotBlank()) {
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            text = "${str(language, "आपूर्ति सामग्री", "Supplies")}: ${farmer.suppliesOffered}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = ForestGreen,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
                                     }
                                     Spacer(Modifier.height(6.dp))
                                     Text(
@@ -276,32 +296,74 @@ fun FarmerCooperationScreen(
                         )
                     } else {
                         LazyColumn(
+                            modifier = Modifier.testTag("farmer_tx_list"),
                             verticalArrangement = Arrangement.spacedBy(10.dp),
-                            contentPadding = PaddingValues(bottom = 84.dp)
+                            contentPadding = PaddingValues(bottom = 96.dp)
                         ) {
                         items(transactions, key = { it.id }) { tx ->
                             val isPurchase = tx.direction == "PURCHASE_FROM_FARMER"
+                            val payColor = when (tx.paymentStatus) {
+                                "PAID" -> GoshalaGreen
+                                "PARTIAL" -> Saffron
+                                else -> AlertRed
+                            }
                             Card(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("farmer_tx_card_${tx.id}"),
                                 shape = RoundedCornerShape(16.dp),
                                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                             ) {
-                                Column(modifier = Modifier.padding(14.dp)) {
-                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                         Text("${tx.invoiceNumber} • ${tx.farmerName}", fontWeight = FontWeight.Bold)
-                                        Text(
-                                            text = if (isPurchase) str(language, "खरीद", "Purchase") else str(language, "बिक्री", "Sale"),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = if (isPurchase) Saffron else GoshalaGreen,
-                                            fontWeight = FontWeight.Bold
-                                        )
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = payColor.copy(alpha = 0.14f)
+                                        ) {
+                                            Text(
+                                                text = farmerPaymentStatusLabel(tx.paymentStatus, isHindi),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = payColor,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                            )
+                                        }
                                     }
-                                    Text("${tx.productName} (${tx.quantity} ${tx.unit} @ ₹${tx.ratePerUnitInr}) • Grade ${tx.qualityGrade}", style = MaterialTheme.typography.bodySmall)
+                                    Text(
+                                        text = "${if (isPurchase) str(language, "खरीद", "Purchase") else str(language, "बिक्री", "Sale")}: ${tx.productName} (${tx.quantity} ${tx.unit} @ ₹${tx.ratePerUnitInr.toInt()}) • ${tx.qualityGrade}",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
                                     Text(
                                         text = "${tx.dateStr} | कुल: ₹${tx.totalAmountInr.toInt()} | भुगतान: ₹${tx.paidAmountInr.toInt()} | बकाया: ₹${tx.outstandingInr.toInt()}",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = if (tx.outstandingInr > 0) AlertRed else ForestGreen
+                                        color = if (tx.outstandingInr > 0) AlertRed else ForestGreen,
+                                        fontWeight = FontWeight.SemiBold
                                     )
+                                    if (session.canEdit(AppModule.FARMERS) || session.canDelete(AppModule.FARMERS)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.Start,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            if (session.canEdit(AppModule.FARMERS)) {
+                                                IconButton(
+                                                    onClick = { editingTx = tx },
+                                                    modifier = Modifier.testTag("farmer_tx_edit_${tx.id}")
+                                                ) {
+                                                    Icon(Icons.Default.Edit, contentDescription = str(language, "संपादित करें", "Edit Invoice"), tint = ForestGreen)
+                                                }
+                                            }
+                                            if (session.canDelete(AppModule.FARMERS)) {
+                                                IconButton(
+                                                    onClick = { deletingTx = tx },
+                                                    modifier = Modifier.testTag("farmer_tx_delete_${tx.id}")
+                                                ) {
+                                                    Icon(Icons.Default.DeleteOutline, contentDescription = str(language, "हटाएं", "Delete Invoice"), tint = AlertRed)
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -319,8 +381,11 @@ fun FarmerCooperationScreen(
         var mobile by remember(currentEdit?.id) { mutableStateOf(currentEdit?.mobile ?: "") }
         var village by remember(currentEdit?.id) { mutableStateOf(currentEdit?.village ?: "") }
         var address by remember(currentEdit?.id) { mutableStateOf(currentEdit?.address ?: "") }
+        var suppliesOffered by remember(currentEdit?.id) { mutableStateOf(currentEdit?.suppliesOffered ?: "") }
         var coopType by remember(currentEdit?.id) { mutableStateOf(currentEdit?.cooperationType ?: "BOTH") }
         var farmerError by remember(currentEdit?.id) { mutableStateOf<String?>(null) }
+
+        val supplyPresets = listOf("भूसा", "हरा चारा", "सूखा चारा", "बरसीम", "दाना-खली", "अन्य सामग्री")
 
         val closeDialog = {
             showAddFarmerDialog = false
@@ -339,13 +404,64 @@ fun FarmerCooperationScreen(
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     farmerError?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold) }
-                    OutlinedTextField(value = name, onValueChange = { name = it; farmerError = null }, label = { Text(str(language, "किसान का नाम *", "Farmer Name *")) }, singleLine = true)
-                    OutlinedTextField(value = mobile, onValueChange = { mobile = it; farmerError = null }, label = { Text(str(language, "मोबाइल नंबर *", "Mobile *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), singleLine = true)
-                    OutlinedTextField(value = village, onValueChange = { village = it; farmerError = null }, label = { Text(str(language, "गाँव *", "Village *")) }, singleLine = true)
-                    OutlinedTextField(value = address, onValueChange = { address = it }, label = { Text(str(language, "पूरा पता", "Address")) })
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it; farmerError = null },
+                        label = { Text(str(language, "किसान का नाम *", "Farmer Name *")) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("farmer_name_input")
+                    )
+                    OutlinedTextField(
+                        value = mobile,
+                        onValueChange = { mobile = it; farmerError = null },
+                        label = { Text(str(language, "मोबाइल नंबर *", "Mobile *")) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("farmer_mobile_input")
+                    )
+                    OutlinedTextField(
+                        value = village,
+                        onValueChange = { village = it; farmerError = null },
+                        label = { Text(str(language, "गाँव *", "Village *")) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("farmer_village_input")
+                    )
+                    OutlinedTextField(
+                        value = address,
+                        onValueChange = { address = it },
+                        label = { Text(str(language, "पूरा पता", "Address")) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = suppliesOffered,
+                        onValueChange = { suppliesOffered = it },
+                        label = { Text(str(language, "किसान क्या बेचता/उपलब्ध कराता है (भूसा, हरा चारा...)", "Supplies Offered (Bhusa, Green Fodder...)")) },
+                        modifier = Modifier.fillMaxWidth().testTag("farmer_supplies_input")
+                    )
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        supplyPresets.forEach { preset ->
+                            val selected = suppliesOffered.contains(preset)
+                            FilterChip(
+                                selected = selected,
+                                onClick = {
+                                    suppliesOffered = if (selected) {
+                                        suppliesOffered.split(",").map { it.trim() }.filter { it.isNotBlank() && it != preset }.joinToString(", ")
+                                    } else {
+                                        if (suppliesOffered.isBlank()) preset else "$suppliesOffered, $preset"
+                                    }
+                                },
+                                label = { Text(preset, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         listOf("SUPPLIER" to "आपूर्तिकर्ता", "BUYER" to "खरीदार", "BOTH" to "दोनों").forEach { (k, l) ->
                             FilterChip(selected = coopType == k, onClick = { coopType = k }, label = { Text(l) })
@@ -367,11 +483,21 @@ fun FarmerCooperationScreen(
                                     mobile = mobile.trim(),
                                     village = village.trim(),
                                     address = address.trim(),
+                                    suppliesOffered = suppliesOffered.trim(),
                                     cooperationType = coopType
                                 )
                             )
                         } else {
-                            onAddFarmer(FarmerRecord(name = name.trim(), mobile = mobile.trim(), village = village.trim(), address = address.trim(), cooperationType = coopType))
+                            onAddFarmer(
+                                FarmerRecord(
+                                    name = name.trim(),
+                                    mobile = mobile.trim(),
+                                    village = village.trim(),
+                                    address = address.trim(),
+                                    suppliesOffered = suppliesOffered.trim(),
+                                    cooperationType = coopType
+                                )
+                            )
                         }
                         closeDialog()
                     },
@@ -401,47 +527,114 @@ fun FarmerCooperationScreen(
         )
     }
 
-    selectedFarmerForTx?.let { farmer ->
-        var direction by remember { mutableStateOf("PURCHASE_FROM_FARMER") }
-        var product by remember { mutableStateOf("भूसा (Bhusa)") }
-        var qty by remember { mutableStateOf("10") }
-        var unit by remember { mutableStateOf("QUINTAL") }
-        var quality by remember { mutableStateOf("A-Grade") }
-        var rate by remember { mutableStateOf("550") }
-        var paid by remember { mutableStateOf("5500") }
-        var notes by remember { mutableStateOf("") }
-        var txError by remember { mutableStateOf<String?>(null) }
+    deletingTx?.let { target ->
+        ConfirmActionDialog(
+            title = str(language, "किसान लेनदेन हटाएं", "Delete Farmer Invoice"),
+            message = str(
+                language,
+                "क्या आप वाकई बिल ${target.invoiceNumber} (${target.farmerName} — ${target.productName}) को हटाना चाहते हैं?",
+                "Are you sure you want to delete invoice ${target.invoiceNumber} (${target.farmerName})?"
+            ),
+            confirmLabel = str(language, "हटाएं", "Delete"),
+            cancelLabel = str(language, "रद्द करें", "Cancel"),
+            onConfirm = {
+                onDeleteFarmerTx(target.id)
+                deletingTx = null
+            },
+            onDismiss = { deletingTx = null }
+        )
+    }
 
-        val purchaseProducts = listOf("भूसा (Bhusa)", "हरा चारा", "बरसीम", "मक्का", "सूखी घास")
-        val saleProducts = listOf("गोबर खाद", "वर्मी कम्पोस्ट", "जैविक खाद", "नर्सरी पौधे")
+    if (selectedFarmerForTx != null || editingTx != null) {
+        val currentTxEdit = editingTx
+        val isTxEdit = currentTxEdit != null
+        val targetFarmer = selectedFarmerForTx
+        val headerName = currentTxEdit?.farmerName ?: targetFarmer?.name.orEmpty()
+
+        var direction by remember(currentTxEdit?.id, targetFarmer?.id) {
+            mutableStateOf(currentTxEdit?.direction ?: "PURCHASE_FROM_FARMER")
+        }
+        var product by remember(currentTxEdit?.id, targetFarmer?.id) {
+            mutableStateOf(currentTxEdit?.productName ?: "भूसा (Bhusa)")
+        }
+        var qty by remember(currentTxEdit?.id, targetFarmer?.id) {
+            mutableStateOf(if (currentTxEdit != null) currentTxEdit.quantity.toString().removeSuffix(".0") else "10")
+        }
+        var unit by remember(currentTxEdit?.id, targetFarmer?.id) { mutableStateOf(currentTxEdit?.unit ?: "QUINTAL") }
+        var quality by remember(currentTxEdit?.id, targetFarmer?.id) { mutableStateOf(currentTxEdit?.qualityGrade ?: "A-Grade") }
+        var rate by remember(currentTxEdit?.id, targetFarmer?.id) {
+            mutableStateOf(if (currentTxEdit != null) currentTxEdit.ratePerUnitInr.toString().removeSuffix(".0") else "550")
+        }
+        var paid by remember(currentTxEdit?.id, targetFarmer?.id) {
+            mutableStateOf(if (currentTxEdit != null) currentTxEdit.paidAmountInr.toString().removeSuffix(".0") else "5500")
+        }
+        var paymentStatus by remember(currentTxEdit?.id, targetFarmer?.id) {
+            mutableStateOf(currentTxEdit?.paymentStatus ?: "PAID")
+        }
+        var dateStr by remember(currentTxEdit?.id, targetFarmer?.id) {
+            mutableStateOf(currentTxEdit?.dateStr?.ifBlank { QrAndExportUtils.todayIso() } ?: QrAndExportUtils.todayIso())
+        }
+        var notes by remember(currentTxEdit?.id, targetFarmer?.id) { mutableStateOf(currentTxEdit?.notes ?: "") }
+        var txError by remember(currentTxEdit?.id, targetFarmer?.id) { mutableStateOf<String?>(null) }
+
+        val purchaseProducts = listOf("भूसा (Bhusa)", "हरा चारा", "सूखा चारा", "बरसीम", "दाना-खली", "अन्य सामग्री")
+        val saleProducts = listOf("जैविक गोबर खाद", "वर्मी कम्पोस्ट", "गोबर के कंडे", "गौ-काष्ठ", "नर्सरी पौधे")
+
+        val closeTxDialog = {
+            selectedFarmerForTx = null
+            editingTx = null
+        }
 
         AlertDialog(
-            onDismissRequest = { selectedFarmerForTx = null },
-            title = { Text("${farmer.name} — ${str(language, "नया बिल", "New Invoice")}", fontWeight = FontWeight.Bold) },
+            onDismissRequest = closeTxDialog,
+            title = {
+                Text(
+                    "$headerName — ${if (isTxEdit) str(language, "बिल संपादित करें", "Edit Invoice") else str(language, "नया बिल", "New Invoice")}",
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     txError?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold) }
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         FilterChip(selected = direction == "PURCHASE_FROM_FARMER", onClick = { direction = "PURCHASE_FROM_FARMER"; product = purchaseProducts.first() }, label = { Text(str(language, "किसान से खरीद", "Buy Fodder")) })
                         FilterChip(selected = direction == "SALE_TO_FARMER", onClick = { direction = "SALE_TO_FARMER"; product = saleProducts.first() }, label = { Text(str(language, "किसान को बिक्री", "Sell Product")) })
                     }
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         (if (direction == "PURCHASE_FROM_FARMER") purchaseProducts else saleProducts).forEach { p ->
                             FilterChip(selected = product == p, onClick = { product = p }, label = { Text(p, style = MaterialTheme.typography.labelSmall) })
                         }
                     }
-                    OutlinedTextField(value = product, onValueChange = { product = it; txError = null }, label = { Text(str(language, "उत्पाद विवरण *", "Product *")) }, singleLine = true)
+                    OutlinedTextField(value = product, onValueChange = { product = it; txError = null }, label = { Text(str(language, "सामग्री / उत्पाद विवरण *", "Material / Product *")) }, singleLine = true)
                     OutlinedTextField(value = qty, onValueChange = { qty = it; txError = null }, label = { Text(str(language, "मात्रा *", "Quantity *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
                     OutlinedTextField(value = unit, onValueChange = { unit = it }, label = { Text(str(language, "इकाई (QUINTAL/KG/BAG)", "Unit")) }, singleLine = true)
-                    OutlinedTextField(value = quality, onValueChange = { quality = it }, label = { Text(str(language, "गुणवत्ता", "Quality")) }, singleLine = true)
-                    OutlinedTextField(value = rate, onValueChange = { rate = it; txError = null }, label = { Text(str(language, "तय दर (₹) *", "Rate (₹) *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
+                    OutlinedTextField(value = rate, onValueChange = { rate = it; txError = null }, label = { Text(str(language, "कीमत / तय दर (₹) *", "Rate (₹) *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
                     OutlinedTextField(value = paid, onValueChange = { paid = it }, label = { Text(str(language, "भुगतान राशि (₹)", "Paid Amount (₹)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
+                    Text(str(language, "भुगतान स्थिति:", "Payment Status:"), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        FarmerTransaction.ALL_PAYMENT_STATUSES.forEach { st ->
+                            FilterChip(
+                                selected = paymentStatus == st,
+                                onClick = { paymentStatus = st },
+                                label = { Text(farmerPaymentStatusLabel(st, isHindi), style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.testTag("farmer_tx_pay_${st.lowercase()}")
+                            )
+                        }
+                    }
+                    OutlinedTextField(value = dateStr, onValueChange = { dateStr = it }, label = { Text(str(language, "दिनांक (YYYY-MM-DD)", "Date")) }, singleLine = true)
+                    OutlinedTextField(value = quality, onValueChange = { quality = it }, label = { Text(str(language, "गुणवत्ता", "Quality")) }, singleLine = true)
                     OutlinedTextField(value = notes, onValueChange = { notes = it }, label = { Text(str(language, "टिप्पणी", "Notes")) })
                 }
             },
@@ -455,34 +648,57 @@ fun FarmerCooperationScreen(
                             return@Button
                         }
                         val total = q * r
-                        onAddFarmerTx(
-                            FarmerTransaction(
-                                farmerId = farmer.id,
-                                farmerName = farmer.name,
-                                village = farmer.village,
-                                direction = direction,
-                                productName = product.trim(),
-                                quantity = q,
-                                unit = unit.trim().ifBlank { "KG" },
-                                qualityGrade = quality.trim().ifBlank { "A" },
-                                ratePerUnitInr = r,
-                                totalAmountInr = total,
-                                paidAmountInr = paid.toDoubleOrNull() ?: 0.0,
-                                dateStr = QrAndExportUtils.todayIso(),
-                                notes = notes.trim()
-                            ),
-                            farmer
-                        )
-                        selectedFarmerForTx = null
+                        val paidVal = paid.toDoubleOrNull() ?: 0.0
+                        if (currentTxEdit != null) {
+                            onUpdateFarmerTx(
+                                currentTxEdit.copy(
+                                    direction = direction,
+                                    productName = product.trim(),
+                                    quantity = q,
+                                    unit = unit.trim().ifBlank { "KG" },
+                                    qualityGrade = quality.trim().ifBlank { "A" },
+                                    ratePerUnitInr = r,
+                                    totalAmountInr = total,
+                                    paidAmountInr = paidVal,
+                                    outstandingInr = (total - paidVal).coerceAtLeast(0.0),
+                                    paymentStatus = paymentStatus,
+                                    dateStr = dateStr.trim().ifBlank { QrAndExportUtils.todayIso() },
+                                    notes = notes.trim()
+                                )
+                            )
+                        } else if (targetFarmer != null) {
+                            onAddFarmerTx(
+                                FarmerTransaction(
+                                    farmerId = targetFarmer.id,
+                                    farmerName = targetFarmer.name,
+                                    village = targetFarmer.village,
+                                    direction = direction,
+                                    productName = product.trim(),
+                                    quantity = q,
+                                    unit = unit.trim().ifBlank { "KG" },
+                                    qualityGrade = quality.trim().ifBlank { "A" },
+                                    ratePerUnitInr = r,
+                                    totalAmountInr = total,
+                                    paidAmountInr = paidVal,
+                                    paymentStatus = paymentStatus,
+                                    dateStr = dateStr.trim().ifBlank { QrAndExportUtils.todayIso() },
+                                    notes = notes.trim()
+                                ),
+                                targetFarmer
+                            )
+                        }
+                        closeTxDialog()
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = ForestGreen)
-                ) { Text(str(language, "बिल सहेजें", "Save Invoice")) }
+                    colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                    modifier = Modifier.testTag("farmer_tx_save_button")
+                ) { Text(if (isTxEdit) str(language, "अपडेट करें", "Update") else str(language, "बिल सहेजें", "Save Invoice")) }
             },
-            dismissButton = { TextButton(onClick = { selectedFarmerForTx = null }) { Text(str(language, "रद्द करें", "Cancel")) } }
+            dismissButton = { TextButton(onClick = closeTxDialog) { Text(str(language, "रद्द करें", "Cancel")) } }
         )
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CompostProductionScreen(
     language: AppLanguage,
@@ -494,6 +710,7 @@ fun CompostProductionScreen(
     onUpdateBatch: (CompostBatch) -> Unit = {},
     onDeleteBatch: (CompostBatch) -> Unit = {}
 ) {
+    val isHindi = language == AppLanguage.HINDI
     var showAddDialog by remember { mutableStateOf(false) }
     var editingBatch by remember { mutableStateOf<CompostBatch?>(null) }
     var deletingBatch by remember { mutableStateOf<CompostBatch?>(null) }
@@ -535,7 +752,8 @@ fun CompostProductionScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding)
-                        .padding(horizontal = 16.dp),
+                        .padding(horizontal = 16.dp)
+                        .testTag("compost_production_list"),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     contentPadding = PaddingValues(top = 10.dp, bottom = 84.dp)
                 ) {
@@ -576,37 +794,46 @@ fun CompostProductionScreen(
                             EmptyStateCard(
                                 icon = Icons.Default.Spa,
                                 title = str(language, "कोई उत्पादन बैच नहीं", "No production batches yet"),
-                                subtitle = str(language, "गोबर संग्रहण, कम्पोस्ट, वर्मी कम्पोस्ट, जैविक खाद व नर्सरी पौधे दर्ज करें।", "Track dung collection, compost, vermicompost, dry manure, and nursery plants.")
+                                subtitle = str(language, "कच्चा गोबर, खाद, वर्मी कम्पोस्ट, कंडे, गौ-काष्ठ, धूपबत्ती व अन्य गोबर उत्पाद दर्ज करें।", "Track raw dung, compost, vermicompost, kande, gau-kashtha, dhoop, and other products.")
                             )
                         }
                     } else {
                         items(batches, key = { it.id }) { batch ->
                             Card(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("compost_card_${batch.id}"),
                                 shape = RoundedCornerShape(16.dp),
                                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                             ) {
-                                Column(modifier = Modifier.padding(14.dp)) {
-                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                         Text("${batch.batchCode} • ${batch.productType}", fontWeight = FontWeight.Bold)
                                         Text(batch.status, style = MaterialTheme.typography.labelSmall, color = ForestGreen, fontWeight = FontWeight.Bold)
                                     }
-                                    Text("${str(language, "मात्रा", "Qty")}: ${batch.quantity} ${batch.unit} | ${str(language, "शेष स्टॉक", "Stock")}: ${batch.stockRemaining} ${batch.unit}", style = MaterialTheme.typography.bodySmall)
-                                    Text("${str(language, "लागत", "Cost")}: ₹${(batch.productionCostInr + batch.packagingCostInr).toInt()} | ${str(language, "विक्रय दर", "Rate")}: ₹${batch.sellingPricePerUnitInr.toInt()}/${batch.unit}", style = MaterialTheme.typography.labelSmall)
+                                    Text(
+                                        "${productionProductTypeLabel(batch.productType, isHindi)} • ${str(language, "मात्रा", "Qty")}: ${batch.quantity} ${batch.unit} | ${str(language, "शेष", "Stock")}: ${batch.stockRemaining} ${batch.unit} | ${str(language, "गोबर", "Dung")}: ${batch.rawDungKg.toInt()} kg",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(
+                                        "${str(language, "तिथि", "Date")}: ${batch.dateStr} | ${str(language, "लागत", "Cost")}: ₹${(batch.productionCostInr + batch.packagingCostInr).toInt()} | ${str(language, "दर", "Rate")}: ₹${batch.sellingPricePerUnitInr.toInt()}/${batch.unit}",
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                    if (batch.staffNames.isNotBlank()) {
+                                        Text(
+                                            text = "${str(language, "कर्मचारी", "Staff")}: ${batch.staffNames}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = ForestGreen,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
                                     if (session.canEdit(AppModule.PRODUCTION) || session.canDelete(AppModule.PRODUCTION)) {
-                                        Spacer(Modifier.height(8.dp))
+                                        Spacer(Modifier.height(2.dp))
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            if (session.canEdit(AppModule.PRODUCTION) && batch.stockRemaining > 0) {
-                                                OutlinedButton(onClick = { sellBatch = batch }) {
-                                                    Text(str(language, "बिक्री दर्ज करें", "Record Sale"))
-                                                }
-                                            } else {
-                                                Spacer(Modifier.width(1.dp))
-                                            }
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 if (session.canEdit(AppModule.PRODUCTION)) {
                                                     IconButton(
@@ -634,6 +861,11 @@ fun CompostProductionScreen(
                                                             tint = AlertRed
                                                         )
                                                     }
+                                                }
+                                            }
+                                            if (session.canEdit(AppModule.PRODUCTION) && batch.stockRemaining > 0) {
+                                                OutlinedButton(onClick = { sellBatch = batch }) {
+                                                    Text(str(language, "बिक्री दर्ज करें", "Record Sale"))
                                                 }
                                             }
                                         }
@@ -667,6 +899,11 @@ fun CompostProductionScreen(
         var sellPrice by remember(currentEdit?.id) {
             mutableStateOf(if (currentEdit != null) currentEdit.sellingPricePerUnitInr.toString().removeSuffix(".0") else "12")
         }
+        var dateStr by remember(currentEdit?.id) {
+            mutableStateOf(currentEdit?.dateStr?.ifBlank { QrAndExportUtils.todayIso() } ?: QrAndExportUtils.todayIso())
+        }
+        var staffNames by remember(currentEdit?.id) { mutableStateOf(currentEdit?.staffNames ?: "") }
+        var notes by remember(currentEdit?.id) { mutableStateOf(currentEdit?.notes ?: "") }
         var status by remember(currentEdit?.id) { mutableStateOf(currentEdit?.status ?: "READY_FOR_SALE") }
         var batchError by remember(currentEdit?.id) { mutableStateOf<String?>(null) }
 
@@ -675,40 +912,92 @@ fun CompostProductionScreen(
             editingBatch = null
         }
 
+        val productionTypes = listOf(
+            "COMPOST" to str(language, "खाद", "Compost"),
+            "VERMICOMPOST" to str(language, "वर्मी कम्पोस्ट", "Vermicompost"),
+            "KANDE" to str(language, "गोबर के कंडे", "Kande"),
+            "GAU_KASHTHA" to str(language, "गोबर की लकड़ी", "Gau-Kashtha"),
+            "DHOOP" to str(language, "धूपबत्ती", "Dhoop"),
+            "OTHER_PRODUCT" to str(language, "अन्य उत्पाद", "Other"),
+            "DUNG_COLLECTION" to str(language, "कच्चा गोबर", "Raw Dung"),
+            "DRY_MANURE" to str(language, "सूखी खाद", "Dry Manure")
+        )
+
         AlertDialog(
             onDismissRequest = closeDialog,
             title = {
                 Text(
-                    if (isEdit) str(language, "उत्पादन बैच संपादित करें", "Edit Production Batch")
-                    else str(language, "गोबर व खाद उत्पादन बैच", "New Compost / Production Batch"),
+                    if (isEdit) str(language, "उत्पादन रिकॉर्ड संपादित करें", "Edit Production Batch")
+                    else str(language, "गोबर व उत्पाद उत्पादन रिकॉर्ड", "New Production Batch"),
                     fontWeight = FontWeight.Bold
                 )
             },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     batchError?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold) }
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    Text(str(language, "उत्पाद का प्रकार:", "Product Type:"), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        listOf("DUNG_COLLECTION" to "गोबर", "COMPOST" to "कम्पोस्ट", "VERMICOMPOST" to "वर्मी", "DRY_MANURE" to "सूखी खाद", "NURSERY_PLANTS" to "नर्सरी", "PACKAGED_PRODUCT" to "पैकेज्ड").forEach { (k, l) ->
-                            FilterChip(selected = productType == k, onClick = { productType = k }, label = { Text(l, style = MaterialTheme.typography.labelSmall) })
+                        productionTypes.forEach { (k, l) ->
+                            FilterChip(
+                                selected = productType == k,
+                                onClick = { productType = k },
+                                label = { Text(l, style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.testTag("compost_type_${k.lowercase()}")
+                            )
                         }
                     }
-                    OutlinedTextField(value = qty, onValueChange = { qty = it; batchError = null }, label = { Text(str(language, "उत्पाद मात्रा *", "Output Quantity *")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
-                    OutlinedTextField(value = unit, onValueChange = { unit = it }, label = { Text(str(language, "इकाई (KG/BAG/PLANT)", "Unit")) }, singleLine = true)
-                    OutlinedTextField(value = rawDung, onValueChange = { rawDung = it }, label = { Text(str(language, "कच्चा गोबर (किग्रा)", "Raw Dung (kg)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
+                    OutlinedTextField(
+                        value = rawDung,
+                        onValueChange = { rawDung = it },
+                        label = { Text(str(language, "प्राप्त कच्चा गोबर (किग्रा)", "Raw Cow Dung (kg)")) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("compost_raw_dung_input")
+                    )
+                    OutlinedTextField(
+                        value = qty,
+                        onValueChange = { qty = it; batchError = null },
+                        label = { Text(str(language, "तैयार उत्पाद की मात्रा *", "Prepared Product Qty *")) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("compost_qty_input")
+                    )
+                    OutlinedTextField(
+                        value = unit,
+                        onValueChange = { unit = it },
+                        label = { Text(str(language, "इकाई (KG / नग / पैकेट / बैग)", "Unit")) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = dateStr,
+                        onValueChange = { dateStr = it },
+                        label = { Text(str(language, "उत्पादन तिथि (YYYY-MM-DD)", "Production Date")) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("compost_date_input")
+                    )
+                    OutlinedTextField(
+                        value = staffNames,
+                        onValueChange = { staffNames = it },
+                        label = { Text(str(language, "उत्पादन में लगे कर्मचारी", "Staff Involved")) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("compost_staff_input")
+                    )
                     OutlinedTextField(value = prodCost, onValueChange = { prodCost = it }, label = { Text(str(language, "उत्पादन लागत (₹)", "Production Cost (₹)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
                     OutlinedTextField(value = packCost, onValueChange = { packCost = it }, label = { Text(str(language, "पैकेजिंग लागत (₹)", "Packaging Cost (₹)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
                     OutlinedTextField(value = sellPrice, onValueChange = { sellPrice = it }, label = { Text(str(language, "विक्रय मूल्य प्रति इकाई (₹)", "Selling Price / Unit (₹)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
-                    if (isEdit) {
-                        Row(
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            listOf("IN_PROGRESS" to "प्रगति पर", "PACKAGED" to "पैकेज्ड", "READY_FOR_SALE" to "बिक्री हेतु", "SOLD_OUT" to "समाप्त").forEach { (k, l) ->
-                                FilterChip(selected = status == k, onClick = { status = k }, label = { Text(l, style = MaterialTheme.typography.labelSmall) })
-                            }
+                    OutlinedTextField(value = notes, onValueChange = { notes = it }, label = { Text(str(language, "टिप्पणी (वैकल्पिक)", "Notes")) })
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf("IN_PROGRESS" to "प्रगति पर", "PACKAGED" to "पैकेज्ड", "READY_FOR_SALE" to "बिक्री हेतु", "SOLD_OUT" to "समाप्त").forEach { (k, l) ->
+                            FilterChip(selected = status == k, onClick = { status = k }, label = { Text(l, style = MaterialTheme.typography.labelSmall) })
                         }
                     }
                 }
@@ -732,7 +1021,10 @@ fun CompostProductionScreen(
                                     packagingCostInr = packCost.toDoubleOrNull() ?: 0.0,
                                     sellingPricePerUnitInr = sellPrice.toDoubleOrNull() ?: 0.0,
                                     stockRemaining = (q - currentEdit.soldQuantity).coerceAtLeast(0.0),
-                                    status = status
+                                    status = status,
+                                    dateStr = dateStr.trim().ifBlank { QrAndExportUtils.todayIso() },
+                                    staffNames = staffNames.trim(),
+                                    notes = notes.trim()
                                 )
                             )
                         } else {
@@ -748,7 +1040,9 @@ fun CompostProductionScreen(
                                     soldQuantity = 0.0,
                                     stockRemaining = q,
                                     status = status,
-                                    dateStr = QrAndExportUtils.todayIso()
+                                    dateStr = dateStr.trim().ifBlank { QrAndExportUtils.todayIso() },
+                                    staffNames = staffNames.trim(),
+                                    notes = notes.trim()
                                 )
                             )
                         }
@@ -767,8 +1061,8 @@ fun CompostProductionScreen(
             title = str(language, "उत्पादन बैच हटाएं", "Delete Production Batch"),
             message = str(
                 language,
-                "क्या आप वाकई बैच ${target.batchCode} (${target.productType}) को हटाना चाहते हैं?",
-                "Are you sure you want to delete batch ${target.batchCode} (${target.productType})?"
+                "क्या आप वाकई बैच ${target.batchCode} (${productionProductTypeLabel(target.productType, isHindi)}) को हटाना चाहते हैं?",
+                "Are you sure you want to delete batch ${target.batchCode} (${productionProductTypeLabel(target.productType, isHindi)})?"
             ),
             confirmLabel = str(language, "हटाएं", "Delete"),
             cancelLabel = str(language, "रद्द करें", "Cancel"),

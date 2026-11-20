@@ -96,6 +96,9 @@ class GosalaViewModel(
     val productOrdersState: StateFlow<DataUiState<List<ProductOrder>>> =
         repository.observeProductOrders(session).toUiStateFlow("productOrders")
 
+    val productsState: StateFlow<DataUiState<List<GoshalaProduct>>> =
+        repository.observeProducts(session).toUiStateFlow("products")
+
     val notificationsState: StateFlow<DataUiState<List<NotificationItem>>> =
         repository.observeNotifications(session).toUiStateFlow("notifications")
 
@@ -303,6 +306,18 @@ class GosalaViewModel(
         }
     }
 
+    fun updateFarmerTx(tx: FarmerTransaction, language: AppLanguage) {
+        runMutation(language, "किसान लेनदेन अपडेट हुआ।", "Farmer invoice updated.") {
+            repository.updateFarmerTransaction(session, tx)
+        }
+    }
+
+    fun deleteFarmerTx(txId: String, language: AppLanguage) {
+        runMutation(language, "किसान लेनदेन हटाया गया।", "Farmer invoice deleted.") {
+            repository.deleteFarmerTransaction(session, txId)
+        }
+    }
+
     fun addCompostBatch(batch: CompostBatch, language: AppLanguage) {
         runMutation(language, "उत्पादन बैच सहेजा गया।", "Production batch saved.") {
             repository.addCompostBatch(session, batch)
@@ -426,6 +441,28 @@ class GosalaViewModel(
     fun deleteProductOrder(orderId: String, language: AppLanguage) {
         runMutation(language, "उत्पाद ऑर्डर हटाया गया।", "Product order deleted.") {
             repository.deleteProductOrder(session, orderId)
+        }
+    }
+
+    fun saveProduct(product: GoshalaProduct, isEdit: Boolean, language: AppLanguage) {
+        runMutation(
+            language,
+            if (isEdit) "उत्पाद विवरण अपडेट हुआ।" else "नया उत्पाद सफलतापूर्वक जोड़ा गया।",
+            if (isEdit) "Product updated." else "New product added."
+        ) {
+            repository.saveProduct(session, product, isEdit)
+        }
+    }
+
+    fun deleteProduct(product: GoshalaProduct, language: AppLanguage) {
+        runMutation(language, "उत्पाद हटाया गया।", "Product deleted.") {
+            repository.deleteProduct(session, product)
+        }
+    }
+
+    fun seedDefaultProducts(language: AppLanguage) {
+        runMutation(language, "डिफ़ॉल्ट 6 गौशाला उत्पाद लोड किए गए।", "Default 6 Goshala products loaded.") {
+            repository.seedDefaultProducts(session)
         }
     }
 

@@ -52,7 +52,8 @@ fun AdminDashboardScreen(
     onQuickAddCattle: () -> Unit,
     onQuickAddFeed: () -> Unit,
     onQuickAddExpense: () -> Unit,
-    productOrders: List<ProductOrder> = emptyList()
+    productOrders: List<ProductOrder> = emptyList(),
+    products: List<GoshalaProduct> = emptyList()
 ) {
     val today = QrAndExportUtils.todayIso()
     val cowCount = cattle.count { it.category == "COW" }
@@ -71,6 +72,7 @@ fun AdminDashboardScreen(
     val readyStock = compost.sumOf { it.stockRemaining }.toInt()
 
     val adminModules = listOf(
+        HomeModuleTile(Routes.ADMIN_PRODUCTS, str(language, "उत्पाद प्रबंधन\n(${products.size})", "Product\nCatalog (${products.size})"), Icons.Default.Storefront, ForestGreen, SoftGreenTint, "admin_mod_products"),
         HomeModuleTile(Routes.APPLICATIONS, str(language, "उत्पाद व गोद\nआवेदन", "Orders &\nAdoptions"), Icons.Default.ShoppingBag, Saffron, SoftSaffronTint, "admin_mod_applications"),
         HomeModuleTile(Routes.CATTLE, str(language, "गाय-बैल\nप्रबंधन व QR", "Cattle, Edit\n& QR Cards"), Icons.Default.Pets, ForestGreen, SoftGreenTint, "admin_mod_cattle"),
         HomeModuleTile(Routes.HEALTH, str(language, "स्वास्थ्य व\nटीकाकरण", "Health &\nVaccines"), Icons.Default.MedicalServices, AlertRed, SoftRedTint, "admin_mod_health"),
@@ -79,7 +81,7 @@ fun AdminDashboardScreen(
         HomeModuleTile(Routes.FINANCE, str(language, "वित्त आय-\nव्यय बही", "Income &\nExpenses"), Icons.Default.AccountBalanceWallet, Color(0xFFB7791F), SoftGoldTint, "admin_mod_finance"),
         HomeModuleTile(Routes.DONATIONS, str(language, "दान व गौ-गोद\nस्वीकृति", "Donations &\nApprovals"), Icons.Default.VolunteerActivism, Saffron, SoftSaffronTint, "admin_mod_donations"),
         HomeModuleTile(Routes.FARMERS, str(language, "किसान व्यापार\nव बहीखाता", "Farmer\nLedger"), Icons.Default.Agriculture, GoshalaGreen, SoftGreenTint, "admin_mod_farmers"),
-        HomeModuleTile(Routes.PRODUCTION, str(language, "गोबर खाद व\nउत्पाद बिक्री", "Compost &\nProduct Sales"), Icons.Default.Spa, Color(0xFF6D4C41), Color(0xFFEFEBE9), "admin_mod_production"),
+        HomeModuleTile(Routes.PRODUCTION, str(language, "गोबर खाद व\nउत्पादन प्रबंधन", "Production &\nCompost"), Icons.Default.Spa, Color(0xFF6D4C41), Color(0xFFEFEBE9), "admin_mod_production"),
         HomeModuleTile(Routes.REPORTS, str(language, "सभी 13 रिपोर्ट\nPDF / Excel", "13 Reports\nPDF / Excel"), Icons.Default.Assessment, ForestGreen, SoftGoldTint, "admin_mod_reports"),
         HomeModuleTile(Routes.NOTIFICATIONS, str(language, "सूचनाएं एवं\nरिमाइंडर", "Alerts &\nReminders"), Icons.Default.NotificationsActive, Saffron, SoftSaffronTint, "admin_mod_notifications"),
         HomeModuleTile(Routes.AI_ASSISTANT, str(language, "AI प्रशासक\nसारांश", "AI Admin\nAssistant"), Icons.Default.AutoAwesome, ForestGreen, SoftGreenTint, "admin_mod_ai"),

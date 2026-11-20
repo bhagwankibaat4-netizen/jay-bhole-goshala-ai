@@ -30,6 +30,10 @@ import com.example.R
 import com.example.core.AppLanguage
 import com.example.core.GosalaBrand
 import com.example.core.str
+import androidx.compose.ui.platform.LocalContext
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.example.data.model.GoshalaProduct
 import com.example.data.model.ProductOrder
 import com.example.data.model.UserSession
 import com.example.data.model.paymentModeLabel
@@ -52,8 +56,31 @@ data class PublicGoshalaProduct(
     val stockLabelHi: String,
     val stockLabelEn: String,
     val inStock: Boolean,
-    @DrawableRes val imageRes: Int
+    @DrawableRes val imageRes: Int,
+    val photoUri: String? = null,
+    val stockQuantity: Long = 0L
 )
+
+fun GoshalaProduct.toPublicGoshalaProduct(): PublicGoshalaProduct {
+    val isAvailableNow = available && stockQuantity > 0L
+    return PublicGoshalaProduct(
+        id = id.ifBlank { nameHi.hashCode().toString() },
+        categoryKey = categoryKey,
+        nameHi = nameHi,
+        nameEn = nameEn.ifBlank { nameHi },
+        descriptionHi = descriptionHi,
+        descriptionEn = descriptionEn.ifBlank { descriptionHi },
+        priceInr = priceInr.toInt().coerceAtLeast(1),
+        unitHi = unitLabel.ifBlank { "इकाई" },
+        unitEn = unitLabel.ifBlank { "Unit" },
+        stockLabelHi = if (isAvailableNow) "उपलब्ध (स्टॉक: $stockQuantity)" else "फिलहाल अनुपलब्ध",
+        stockLabelEn = if (isAvailableNow) "In Stock ($stockQuantity)" else "Out of Stock",
+        inStock = isAvailableNow,
+        imageRes = presetProductDrawableRes(photoKey),
+        photoUri = photoUri.takeIf { it.isNotBlank() },
+        stockQuantity = stockQuantity
+    )
+}
 
 data class PublicRequestSummary(
     val refCode: String,
@@ -488,7 +515,8 @@ fun PublicProductsHeaderAndFilters(
                 "ALL" to str(language, "सभी उत्पाद", "All Products"),
                 "MANURE" to str(language, "जैविक खाद", "Organic Manure"),
                 "FUEL" to str(language, "कंडे व गौ-काष्ठ", "Kande & Logs"),
-                "PUJA" to str(language, "धूपबत्ती व अन्य", "Dhoop & Crafts")
+                "PUJA" to str(language, "धूपबत्ती व पूजा", "Dhoop & Puja"),
+                "OTHER" to str(language, "अन्य उत्पाद", "Other")
             )
             cats.forEach { (key, label) ->
                 FilterChip(
@@ -549,18 +577,31 @@ fun PublicProductCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Column {
+            val context = LocalContext.current
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(168.dp)
             ) {
-                GosalaAsyncResourceImage(
-                    resId = product.imageRes,
-                    contentDescription = str(language, product.nameHi, product.nameEn),
-                    contentScale = ContentScale.Crop,
-                    placeholderColor = SoftGreenTint,
-                    modifier = Modifier.fillMaxSize()
-                )
+                if (!product.photoUri.isNullOrBlank()) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(product.photoUri)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = str(language, product.nameHi, product.nameEn),
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    GosalaAsyncResourceImage(
+                        resId = product.imageRes,
+                        contentDescription = str(language, product.nameHi, product.nameEn),
+                        contentScale = ContentScale.Crop,
+                        placeholderColor = SoftGreenTint,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -639,6 +680,7 @@ fun PublicProductCard(
                     }
                     Button(
                         onClick = onBuyClick,
+                        enabled = product.inStock,
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
                         modifier = Modifier
@@ -648,7 +690,7 @@ fun PublicProductCard(
                         Icon(Icons.Default.ShoppingBag, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            text = str(language, "खरीदें", "Buy Request"),
+                            text = if (product.inStock) str(language, "खरीदें", "Buy Request") else str(language, "अनुपलब्ध", "Out of Stock"),
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -1097,15 +1139,30 @@ fun ProductPurchaseRequestDialog(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.Top
                     ) {
-                        GosalaAsyncResourceImage(
-                            resId = product.imageRes,
-                            contentDescription = str(language, product.nameHi, product.nameEn),
-                            contentScale = ContentScale.Crop,
-                            placeholderColor = SoftGreenTint,
-                            modifier = Modifier
-                                .size(76.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                        )
+                        val dialogContext = LocalContext.current
+                        if (!product.photoUri.isNullOrBlank()) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(dialogContext)
+                                    .data(product.photoUri)
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = str(language, product.nameHi, product.nameEn),
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(76.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                            )
+                        } else {
+                            GosalaAsyncResourceImage(
+                                resId = product.imageRes,
+                                contentDescription = str(language, product.nameHi, product.nameEn),
+                                contentScale = ContentScale.Crop,
+                                placeholderColor = SoftGreenTint,
+                                modifier = Modifier
+                                    .size(76.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                            )
+                        }
                         Column(
                             modifier = Modifier.weight(1f),
                             verticalArrangement = Arrangement.spacedBy(3.dp)

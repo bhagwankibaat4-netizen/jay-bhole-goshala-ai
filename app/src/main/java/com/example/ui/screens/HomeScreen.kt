@@ -65,12 +65,19 @@ fun HomeScreen(
     onQuickAddExpense: () -> Unit,
     productOrdersState: DataUiState<List<ProductOrder>> = DataUiState.Success(emptyList()),
     onSubmitProductOrder: (ProductOrder) -> Unit = {},
-    onOpenSponsorTab: (() -> Unit)? = null
+    onOpenSponsorTab: (() -> Unit)? = null,
+    products: List<GoshalaProduct> = emptyList()
 ) {
     val isPublic = session.role == UserRole.PUBLIC
     val today = QrAndExportUtils.todayIso()
 
-    val publicProducts = remember { defaultPublicGoshalaProducts() }
+    val publicProducts = remember(products) {
+        if (products.isNotEmpty()) {
+            products.map { it.toPublicGoshalaProduct() }
+        } else {
+            defaultPublicGoshalaProducts()
+        }
+    }
     var selectedProductCategory by remember { mutableStateOf("ALL") }
     val filteredPublicProducts = remember(publicProducts, selectedProductCategory) {
         if (selectedProductCategory == "ALL") publicProducts
@@ -760,6 +767,7 @@ object Routes {
     const val PRODUCTION = "production"
     const val DONATIONS = "donations"
     const val APPLICATIONS = "applications"
+    const val ADMIN_PRODUCTS = "admin_products"
     const val AI_ASSISTANT = "ai_assistant"
     const val REPORTS = "reports"
     const val NOTIFICATIONS = "notifications"

@@ -274,6 +274,7 @@ data class FarmerRecord(
     val mobile: String = "",
     val village: String = "",
     val address: String = "",
+    val suppliesOffered: String = "",
     val cooperationType: String = "SUPPLIER",
     val totalPurchasedInr: Double = 0.0,
     val totalSoldInr: Double = 0.0,
@@ -287,6 +288,7 @@ data class FarmerRecord(
         "mobile" to mobile,
         "village" to village,
         "address" to address,
+        "suppliesOffered" to suppliesOffered,
         "cooperationType" to cooperationType,
         "totalPurchasedInr" to totalPurchasedInr,
         "totalSoldInr" to totalSoldInr,
@@ -314,6 +316,7 @@ data class FarmerTransaction(
     val paidAmountInr: Double = 0.0,
     val outstandingInr: Double = 0.0,
     val invoiceNumber: String = "",
+    val paymentStatus: String = "PAID",
     val dateStr: String = "",
     val notes: String = "",
     val recordedBy: String = "",
@@ -334,12 +337,24 @@ data class FarmerTransaction(
         "paidAmountInr" to paidAmountInr,
         "outstandingInr" to outstandingInr,
         "invoiceNumber" to invoiceNumber,
+        "paymentStatus" to paymentStatus,
         "dateStr" to dateStr,
         "notes" to notes,
         "recordedBy" to recordedBy,
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     )
+
+    companion object {
+        val ALL_PAYMENT_STATUSES = listOf("PAID", "PARTIAL", "PENDING")
+    }
+}
+
+fun farmerPaymentStatusLabel(status: String, isHindi: Boolean): String = when (status) {
+    "PAID" -> if (isHindi) "पूर्ण भुगतान (Paid)" else "Paid"
+    "PARTIAL" -> if (isHindi) "आंशिक (Partial)" else "Partial"
+    "PENDING" -> if (isHindi) "बकाया (Pending)" else "Pending"
+    else -> status
 }
 
 @Keep
@@ -358,6 +373,7 @@ data class CompostBatch(
     val stockRemaining: Double = 0.0,
     val status: String = "IN_PROGRESS",
     val dateStr: String = "",
+    val staffNames: String = "",
     val notes: String = "",
     val recordedBy: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
@@ -376,11 +392,158 @@ data class CompostBatch(
         "stockRemaining" to stockRemaining,
         "status" to status,
         "dateStr" to dateStr,
+        "staffNames" to staffNames,
         "notes" to notes,
         "recordedBy" to recordedBy,
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     )
+}
+
+fun productionProductTypeLabel(type: String, isHindi: Boolean): String = when (type) {
+    "COMPOST" -> if (isHindi) "जैविक खाद (कम्पोस्ट)" else "Organic Compost"
+    "VERMICOMPOST" -> if (isHindi) "वर्मी कम्पोस्ट" else "Vermicompost"
+    "KANDE" -> if (isHindi) "गोबर के कंडे" else "Cow Dung Cakes (Kande)"
+    "GAU_KASHTHA" -> if (isHindi) "गोबर की लकड़ी (गौ-काष्ठ)" else "Cow Dung Logs (Gau-Kashtha)"
+    "DHOOP" -> if (isHindi) "प्राकृतिक धूपबत्ती" else "Natural Dhoop"
+    "OTHER_PRODUCT" -> if (isHindi) "अन्य गोबर उत्पाद" else "Other Dung Products"
+    "DUNG_COLLECTION" -> if (isHindi) "कच्चा गोबर संग्रहण" else "Raw Dung Collection"
+    "DRY_MANURE" -> if (isHindi) "सूखी गोबर खाद" else "Dry Manure"
+    "NURSERY_PLANTS" -> if (isHindi) "नर्सरी पौधे" else "Nursery Plants"
+    "PACKAGED_PRODUCT" -> if (isHindi) "पैकेज्ड उत्पाद" else "Packaged Product"
+    else -> type
+}
+
+@Keep
+@IgnoreExtraProperties
+data class GoshalaProduct(
+    @DocumentId val id: String = "",
+    val nameHi: String = "",
+    val nameEn: String = "",
+    val categoryKey: String = "MANURE",
+    val descriptionHi: String = "",
+    val descriptionEn: String = "",
+    val priceInr: Double = 0.0,
+    val stockQuantity: Long = 0L,
+    val unitLabel: String = "किलो",
+    val available: Boolean = true,
+    val photoKey: String = "compost",
+    val photoUri: String = "",
+    val createdBy: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun toCreateMap(): Map<String, Any> = mapOf(
+        "nameHi" to nameHi,
+        "nameEn" to nameEn,
+        "categoryKey" to categoryKey,
+        "descriptionHi" to descriptionHi,
+        "descriptionEn" to descriptionEn,
+        "priceInr" to priceInr,
+        "stockQuantity" to stockQuantity,
+        "unitLabel" to unitLabel,
+        "available" to available,
+        "photoKey" to photoKey,
+        "photoUri" to photoUri,
+        "createdBy" to createdBy,
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp()
+    )
+
+    companion object {
+        val ALL_CATEGORIES = listOf("MANURE", "FUEL", "PUJA", "OTHER")
+        val PRESET_PHOTO_KEYS = listOf("compost", "vermicompost", "kande", "gaukashtha", "dhoop")
+        val SUGGESTED_UNITS = listOf("50 किग्रा बैग", "40 किग्रा बैग", "किलो", "पैकेट", "पीस", "25 नग पैक", "10 किग्रा बंडल", "12 नग सेट")
+
+        fun defaultSeedProducts(): List<GoshalaProduct> = listOf(
+            GoshalaProduct(
+                id = "compost",
+                nameHi = "जैविक गोबर खाद",
+                nameEn = "Organic Cow Dung Manure",
+                categoryKey = "MANURE",
+                descriptionHi = "देशी गाय के गोबर से प्राकृतिक विधि द्वारा तैयार पोषक तत्वों से भरपूर जैविक खाद — खेत की उर्वरता बढ़ाए।",
+                descriptionEn = "Nutrient-rich natural fertilizer crafted from indigenous cow dung to restore soil fertility.",
+                priceInr = 350.0,
+                stockQuantity = 100L,
+                unitLabel = "50 किग्रा बैग",
+                available = true,
+                photoKey = "compost"
+            ),
+            GoshalaProduct(
+                id = "vermicompost",
+                nameHi = "वर्मी कम्पोस्ट (केंचुआ खाद)",
+                nameEn = "Vermicompost",
+                categoryKey = "MANURE",
+                descriptionHi = "जैविक खेती, सब्ज़ी, बागवानी व नर्सरी पौधों के लिए उच्च गुणवत्ता वाली छनी हुई केंचुआ खाद।",
+                descriptionEn = "Fine-sieved earthworm vermicompost ideal for organic farming, vegetables, and home gardens.",
+                priceInr = 450.0,
+                stockQuantity = 80L,
+                unitLabel = "40 किग्रा बैग",
+                available = true,
+                photoKey = "vermicompost"
+            ),
+            GoshalaProduct(
+                id = "kande",
+                nameHi = "गोबर के कंडे",
+                nameEn = "Cow Dung Cakes (Kande)",
+                categoryKey = "FUEL",
+                descriptionHi = "हवन, यज्ञ, पूजा-पाठ एवं पारंपरिक उपयोग हेतु धूप में सुखाए गए शुद्ध देशी गाय के कंडे।",
+                descriptionEn = "Sun-dried pure indigenous cow dung cakes for havan, rituals, and traditional eco-friendly use.",
+                priceInr = 120.0,
+                stockQuantity = 150L,
+                unitLabel = "25 नग पैक",
+                available = true,
+                photoKey = "kande"
+            ),
+            GoshalaProduct(
+                id = "gaukashtha",
+                nameHi = "गोबर की लकड़ी / उपले (गौ-काष्ठ)",
+                nameEn = "Cow Dung Logs (Gau-Kashtha)",
+                categoryKey = "FUEL",
+                descriptionHi = "वृक्ष संरक्षण हेतु गोबर से निर्मित पर्यावरण-अनुकूल लकड़ी — होलिका दहन, यज्ञ व ईंधन के लिए सर्वोत्तम।",
+                descriptionEn = "Eco-friendly compressed cow dung logs to save trees — ideal for rituals, bonfires, and clean fuel.",
+                priceInr = 180.0,
+                stockQuantity = 60L,
+                unitLabel = "10 किग्रा बंडल",
+                available = true,
+                photoKey = "gaukashtha"
+            ),
+            GoshalaProduct(
+                id = "dhoop",
+                nameHi = "प्राकृतिक धूपबत्ती",
+                nameEn = "Natural Cow Dung Dhoop",
+                categoryKey = "PUJA",
+                descriptionHi = "गाय के गोबर, हवन सामग्री, गूगल व प्राकृतिक जड़ी-बूटियों से बनी सुगंधित रसायन-मुक्त धूपबत्ती।",
+                descriptionEn = "Chemical-free aromatic incense cones made with cow dung, guggal, and sacred herbal blends.",
+                priceInr = 80.0,
+                stockQuantity = 120L,
+                unitLabel = "30 कोन डिब्बा",
+                available = true,
+                photoKey = "dhoop"
+            ),
+            GoshalaProduct(
+                id = "other_products",
+                nameHi = "गोबर से बने अन्य उत्पाद (दीये व गमले)",
+                nameEn = "Other Cow Dung Crafts (Diyas & Pots)",
+                categoryKey = "OTHER",
+                descriptionHi = "पर्यावरण-अनुकूल गोमय दीये, पौध-गमले व हवन कप जो उपयोग के बाद मिट्टी में खाद बन जाते हैं।",
+                descriptionEn = "Biodegradable cow dung diyas, nursery planters, and havan cups that enrich soil after use.",
+                priceInr = 150.0,
+                stockQuantity = 45L,
+                unitLabel = "12 नग सेट",
+                available = true,
+                photoKey = "dhoop"
+            )
+        )
+    }
+}
+
+fun productCategoryLabel(categoryKey: String, isHindi: Boolean): String = when (categoryKey) {
+    "MANURE" -> if (isHindi) "जैविक खाद" else "Organic Manure"
+    "FUEL" -> if (isHindi) "कंडे व गौ-काष्ठ" else "Kande & Logs"
+    "PUJA" -> if (isHindi) "धूपबत्ती व पूजा" else "Dhoop & Puja"
+    "OTHER" -> if (isHindi) "अन्य उत्पाद" else "Other Products"
+    else -> categoryKey
 }
 
 @Keep

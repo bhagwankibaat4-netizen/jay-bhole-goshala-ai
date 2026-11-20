@@ -1305,6 +1305,211 @@ test("Phase 2 Product Orders & Cow Adoption Payment Verification: strict UID iso
   );
 });
 
+test("Phase 3 Admin Full Management: /products Admin-only CRUD + Public read + Staff denied, plus Production & Farmer extensions", async () => {
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID, {
+    email: ADMIN_EMAIL,
+    email_verified: true,
+  }).firestore();
+  const publicDb = testEnv.authenticatedContext(PUBLIC_UID, {
+    email: PUBLIC_EMAIL,
+    email_verified: true,
+  }).firestore();
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("staffAccounts").doc(STAFF_UID).set({
+      uid: STAFF_UID,
+      employeeId: "EMP-950",
+      email: STAFF_EMAIL,
+      name: "सीमित कर्मचारी",
+      designation: "गौ सेवक",
+      monthlySalary: 11000,
+      active: true,
+      permissions: { cattle: ["VIEW"], production: ["VIEW"], farmers: ["VIEW"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    await db.collection("staffAccounts").doc("inactive_staff_p3").set({
+      uid: "inactive_staff_p3",
+      employeeId: "EMP-951",
+      email: "inactive_p3@gosala.org",
+      name: "निष्क्रिय सेवक",
+      designation: "गौ सेवक",
+      monthlySalary: 10000,
+      active: false,
+      permissions: { production: ["VIEW", "ADD"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+  });
+
+  const staffDb = testEnv.authenticatedContext(STAFF_UID, {
+    email: STAFF_EMAIL,
+    email_verified: true,
+  }).firestore();
+  const inactiveStaffDb = testEnv.authenticatedContext("inactive_staff_p3", {
+    email: "inactive_p3@gosala.org",
+    email_verified: true,
+  }).firestore();
+
+  const validProduct = {
+    nameHi: "गोबर की लकड़ी (गौ-काष्ठ)",
+    nameEn: "Cow Dung Logs (Gau-Kashtha)",
+    categoryKey: "FUEL",
+    descriptionHi: "वृक्ष संरक्षण हेतु शुद्ध देशी गाय के गोबर से बनी लकड़ी।",
+    descriptionEn: "Eco-friendly cow dung logs.",
+    priceInr: 180,
+    stockQuantity: 40,
+    unitLabel: "10 किग्रा बंडल",
+    available: true,
+    photoKey: "gaukashtha",
+    photoUri: "",
+    createdBy: ADMIN_UID,
+    createdAt: pastDate(),
+    updatedAt: pastDate(),
+  };
+
+  // 1. Public & Staff CANNOT create products
+  await assertFails(
+    publicDb.collection("products").doc("prod_pub_fail").set({
+      ...validProduct,
+      createdBy: PUBLIC_UID,
+    })
+  );
+  await assertFails(
+    staffDb.collection("products").doc("prod_staff_fail").set({
+      ...validProduct,
+      createdBy: STAFF_UID,
+    })
+  );
+
+  // 2. Admin CAN create, update price/photo/stock, and delete products
+  await assertSucceeds(adminDb.collection("products").doc("prod_1").set(validProduct));
+
+  // 3. Signed-in Public & active Staff CAN read products; Unauth & inactive Staff CANNOT
+  await assertSucceeds(publicDb.collection("products").get());
+  await assertSucceeds(publicDb.collection("products").doc("prod_1").get());
+  await assertSucceeds(staffDb.collection("products").get());
+  await assertFails(unauthDb.collection("products").get());
+  await assertFails(inactiveStaffDb.collection("products").get());
+
+  // 4. Public & Staff CANNOT edit or delete products
+  await assertFails(
+    publicDb.collection("products").doc("prod_1").update({ priceInr: 1, updatedAt: pastDate(500) })
+  );
+  await assertFails(publicDb.collection("products").doc("prod_1").delete());
+  await assertFails(
+    staffDb.collection("products").doc("prod_1").update({ priceInr: 200, updatedAt: pastDate(500) })
+  );
+  await assertFails(staffDb.collection("products").doc("prod_1").delete());
+
+  // 5. Admin edits price, stock, and photoUri, then deletes
+  await assertSucceeds(
+    adminDb.collection("products").doc("prod_1").update({
+      priceInr: 210,
+      stockQuantity: 55,
+      photoUri: "content://media/picker/0/item/42",
+      updatedAt: pastDate(400),
+    })
+  );
+  await assertSucceeds(adminDb.collection("products").doc("prod_1").delete());
+
+  // 6. Phase 3 Production Management: new product types (KANDE, GAU_KASHTHA, DHOOP, OTHER_PRODUCT) + staffNames
+  await assertSucceeds(
+    adminDb.collection("compostProduction").doc("prod_batch_kande").set({
+      batchCode: "PRD-301",
+      productType: "KANDE",
+      quantity: 250,
+      unit: "नग",
+      rawDungKg: 420,
+      productionCostInr: 600,
+      packagingCostInr: 150,
+      sellingPricePerUnitInr: 5,
+      soldQuantity: 0,
+      stockRemaining: 250,
+      status: "READY_FOR_SALE",
+      dateStr: "2026-11-20",
+      staffNames: "रमेश सेवक, मोहन लाल",
+      notes: "धूप में सुखाए गए शुद्ध कंडे",
+      recordedBy: ADMIN_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+  // Public & view-only staff CANNOT add/edit/delete production
+  await assertFails(
+    publicDb.collection("compostProduction").doc("prod_batch_kande").update({
+      quantity: 1,
+      updatedAt: pastDate(400),
+    })
+  );
+  await assertFails(
+    staffDb.collection("compostProduction").doc("prod_batch_kande").delete()
+  );
+
+  // 7. Phase 3 Farmer Management: suppliesOffered + farmerTransactions.paymentStatus
+  await assertSucceeds(
+    adminDb.collection("farmers").doc("farmer_p3").set({
+      name: "रामदयाल किसान",
+      mobile: "9876543299",
+      village: "पोरसा",
+      address: "ग्राम गोपी",
+      suppliesOffered: "गेहूँ का भूसा, हरा चारा (बरसीम), सूखा चारा",
+      cooperationType: "BOTH",
+      totalPurchasedInr: 0,
+      totalSoldInr: 0,
+      outstandingInr: 0,
+      createdBy: ADMIN_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("farmerTransactions").doc("ftx_p3").set({
+      farmerId: "farmer_p3",
+      farmerName: "रामदयाल किसान",
+      village: "पोरसा",
+      direction: "PURCHASE_FROM_FARMER",
+      productName: "गेहूँ का भूसा",
+      quantity: 12,
+      unit: "QUINTAL",
+      qualityGrade: "A-Grade",
+      ratePerUnitInr: 550,
+      totalAmountInr: 6600,
+      paidAmountInr: 4000,
+      outstandingInr: 2600,
+      invoiceNumber: "FG-301",
+      paymentStatus: "PARTIAL",
+      dateStr: "2026-11-20",
+      notes: "शेष राशि अगले सप्ताह",
+      recordedBy: ADMIN_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+  // Public & view-only staff CANNOT modify farmer or farmerTransaction
+  await assertFails(
+    publicDb.collection("farmers").doc("farmer_p3").update({ village: "hack", updatedAt: pastDate(400) })
+  );
+  await assertFails(
+    staffDb.collection("farmerTransactions").doc("ftx_p3").update({ paymentStatus: "PAID", updatedAt: pastDate(400) })
+  );
+  // Admin CAN update and delete farmerTransaction
+  await assertSucceeds(
+    adminDb.collection("farmerTransactions").doc("ftx_p3").update({
+      paidAmountInr: 6600,
+      outstandingInr: 0,
+      paymentStatus: "PAID",
+      updatedAt: pastDate(300),
+    })
+  );
+  await assertSucceeds(adminDb.collection("farmerTransactions").doc("ftx_p3").delete());
+  await assertSucceeds(adminDb.collection("farmers").doc("farmer_p3").delete());
+  await assertSucceeds(adminDb.collection("compostProduction").doc("prod_batch_kande").delete());
+});
+
+
 
 
 

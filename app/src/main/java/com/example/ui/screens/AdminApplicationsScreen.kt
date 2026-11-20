@@ -27,6 +27,11 @@ import com.example.ui.components.EmptyStateCard
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.DataUiState
 
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.text.input.KeyboardType
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AdminApplicationsScreen(
     language: AppLanguage,
@@ -37,7 +42,9 @@ fun AdminApplicationsScreen(
     onDeleteOrder: (String) -> Unit,
     onReviewSponsorship: (Sponsorship, Boolean) -> Unit,
     onVerifySponsorshipPayment: (Sponsorship, String) -> Unit,
-    onDeleteSponsorship: (String) -> Unit
+    onDeleteSponsorship: (String) -> Unit,
+    onUpdateSponsorship: (Sponsorship) -> Unit = {},
+    onOpenCattleManagement: () -> Unit = {}
 ) {
     if (session.role != UserRole.ADMIN) {
         Box(
@@ -60,9 +67,12 @@ fun AdminApplicationsScreen(
         return
     }
 
+    val isHindi = language == AppLanguage.HINDI
     var tabIndex by remember { mutableIntStateOf(0) }
+    var viewingOrder by remember { mutableStateOf<ProductOrder?>(null) }
     var noteEditingOrder by remember { mutableStateOf<ProductOrder?>(null) }
     var deletingOrder by remember { mutableStateOf<ProductOrder?>(null) }
+    var editingSponsorship by remember { mutableStateOf<Sponsorship?>(null) }
     var certSponsorship by remember { mutableStateOf<Sponsorship?>(null) }
     var deletingSponsorship by remember { mutableStateOf<Sponsorship?>(null) }
 
@@ -112,6 +122,7 @@ fun AdminApplicationsScreen(
                 language = language,
                 ordersState = productOrdersState,
                 onUpdateOrderStatus = onUpdateOrderStatus,
+                onViewOrderDetail = { viewingOrder = it },
                 onEditAdminNote = { noteEditingOrder = it },
                 onRequestDelete = { deletingOrder = it }
             )
@@ -121,10 +132,124 @@ fun AdminApplicationsScreen(
                 sponsorshipsState = sponsorshipsState,
                 onReviewSponsorship = onReviewSponsorship,
                 onVerifySponsorshipPayment = onVerifySponsorshipPayment,
+                onEditSponsorship = { editingSponsorship = it },
+                onOpenCattleManagement = onOpenCattleManagement,
                 onOpenCertificate = { certSponsorship = it },
                 onRequestDelete = { deletingSponsorship = it }
             )
         }
+    }
+
+    viewingOrder?.let { order ->
+        AlertDialog(
+            onDismissRequest = { viewingOrder = null },
+            modifier = Modifier.testTag("admin_order_detail_dialog"),
+            title = { Text("${str(language, "उत्पाद आवेदन विवरण", "Order Details")} — ${order.orderNumber}", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("${str(language, "दिनांक", "Date")}: ${order.dateStr}")
+                    Text("${str(language, "उत्पाद", "Product")}: ${order.productName}", fontWeight = FontWeight.Bold, color = ForestGreen)
+                    Text("${str(language, "मात्रा व मूल्य", "Qty & Price")}: ${order.quantity} × ₹${order.unitPriceInr.toInt()} (${order.unitLabel}) = ₹${order.totalAmountInr.toInt()}", fontWeight = FontWeight.SemiBold)
+                    HorizontalDivider()
+                    Text("${str(language, "आवेदक", "Buyer")}: ${order.buyerName}")
+                    Text("${str(language, "मोबाइल", "Phone")}: ${order.buyerPhone}")
+                    Text("${str(language, "पता", "Address")}: ${order.buyerAddress}")
+                    if (order.notes.isNotBlank()) Text("${str(language, "ग्राहक टिप्पणी", "Buyer Notes")}: ${order.notes}")
+                    HorizontalDivider()
+                    Text("${str(language, "ऑर्डर स्थिति", "Order Status")}: ${productOrderStatusLabel(order.orderStatus, isHindi)}", fontWeight = FontWeight.Bold)
+                    Text("${str(language, "भुगतान", "Payment")}: ${paymentModeLabel(order.paymentMode, isHindi)} • ${paymentStatusLabel(order.paymentStatus, isHindi)}")
+                    if (order.paymentRef.isNotBlank()) Text("${str(language, "भुगतान संदर्भ", "Payment Ref")}: ${order.paymentRef}")
+                    if (order.adminNote.isNotBlank()) Text("${str(language, "गौशाला संदेश", "Goshala Note")}: ${order.adminNote}", color = ForestGreen)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewingOrder = null }) { Text(str(language, "बंद करें", "Close")) }
+            }
+        )
+    }
+
+    editingSponsorship?.let { sp ->
+        var monthlyText by remember(sp.id) { mutableStateOf(sp.monthlySupportInr.toInt().toString()) }
+        var durationText by remember(sp.id) { mutableStateOf(sp.durationMonths.toString()) }
+        var statusChoice by remember(sp.id) { mutableStateOf(sp.status) }
+        var payStatusChoice by remember(sp.id) { mutableStateOf(sp.paymentStatus) }
+        var editErr by remember(sp.id) { mutableStateOf<String?>(null) }
+
+        AlertDialog(
+            onDismissRequest = { editingSponsorship = null },
+            modifier = Modifier.testTag("admin_adoption_edit_dialog"),
+            title = { Text("${str(language, "गौ-गोद रिकॉर्ड अपडेट", "Edit Cow Adoption")} — ${sp.cattleName}", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    editErr?.let { Text(it, color = AlertRed, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) }
+                    Text("${sp.applicantName} (${sp.applicantPhone})", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                    OutlinedTextField(
+                        value = monthlyText,
+                        onValueChange = { monthlyText = it.filter { ch -> ch.isDigit() }; editErr = null },
+                        label = { Text(str(language, "मासिक गोद राशि (₹) *", "Monthly Amount (₹) *")) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("admin_adoption_edit_amount")
+                    )
+                    OutlinedTextField(
+                        value = durationText,
+                        onValueChange = { durationText = it.filter { ch -> ch.isDigit() }; editErr = null },
+                        label = { Text(str(language, "अवधि (माह) *", "Duration (Months) *")) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("admin_adoption_edit_duration")
+                    )
+                    Text(str(language, "आवेदन स्थिति:", "Application Status:"), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        listOf("PENDING" to "लंबित", "APPROVED" to "स्वीकृत", "REJECTED" to "अस्वीकृत").forEach { (st, lbl) ->
+                            FilterChip(
+                                selected = statusChoice == st,
+                                onClick = { statusChoice = st },
+                                label = { Text(lbl, style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.testTag("admin_adoption_edit_status_${st.lowercase()}")
+                            )
+                        }
+                    }
+                    Text(str(language, "भुगतान स्थिति:", "Payment Status:"), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        ProductOrder.ALL_PAYMENT_STATUSES.forEach { pSt ->
+                            FilterChip(
+                                selected = payStatusChoice == pSt,
+                                onClick = { payStatusChoice = pSt },
+                                label = { Text(paymentStatusLabel(pSt, isHindi), style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val mAmt = monthlyText.toDoubleOrNull() ?: 0.0
+                        val dur = durationText.toLongOrNull() ?: 0L
+                        if (mAmt < 100.0 || dur !in 1L..120L) {
+                            editErr = str(language, "मासिक राशि कम से कम ₹100 व अवधि 1–120 माह होनी चाहिए।", "Enter monthly amount >= ₹100 and duration 1–120 months.")
+                            return@Button
+                        }
+                        onUpdateSponsorship(
+                            sp.copy(
+                                monthlySupportInr = mAmt,
+                                durationMonths = dur,
+                                totalSupportInr = mAmt * dur,
+                                status = statusChoice,
+                                paymentStatus = payStatusChoice
+                            )
+                        )
+                        editingSponsorship = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                    modifier = Modifier.testTag("admin_adoption_edit_save")
+                ) { Text(str(language, "अपडेट सहेजें", "Save Update")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingSponsorship = null }) { Text(str(language, "रद्द करें", "Cancel")) }
+            }
+        )
     }
 
     noteEditingOrder?.let { order ->
@@ -219,6 +344,7 @@ private fun AdminProductOrdersTab(
     language: AppLanguage,
     ordersState: DataUiState<List<ProductOrder>>,
     onUpdateOrderStatus: (ProductOrder, String, String, String) -> Unit,
+    onViewOrderDetail: (ProductOrder) -> Unit,
     onEditAdminNote: (ProductOrder) -> Unit,
     onRequestDelete: (ProductOrder) -> Unit
 ) {
@@ -446,6 +572,12 @@ private fun AdminProductOrdersTab(
                                     }
                                     Spacer(Modifier.weight(1f))
                                     IconButton(
+                                        onClick = { onViewOrderDetail(order) },
+                                        modifier = Modifier.testTag("admin_order_detail_btn_${order.id}")
+                                    ) {
+                                        Icon(Icons.Default.Visibility, contentDescription = str(language, "विवरण देखें", "View Details"), tint = ForestGreen)
+                                    }
+                                    IconButton(
                                         onClick = { onEditAdminNote(order) },
                                         modifier = Modifier.testTag("admin_order_note_btn_${order.id}")
                                     ) {
@@ -474,6 +606,8 @@ private fun AdminCowAdoptionsTab(
     sponsorshipsState: DataUiState<List<Sponsorship>>,
     onReviewSponsorship: (Sponsorship, Boolean) -> Unit,
     onVerifySponsorshipPayment: (Sponsorship, String) -> Unit,
+    onEditSponsorship: (Sponsorship) -> Unit,
+    onOpenCattleManagement: () -> Unit,
     onOpenCertificate: (Sponsorship) -> Unit,
     onRequestDelete: (Sponsorship) -> Unit
 ) {
@@ -649,10 +783,10 @@ private fun AdminCowAdoptionsTab(
                                     }
                                 }
 
-                                Row(
-                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                FlowRow(
+                                    modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     if (sp.status == "PENDING") {
                                         Button(
@@ -665,6 +799,22 @@ private fun AdminCowAdoptionsTab(
                                             colors = ButtonDefaults.textButtonColors(contentColor = AlertRed),
                                             modifier = Modifier.testTag("admin_adoption_reject_${sp.id}")
                                         ) { Text(str(language, "अस्वीकार करें", "Reject")) }
+                                    }
+                                    OutlinedButton(
+                                        onClick = { onEditSponsorship(sp) },
+                                        modifier = Modifier.testTag("admin_adoption_edit_${sp.id}")
+                                    ) {
+                                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(str(language, "राशि/अवधि बदलें", "Edit Plan"))
+                                    }
+                                    OutlinedButton(
+                                        onClick = onOpenCattleManagement,
+                                        modifier = Modifier.testTag("admin_adoption_cattle_btn_${sp.id}")
+                                    ) {
+                                        Icon(Icons.Default.Pets, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(str(language, "गाय विवरण", "Cow Info"))
                                     }
                                     if (sp.status == "APPROVED") {
                                         OutlinedButton(onClick = { onOpenCertificate(sp) }) {

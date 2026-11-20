@@ -232,6 +232,7 @@ service cloud.firestore {
              data.mobile is string && data.mobile.size() >= 6 && data.mobile.size() <= 20 &&
              data.village is string && data.village.size() >= 1 && data.village.size() <= 100 &&
              data.address is string && data.address.size() <= 250 &&
+             isOptString(data, 'suppliesOffered', 250) &&
              data.cooperationType in ['SUPPLIER', 'BUYER', 'BOTH'] &&
              (data.totalPurchasedInr is int || data.totalPurchasedInr is float) && data.totalPurchasedInr >= 0 &&
              (data.totalSoldInr is int || data.totalSoldInr is float) && data.totalSoldInr >= 0 &&
@@ -255,6 +256,7 @@ service cloud.firestore {
              (data.paidAmountInr is int || data.paidAmountInr is float) && data.paidAmountInr >= 0 &&
              (data.outstandingInr is int || data.outstandingInr is float) && data.outstandingInr >= 0 &&
              data.invoiceNumber is string && data.invoiceNumber.size() >= 1 && data.invoiceNumber.size() <= 60 &&
+             (!('paymentStatus' in data) || data.paymentStatus in ['PAID', 'PARTIAL', 'PENDING']) &&
              data.dateStr is string && data.dateStr.size() >= 4 && data.dateStr.size() <= 30 &&
              isOptString(data, 'notes', 400) &&
              data.recordedBy is string && data.recordedBy.size() >= 1 && data.recordedBy.size() <= 128 &&
@@ -264,7 +266,7 @@ service cloud.firestore {
 
     function isValidCompostBatch(data) {
       return data.batchCode is string && data.batchCode.size() >= 1 && data.batchCode.size() <= 60 &&
-             data.productType in ['DUNG_COLLECTION', 'COMPOST', 'VERMICOMPOST', 'DRY_MANURE', 'NURSERY_PLANTS', 'PACKAGED_PRODUCT'] &&
+             data.productType in ['DUNG_COLLECTION', 'COMPOST', 'VERMICOMPOST', 'DRY_MANURE', 'NURSERY_PLANTS', 'PACKAGED_PRODUCT', 'KANDE', 'GAU_KASHTHA', 'DHOOP', 'OTHER_PRODUCT'] &&
              (data.quantity is int || data.quantity is float) && data.quantity >= 0 &&
              data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 30 &&
              (data.rawDungKg is int || data.rawDungKg is float) && data.rawDungKg >= 0 &&
@@ -275,8 +277,26 @@ service cloud.firestore {
              (data.stockRemaining is int || data.stockRemaining is float) && data.stockRemaining >= 0 &&
              data.status in ['IN_PROGRESS', 'PACKAGED', 'READY_FOR_SALE', 'SOLD_OUT'] &&
              data.dateStr is string && data.dateStr.size() >= 4 && data.dateStr.size() <= 30 &&
+             isOptString(data, 'staffNames', 200) &&
              isOptString(data, 'notes', 400) &&
              data.recordedBy is string && data.recordedBy.size() >= 1 && data.recordedBy.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidGoshalaProduct(data) {
+      return data.nameHi is string && data.nameHi.size() >= 1 && data.nameHi.size() <= 120 &&
+             isOptString(data, 'nameEn', 120) &&
+             data.categoryKey in ['MANURE', 'FUEL', 'PUJA', 'OTHER'] &&
+             data.descriptionHi is string && data.descriptionHi.size() >= 1 && data.descriptionHi.size() <= 500 &&
+             isOptString(data, 'descriptionEn', 500) &&
+             (data.priceInr is int || data.priceInr is float) && data.priceInr > 0 && data.priceInr <= 1000000 &&
+             data.stockQuantity is int && data.stockQuantity >= 0 && data.stockQuantity <= 1000000 &&
+             data.unitLabel is string && data.unitLabel.size() >= 1 && data.unitLabel.size() <= 60 &&
+             data.available is bool &&
+             isOptString(data, 'photoKey', 60) &&
+             isOptString(data, 'photoUri', 500) &&
+             data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
              isValidTimestamp(data.createdAt) &&
              isValidTimestamp(data.updatedAt);
     }
@@ -732,6 +752,20 @@ service cloud.firestore {
                        incoming().buyerUid == existing().buyerUid &&
                        incoming().createdAt == existing().createdAt;
       allow delete: if isAdmin() && isValidId(orderId);
+    }
+
+    match /products/{productId} {
+      allow get, list: if isSignedIn() && (isAdmin() || isActiveStaff() || !hasStaffDoc());
+      allow create: if isAdmin() &&
+                       isValidId(productId) &&
+                       isValidGoshalaProduct(incoming()) &&
+                       incoming().createdBy == request.auth.uid;
+      allow update: if isAdmin() &&
+                       isValidId(productId) &&
+                       isValidGoshalaProduct(incoming()) &&
+                       incoming().createdBy == existing().createdBy &&
+                       incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin() && isValidId(productId);
     }
 
     match /notifications/{notifId} {

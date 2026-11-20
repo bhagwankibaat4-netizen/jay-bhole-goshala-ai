@@ -742,6 +742,7 @@ class GosalaRepository(
                     "mobile" to farmer.mobile.trim().take(20),
                     "village" to farmer.village.trim().take(100),
                     "address" to farmer.address.trim().take(250),
+                    "suppliesOffered" to farmer.suppliesOffered.trim().take(250),
                     "cooperationType" to farmer.cooperationType,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -772,10 +773,17 @@ class GosalaRepository(
         val invoice = tx.invoiceNumber.ifBlank { "FG-${System.currentTimeMillis().toString().takeLast(5)}" }
         return safeWrite(docRef.path, OperationType.CREATE) {
             val outstanding = (tx.totalAmountInr - tx.paidAmountInr).coerceAtLeast(0.0)
+            val safePayStatus = when {
+                tx.paymentStatus in FarmerTransaction.ALL_PAYMENT_STATUSES -> tx.paymentStatus
+                outstanding <= 0.0 -> "PAID"
+                tx.paidAmountInr > 0.0 -> "PARTIAL"
+                else -> "PENDING"
+            }
             docRef.set(
                 tx.copy(
                     invoiceNumber = invoice,
                     outstandingInr = outstanding,
+                    paymentStatus = safePayStatus,
                     recordedBy = uid
                 ).toCreateMap()
             ).await()
@@ -804,7 +812,59 @@ class GosalaRepository(
                     message = "बिल $invoice में ₹${outstanding.toInt()} बकाया है।"
                 )
             }
-            logAudit(session, "CREATE", "farmers", docRef.id, "${tx.direction} ${tx.productName} ₹${tx.totalAmountInr}")
+            logAudit(session, "CREATE", "farmers", docRef.id, "${tx.direction} ${tx.productName} ₹${tx.totalAmountInr} ($safePayStatus)")
+        }
+    }
+
+    suspend fun updateFarmerTransaction(session: UserSession, tx: FarmerTransaction): Result<Unit> {
+        if (!session.canEdit(AppModule.FARMERS)) {
+            return Result.failure(SecurityException("किसान लेनदेन संपादित करने की अनुमति नहीं है।"))
+        }
+        if (tx.id.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य लेनदेन आईडी।"))
+        }
+        return safeWrite("farmerTransactions/${tx.id}", OperationType.UPDATE) {
+            require(tx.productName.isNotBlank() && tx.quantity > 0.0) { "सामग्री नाम व सही मात्रा आवश्यक है।" }
+            val total = (tx.quantity * tx.ratePerUnitInr).coerceAtLeast(0.0)
+            val paid = tx.paidAmountInr.coerceIn(0.0, total)
+            val outstanding = (total - paid).coerceAtLeast(0.0)
+            val safePayStatus = when {
+                tx.paymentStatus in FarmerTransaction.ALL_PAYMENT_STATUSES -> tx.paymentStatus
+                outstanding <= 0.0 -> "PAID"
+                paid > 0.0 -> "PARTIAL"
+                else -> "PENDING"
+            }
+            db.collection("farmerTransactions").document(tx.id).update(
+                mapOf(
+                    "direction" to tx.direction,
+                    "productName" to tx.productName.trim().take(100),
+                    "quantity" to tx.quantity,
+                    "unit" to tx.unit.trim().ifBlank { "KG" }.take(30),
+                    "qualityGrade" to tx.qualityGrade.trim().ifBlank { "A" }.take(40),
+                    "ratePerUnitInr" to tx.ratePerUnitInr.coerceAtLeast(0.0),
+                    "totalAmountInr" to total,
+                    "paidAmountInr" to paid,
+                    "outstandingInr" to outstanding,
+                    "paymentStatus" to safePayStatus,
+                    "dateStr" to tx.dateStr.trim().ifBlank { QrAndExportUtils.todayIso() }.take(30),
+                    "notes" to tx.notes.trim().take(400),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            logAudit(session, "UPDATE", "farmers", tx.id, "Updated farmer tx ${tx.invoiceNumber} ($safePayStatus)")
+        }
+    }
+
+    suspend fun deleteFarmerTransaction(session: UserSession, txId: String): Result<Unit> {
+        if (!session.canDelete(AppModule.FARMERS)) {
+            return Result.failure(SecurityException("किसान लेनदेन हटाने की अनुमति नहीं है।"))
+        }
+        if (txId.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य लेनदेन आईडी।"))
+        }
+        return safeWrite("farmerTransactions/$txId", OperationType.DELETE) {
+            db.collection("farmerTransactions").document(txId).delete().await()
+            logAudit(session, "DELETE", "farmers", txId, "Deleted farmer transaction")
         }
     }
 
@@ -860,6 +920,8 @@ class GosalaRepository(
                     "sellingPricePerUnitInr" to batch.sellingPricePerUnitInr.coerceAtLeast(0.0),
                     "stockRemaining" to newStock,
                     "status" to newStatus,
+                    "dateStr" to batch.dateStr.trim().ifBlank { QrAndExportUtils.todayIso() }.take(30),
+                    "staffNames" to batch.staffNames.trim().take(200),
                     "notes" to batch.notes.trim().take(400),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -1078,6 +1140,23 @@ class GosalaRepository(
             }
             val months = sponsorship.durationMonths.coerceIn(1L, 120L)
             val monthly = sponsorship.monthlySupportInr.coerceAtLeast(100.0)
+            val safeStatus = if (sponsorship.status in listOf("PENDING", "APPROVED", "REJECTED")) {
+                sponsorship.status
+            } else {
+                "PENDING"
+            }
+            val safePayStatus = if (sponsorship.paymentStatus in ProductOrder.ALL_PAYMENT_STATUSES) {
+                sponsorship.paymentStatus
+            } else {
+                "PENDING"
+            }
+            val cert = when {
+                safeStatus == "APPROVED" && sponsorship.certificateNumber.isBlank() ->
+                    "JBGS-GAU-${System.currentTimeMillis().toString().takeLast(5)}"
+                safeStatus == "APPROVED" -> sponsorship.certificateNumber.trim().take(60)
+                else -> ""
+            }
+            val uid = requireUid()
             db.collection("sponsorships").document(sponsorship.id).update(
                 mapOf(
                     "applicantName" to sponsorship.applicantName.trim().take(100),
@@ -1086,10 +1165,14 @@ class GosalaRepository(
                     "monthlySupportInr" to monthly,
                     "durationMonths" to months,
                     "totalSupportInr" to (monthly * months),
+                    "status" to safeStatus,
+                    "paymentStatus" to safePayStatus,
+                    "certificateNumber" to cert,
+                    "reviewedBy" to uid,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             ).await()
-            logAudit(session, "UPDATE", "sponsorships", sponsorship.id, "Updated sponsorship ${sponsorship.applicantName}")
+            logAudit(session, "UPDATE", "sponsorships", sponsorship.id, "Updated sponsorship ${sponsorship.applicantName} ($safeStatus/$safePayStatus)")
         }
     }
 
@@ -1283,6 +1366,109 @@ class GosalaRepository(
         return safeWrite("productOrders/$orderId", OperationType.DELETE) {
             db.collection("productOrders").document(orderId).delete().await()
             logAudit(session, "DELETE", "productOrders", orderId, "Deleted product order")
+        }
+    }
+
+    // --- ADMIN PRODUCT CATALOG (SYNCED LIVE TO PUBLIC DASHBOARD) ---
+    fun observeProducts(session: UserSession): Flow<List<GoshalaProduct>> {
+        if (session.role == UserRole.STAFF && !session.staffActive) return flowOf(emptyList())
+        return db.collection("products").limit(150).snapshots().map { snap ->
+            snap.toObjects(GoshalaProduct::class.java, ServerTimestampBehavior.ESTIMATE)
+                .sortedBy { it.nameHi }
+        }.flowOn(Dispatchers.Default)
+    }
+
+    suspend fun saveProduct(session: UserSession, product: GoshalaProduct, isEdit: Boolean): Result<String> {
+        if (session.role != UserRole.ADMIN) {
+            return Result.failure(SecurityException("केवल प्रशासक (Admin) उत्पाद जोड़ या संपादित कर सकते हैं।"))
+        }
+        val uid = requireUid()
+        val cleanNameHi = product.nameHi.trim().take(120)
+        val cleanNameEn = product.nameEn.trim().ifBlank { cleanNameHi }.take(120)
+        val cleanDescHi = product.descriptionHi.trim().take(500)
+        val cleanDescEn = product.descriptionEn.trim().ifBlank { cleanDescHi }.take(500)
+        val cleanCat = if (product.categoryKey in GoshalaProduct.ALL_CATEGORIES) product.categoryKey else "OTHER"
+        val cleanPrice = product.priceInr.coerceIn(1.0, 1000000.0)
+        val cleanStock = product.stockQuantity.coerceIn(0L, 1000000L)
+        val cleanUnit = product.unitLabel.trim().ifBlank { "इकाई" }.take(60)
+        val cleanPhotoKey = product.photoKey.trim().ifBlank { "compost" }.take(60)
+        val cleanPhotoUri = product.photoUri.trim().take(500)
+
+        val docRef = if (isEdit && product.id.isNotBlank()) {
+            db.collection("products").document(product.id)
+        } else {
+            db.collection("products").document()
+        }
+        return safeWrite(docRef.path, if (isEdit) OperationType.UPDATE else OperationType.CREATE) {
+            require(cleanNameHi.isNotBlank()) { "उत्पाद का नाम आवश्यक है।" }
+            require(cleanDescHi.isNotBlank()) { "उत्पाद का विवरण आवश्यक है।" }
+            require(product.priceInr > 0.0) { "बिक्री मूल्य 0 से अधिक होना चाहिए।" }
+
+            if (isEdit) {
+                docRef.update(
+                    mapOf(
+                        "nameHi" to cleanNameHi,
+                        "nameEn" to cleanNameEn,
+                        "categoryKey" to cleanCat,
+                        "descriptionHi" to cleanDescHi,
+                        "descriptionEn" to cleanDescEn,
+                        "priceInr" to cleanPrice,
+                        "stockQuantity" to cleanStock,
+                        "unitLabel" to cleanUnit,
+                        "available" to product.available,
+                        "photoKey" to cleanPhotoKey,
+                        "photoUri" to cleanPhotoUri,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            } else {
+                docRef.set(
+                    product.copy(
+                        nameHi = cleanNameHi,
+                        nameEn = cleanNameEn,
+                        categoryKey = cleanCat,
+                        descriptionHi = cleanDescHi,
+                        descriptionEn = cleanDescEn,
+                        priceInr = cleanPrice,
+                        stockQuantity = cleanStock,
+                        unitLabel = cleanUnit,
+                        photoKey = cleanPhotoKey,
+                        photoUri = cleanPhotoUri,
+                        createdBy = uid
+                    ).toCreateMap()
+                ).await()
+            }
+            logAudit(session, if (isEdit) "UPDATE" else "CREATE", "products", docRef.id, "$cleanNameHi ₹${cleanPrice.toInt()} (stock=$cleanStock)")
+            docRef.id
+        }
+    }
+
+    suspend fun deleteProduct(session: UserSession, product: GoshalaProduct): Result<Unit> {
+        if (session.role != UserRole.ADMIN) {
+            return Result.failure(SecurityException("केवल प्रशासक (Admin) उत्पाद हटा सकते हैं।"))
+        }
+        if (product.id.isBlank()) {
+            return Result.failure(IllegalArgumentException("अमान्य उत्पाद आईडी।"))
+        }
+        return safeWrite("products/${product.id}", OperationType.DELETE) {
+            db.collection("products").document(product.id).delete().await()
+            logAudit(session, "DELETE", "products", product.id, "Deleted product ${product.nameHi}")
+        }
+    }
+
+    suspend fun seedDefaultProducts(session: UserSession): Result<Unit> {
+        if (session.role != UserRole.ADMIN) {
+            return Result.failure(SecurityException("केवल प्रशासक (Admin) डिफ़ॉल्ट उत्पाद लोड कर सकते हैं।"))
+        }
+        val uid = requireUid()
+        return safeWrite("products/seed", OperationType.WRITE) {
+            for (seed in GoshalaProduct.defaultSeedProducts()) {
+                val ref = db.collection("products").document(seed.id)
+                if (!ref.get().await().exists()) {
+                    ref.set(seed.copy(createdBy = uid).toCreateMap()).await()
+                }
+            }
+            logAudit(session, "CREATE", "products", "seed", "Seeded default Goshala products")
         }
     }
 
