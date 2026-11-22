@@ -21,6 +21,21 @@ import kotlinx.coroutines.withTimeout
 
 private const val AI_REPO_TAG = "GeminiAiRepository"
 
+internal val GOSHALA_SYSTEM_INSTRUCTION = """
+आप Jay Bhole Gosala Samiti के AI गौशाला प्रबंधन सहायक हैं।
+आपका कार्य सरल, स्पष्ट और व्यावहारिक हिंदी में उत्तर देना है।
+आप गौशाला प्रबंधन, गाय देखभाल, चारा प्रबंधन, सफाई, स्वास्थ्य सावधानी, गोबर उत्पाद, खर्च नियंत्रण और दैनिक कार्य योजना में सहायता करेंगे।
+आप केवल सलाह देंगे, किसी डेटाबेस रिकॉर्ड में अपने आप बदलाव नहीं करेंगे।
+गंभीर बीमारी, चोट, रक्तस्राव, सांस लेने में दिक्कत या प्रसव संबंधी समस्या में हमेशा योग्य पशु चिकित्सक से तुरंत संपर्क करने की सलाह देंगे।
+आप कभी भी खतरनाक दवा या निश्चित खुराक तय नहीं करेंगे।
+आप केवल उपलब्ध सही डेटा का ही उपयोग करेंगे और अधूरी जानकारी को कभी गढ़ेंगे नहीं।
+
+अतिरिक्त अनिवार्य नियम:
+- यदि कोई डेटा या रिकॉर्ड उपलब्ध नहीं है, तो स्पष्ट लिखें: "रिकॉर्ड उपलब्ध नहीं है"। कभी अनुमान से आँकड़े न बनाएँ।
+- यदि उपयोगकर्ता की भूमिका PUBLIC है, तो कभी भी आंतरिक वित्त, खर्च, स्टाफ वेतन, किसान खाता या निजी चिकित्सा रिकॉर्ड न दिखाएँ और न अनुमान लगाएँ।
+- यदि उपयोगकर्ता अंग्रेजी चुने, तो सरल अंग्रेजी में उत्तर दें; अन्यथा हमेशा सरल, सम्मानजनक हिंदी (देवनागरी) में छोटे बुलेट पॉइंट व चरणबद्ध उत्तर दें।
+""".trimIndent()
+
 data class VoiceEntryDraft(
     val draftType: String,
     val title: String,
@@ -28,6 +43,22 @@ data class VoiceEntryDraft(
     val amountInr: Double,
     val notes: String,
     val searchQuery: String
+)
+
+data class AiWorkPlanItem(
+    val timeSlot: String,
+    val period: String,
+    val task: String,
+    val responsiblePerson: String,
+    val priority: String,
+    val category: String
+)
+
+data class AiWorkPlan(
+    val dateLabel: String,
+    val title: String,
+    val summary: String,
+    val tasks: List<AiWorkPlanItem>
 )
 
 class GeminiAiRepository {
@@ -42,10 +73,20 @@ class GeminiAiRepository {
 
         @Volatile
         internal var testPhotoAnalyzer: (suspend (bitmap: Bitmap, promptText: String) -> String)? = null
+
+        @Volatile
+        internal var testWorkPlanGenerator: (suspend (roleContext: String, focusTopic: String) -> AiWorkPlan)? = null
+    }
+
+    private val systemInstructionContent by lazy {
+        content { text(GOSHALA_SYSTEM_INSTRUCTION) }
     }
 
     private val chatModel by lazy {
-        Firebase.ai.generativeModel(modelName = "gemini-3.8-flash")
+        Firebase.ai.generativeModel(
+            modelName = "gemini-3.8-flash",
+            systemInstruction = systemInstructionContent
+        )
     }
 
     private val voiceDraftSchema = Schema.obj(
@@ -68,13 +109,51 @@ class GeminiAiRepository {
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = voiceDraftSchema
-            }
+            },
+            systemInstruction = systemInstructionContent
+        )
+    }
+
+    private val workPlanSchema = Schema.obj(
+        properties = mapOf(
+            "title" to Schema.string(description = "Short title of the daily goshala work plan"),
+            "summary" to Schema.string(description = "1-2 sentence practical summary based only on verified goshala records"),
+            "tasks" to Schema.array(
+                items = Schema.obj(
+                    properties = mapOf(
+                        "timeSlot" to Schema.string(description = "Clear time slot e.g. 05:30 - 07:00"),
+                        "period" to Schema.enumeration(
+                            values = listOf("सुबह", "दोपहर", "शाम"),
+                            description = "Part of day: सुबह, दोपहर, or शाम"
+                        ),
+                        "task" to Schema.string(description = "Concrete, actionable goshala task description"),
+                        "responsiblePerson" to Schema.string(description = "Responsible role/staff e.g. गौशाला सेवक / चारा प्रभारी / पशु देखभाल कर्मी / प्रबंधक"),
+                        "priority" to Schema.enumeration(
+                            values = listOf("उच्च", "मध्यम", "सामान्य"),
+                            description = "Priority level: उच्च, मध्यम, or सामान्य"
+                        ),
+                        "category" to Schema.string(description = "Category such as चारा, सफाई, स्वास्थ्य, खाद-उत्पाद, या जांच")
+                    )
+                ),
+                description = "5 to 8 ordered daily tasks covering morning, afternoon, and evening"
+            )
+        )
+    )
+
+    private val workPlanModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = "gemini-3.8-flash",
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = workPlanSchema
+            },
+            systemInstruction = systemInstructionContent
         )
     }
 
     /**
      * Builds a strictly read-only summary for a specific cow so AI can answer health/history
-     * questions or combine cow records with photo analysis without ever modifying records.
+     * questions or combine cow records with photo analysis without ever modifying or inventing records.
      */
     fun buildSelectedCowContext(
         cow: Cattle,
@@ -82,14 +161,25 @@ class GeminiAiRepository {
         isPublic: Boolean
     ): String {
         val sb = StringBuilder()
-        sb.appendLine("SELECTED COW RECORD (READ-ONLY — NEVER MODIFY):")
-        sb.appendLine("- Name: ${cow.name.ifBlank { "रिकॉर्ड उपलब्ध नहीं" }}")
+        val notesText = cow.notes?.trim().orEmpty()
+        val hasPregnancyNote = notesText.contains("गर्भवती") ||
+            notesText.contains("गर्भावस्था") ||
+            notesText.contains("pregnan", ignoreCase = true)
+        val hasMilkNote = notesText.contains("दूध") ||
+            notesText.contains("लीटर") ||
+            notesText.contains("milk", ignoreCase = true)
+
+        sb.appendLine("SELECTED COW RECORD (READ-ONLY — NEVER MODIFY OR FABRICATE):")
+        sb.appendLine("- Name: ${cow.name.ifBlank { "रिकॉर्ड उपलब्ध नहीं है" }}")
         sb.appendLine("- Cow ID / Animal Code: ${cow.animalCode.ifBlank { cow.id }} (DocID: ${cow.id.ifBlank { "N/A" }})")
-        sb.appendLine("- Category: ${cow.category}, Breed: ${cow.breed.ifBlank { "रिकॉर्ड उपलब्ध नहीं" }}, Age: ${cow.ageText.ifBlank { "रिकॉर्ड उपलब्ध नहीं" }}, Weight: ${if (cow.weightKg > 0.0) "${cow.weightKg} kg" else "रिकॉर्ड उपलब्ध नहीं"}")
-        sb.appendLine("- Health Status: ${cow.healthStatus}, Shed: ${cow.shedNumber.ifBlank { "रिकॉर्ड उपलब्ध नहीं" }}, Entry Date: ${cow.entryDate.ifBlank { "रिकॉर्ड उपलब्ध नहीं" }}")
-        sb.appendLine("- Vaccination Summary: ${cow.vaccinationSummary?.takeIf { it.isNotBlank() } ?: "रिकॉर्ड उपलब्ध नहीं"}")
-        if (!cow.notes.isNullOrBlank()) {
-            sb.appendLine("- Care Notes: ${cow.notes}")
+        sb.appendLine("- Category: ${cow.category}, Breed: ${cow.breed.ifBlank { "रिकॉर्ड उपलब्ध नहीं है" }}, Age: ${cow.ageText.ifBlank { "रिकॉर्ड उपलब्ध नहीं है" }}, Weight: ${if (cow.weightKg > 0.0) "${cow.weightKg} kg" else "रिकॉर्ड उपलब्ध नहीं है"}")
+        sb.appendLine("- Health Status: ${cow.healthStatus}, Shed: ${cow.shedNumber.ifBlank { "रिकॉर्ड उपलब्ध नहीं है" }}, Entry Date: ${cow.entryDate.ifBlank { "रिकॉर्ड उपलब्ध नहीं है" }}")
+        sb.appendLine("- Vaccination Summary: ${cow.vaccinationSummary?.takeIf { it.isNotBlank() } ?: "रिकॉर्ड उपलब्ध नहीं है"}")
+        sb.appendLine("- Pregnancy Status (गर्भावस्था): ${if (hasPregnancyNote) "नोट्स में दर्ज (नीचे देखें)" else "रिकॉर्ड उपलब्ध नहीं है"}")
+        sb.appendLine("- Milk Yield Record (दूध उत्पादन): ${if (hasMilkNote) "नोट्स में दर्ज (नीचे देखें)" else "रिकॉर्ड उपलब्ध नहीं है"}")
+        sb.appendLine("- Individual Feed Log (व्यक्तिगत चारा रिकॉर्ड): रिकॉर्ड उपलब्ध नहीं है (केवल सामूहिक गौशाला चारा लॉग उपलब्ध)")
+        if (notesText.isNotBlank()) {
+            sb.appendLine("- Care Notes: $notesText")
         }
 
         if (isPublic) {
@@ -334,36 +424,41 @@ class GeminiAiRepository {
         userPrompt: String,
         roleContext: String,
         modeLabel: String,
-        language: AppLanguage
+        language: AppLanguage,
+        recentHistory: List<Pair<Boolean, String>> = emptyList()
     ): Flow<String> = flow {
         val langInstruction = if (language == AppLanguage.HINDI) {
             "हमेशा सरल, स्पष्ट और व्यावहारिक हिंदी (देवनागरी) में उत्तर दें ताकि गौशाला का कर्मचारी भी आसानी से समझ सके। छोटे बुलेट पॉइंट और चरणबद्ध (Step-by-step) तरीका अपनाएँ।"
         } else {
             "Respond clearly and concisely in simple English with respectful Indian Goshala terminology, using short bullet points and step-by-step guidance."
         }
+        val historyBlock = if (recentHistory.isNotEmpty()) {
+            buildString {
+                appendLine("RECENT CONVERSATION HISTORY:")
+                recentHistory.takeLast(6).forEach { (isUser, text) ->
+                    val roleTag = if (isUser) "User" else "Assistant"
+                    appendLine("- $roleTag: ${text.take(400)}")
+                }
+            }
+        } else {
+            ""
+        }
+
         val fullPrompt = """
-            You are the official AI Goshala Management & Care Assistant for ${GosalaBrand.NAME_HI} (${GosalaBrand.ADDRESS_HI}).
             Active Mode: $modeLabel
             $langInstruction
 
-            CORE EXPERTISE AREAS YOU MUST HELP WITH:
+            CORE EXPERTISE AREAS:
             - Daily fodder calculation (हरा चारा, सूखा चारा/भूसा, दाना, पानी) based on cow/bull/calf count and season
             - Sick cow care, diarrhea precautions, loss of appetite causes, calf care, vaccination schedule, shed cleanliness, summer/winter care
             - Cow dung utilization: vermicompost/organic manure, kande (गोबर के कंडे), gau-kashtha (गोबर की लकड़ी), natural dhoopbatti, packaging & sales growth
-            - Farmer fodder purchasing tips, cost reduction & income improvement for Goshalas
-            - Practical Action Plans (आज के जरूरी कार्य, गाय देखभाल, चारा प्रबंधन, सफाई, खाद व उत्पाद निर्माण, बिक्री वृद्धि, खर्च बचत)
+            - Farmer fodder purchasing tips, cost reduction, daily routine & staff task planning
             - Reading selected cow's profile, past illness, vaccination & treatment records when available
-
-            STRICT SAFETY, ACCURACY & READ-ONLY RULES (NEVER VIOLATE):
-            1. REAL DATA ONLY: Use ONLY the verified Goshala records provided in AUTHORIZED CONTEXT below. If data for any metric/question is missing or marked "रिकॉर्ड उपलब्ध नहीं है", clearly say "रिकॉर्ड उपलब्ध नहीं है" (record is not available). NEVER invent, guess, or fabricate any number, cow record, financial amount, stock, or treatment history.
-            2. STRICT READ-ONLY: You CANNOT and MUST NEVER edit, delete, save, or change any cow record, treatment log, donation, finance entry, or permission automatically. Clearly remind users that AI only provides guidance and never alters records.
-            3. VETERINARY SAFETY: Never prescribe definite dangerous medicines or exact drug dosages. Always provide safe preliminary care & hygiene guidance only.
-            4. EMERGENCY REFERRAL: If symptoms involve serious illness, calving/birthing trouble (प्रसव समस्या), breathing difficulty (साँस लेने में परेशानी), bleeding (खून), inability to stand (गाय का उठ न पाना), or suspected poisoning (विषाक्तता), IMMEDIATELY instruct calling a qualified veterinary doctor (पशु चिकित्सक) right away.
-            5. PRIVACY: If the role is PUBLIC, never disclose or speculate about internal finances, staff salaries, farmer ledgers, or private medical records.
 
             AUTHORIZED CONTEXT (VERIFIED APP DATA):
             $roleContext
 
+            $historyBlock
             USER QUESTION:
             $userPrompt
         """.trimIndent()
@@ -383,15 +478,12 @@ class GeminiAiRepository {
             return@flow
         }
 
-        // Live Firebase AI Logic streaming with automatic App Check token refresh retry
+        // Live Firebase AI Logic streaming — let SDK use installed App Check provider natively,
+        // and only force-refresh & retry once if an App Check token error occurs.
         var attempt = 0
         while (true) {
             val accumulated = StringBuilder()
             try {
-                if (attempt == 0) {
-                    // Warm/validate cached App Check token before starting the stream
-                    refreshAppCheckToken(forceRefresh = false)
-                }
                 withTimeout(60_000L) {
                     chatModel.generateContentStream(fullPrompt).collect { chunk ->
                         val piece = chunk.text.orEmpty()
@@ -415,6 +507,106 @@ class GeminiAiRepository {
                     continue
                 }
                 throw e
+            }
+        }
+    }
+
+    /**
+     * Generates a structured daily AI Work Plan with explicit Time, Period, Task, Responsible Person,
+     * and Priority using Firebase AI Logic JSON Schema output (`responseSchema`).
+     */
+    suspend fun generateWorkPlan(
+        roleContext: String,
+        language: AppLanguage,
+        focusTopic: String = ""
+    ): Result<AiWorkPlan> {
+        val todayIso = QrAndExportUtils.todayIso()
+        val hook = testWorkPlanGenerator
+        if (hook != null) {
+            return try {
+                Result.success(hook(roleContext, focusTopic))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+        val langInstruction = if (language == AppLanguage.HINDI) {
+            "सभी शीर्षक, सारांश, कार्य और जिम्मेदार भूमिका सरल, व्यावहारिक हिंदी (देवनागरी) में लिखें।"
+        } else {
+            "Write title, summary, tasks, and responsible roles in simple, practical English (keeping period/priority schema enum values valid)."
+        }
+
+        val focusInstruction = if (focusTopic.isNotBlank()) {
+            "विशेष प्राथमिकता विषय (User Focus): $focusTopic"
+        } else {
+            "आज के लिए सुबह, दोपहर और शाम की पूर्ण गौशाला दैनिक कार्य योजना बनाएँ (चारा, पानी, सफाई, बीमार गाय जांच, गोबर खाद/उत्पाद, और शाम की जांच शामिल करें)।"
+        }
+
+        val prompt = """
+            $langInstruction
+            $focusInstruction
+            केवल नीचे दिए गए सत्यापित गौशाला रिकॉर्ड का उपयोग करें। यदि कोई डेटा उपलब्ध न हो तो उसे गढ़ें नहीं।
+            हर कार्य में स्पष्ट समय (timeSlot), अवधि (सुबह/दोपहर/शाम), कार्य (task), जिम्मेदार व्यक्ति (responsiblePerson), और प्राथमिकता (उच्च/मध्यम/सामान्य) दें।
+
+            VERIFIED GOSHALA CONTEXT:
+            $roleContext
+        """.trimIndent()
+
+        var attempt = 0
+        while (true) {
+            try {
+                val response = withTimeout(60_000L) {
+                    workPlanModel.generateContent(prompt)
+                }
+                val rawJson = response.text ?: throw IllegalStateException("AI कार्य योजना से कोई उत्तर प्राप्त नहीं हुआ।")
+                val json = org.json.JSONObject(rawJson)
+                val title = json.optString("title", "आज की AI गौशाला कार्य योजना").ifBlank { "आज की AI गौशाला कार्य योजना" }
+                val summary = json.optString("summary", "")
+                val tasksArray = json.optJSONArray("tasks")
+                val tasks = buildList {
+                    if (tasksArray != null) {
+                        for (i in 0 until tasksArray.length()) {
+                            val obj = tasksArray.optJSONObject(i) ?: continue
+                            val taskText = obj.optString("task").trim()
+                            if (taskText.isBlank()) continue
+                            add(
+                                AiWorkPlanItem(
+                                    timeSlot = obj.optString("timeSlot", "-").trim(),
+                                    period = obj.optString("period", "सुबह").trim(),
+                                    task = taskText,
+                                    responsiblePerson = obj.optString("responsiblePerson", "गौशाला स्टाफ").trim(),
+                                    priority = obj.optString("priority", "मध्यम").trim(),
+                                    category = obj.optString("category", "प्रबंधन").trim()
+                                )
+                            )
+                        }
+                    }
+                }
+                if (tasks.isEmpty()) {
+                    throw IllegalStateException("कार्य योजना में कोई कार्य प्राप्त नहीं हुआ। कृपया पुनः प्रयास करें।")
+                }
+                return Result.success(
+                    AiWorkPlan(
+                        dateLabel = todayIso,
+                        title = title,
+                        summary = summary,
+                        tasks = tasks
+                    )
+                )
+            } catch (e: TimeoutCancellationException) {
+                return Result.failure(Exception("AI कार्य योजना बनाने में समय समाप्त हो गया (60 सेकंड)। कृपया पुनः प्रयास करें।", e))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (attempt == 0 && isAppCheckTokenError(e)) {
+                    Log.w(AI_REPO_TAG, "App Check token error during work plan; forcing refresh and retrying once.", e)
+                    refreshAppCheckToken(forceRefresh = true)
+                    attempt++
+                    continue
+                }
+                return Result.failure(e)
             }
         }
     }
@@ -483,9 +675,6 @@ class GeminiAiRepository {
         var attempt = 0
         while (true) {
             try {
-                if (attempt == 0) {
-                    refreshAppCheckToken(forceRefresh = false)
-                }
                 val response = withTimeout(60_000L) {
                     chatModel.generateContent(
                         content {
@@ -520,9 +709,6 @@ class GeminiAiRepository {
         var attempt = 0
         while (true) {
             try {
-                if (attempt == 0) {
-                    refreshAppCheckToken(forceRefresh = false)
-                }
                 val prompt = """
                     Convert this Hindi/English spoken Goshala input into a structured draft JSON.
                     Do not invent numbers that were not spoken; use 0 if unspecified.

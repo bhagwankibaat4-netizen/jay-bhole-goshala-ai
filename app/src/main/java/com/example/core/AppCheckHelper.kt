@@ -3,6 +3,7 @@ package com.example.core
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.util.Log
 import com.example.BuildConfig
 import com.google.firebase.FirebaseApp
@@ -41,6 +42,35 @@ internal var activeAppCheckProviderKind: AppCheckProviderKind = AppCheckProvider
     private set
 
 /**
+ * Detects Android emulator / virtual device runtimes so Debug builds on emulators
+ * NEVER get switched to reCAPTCHA Enterprise (which cannot attest virtual devices).
+ */
+internal fun isAndroidEmulator(): Boolean {
+    val fingerprint = Build.FINGERPRINT.orEmpty().lowercase()
+    val model = Build.MODEL.orEmpty().lowercase()
+    val manufacturer = Build.MANUFACTURER.orEmpty().lowercase()
+    val brand = Build.BRAND.orEmpty().lowercase()
+    val device = Build.DEVICE.orEmpty().lowercase()
+    val product = Build.PRODUCT.orEmpty().lowercase()
+    val hardware = Build.HARDWARE.orEmpty().lowercase()
+    return fingerprint.startsWith("generic") ||
+        fingerprint.startsWith("unknown") ||
+        fingerprint.contains("emulator") ||
+        fingerprint.contains("sdk_gphone") ||
+        model.contains("google_sdk") ||
+        model.contains("emulator") ||
+        model.contains("android sdk built for x86") ||
+        model.contains("sdk_gphone") ||
+        manufacturer.contains("genymotion") ||
+        hardware.contains("goldfish") ||
+        hardware.contains("ranchu") ||
+        product.contains("sdk_gphone") ||
+        product.contains("emulator") ||
+        product.contains("simulator") ||
+        (brand.startsWith("generic") && device.startsWith("generic"))
+}
+
+/**
  * Persists an explicitly registered Firebase App Check debug secret synchronously using commit()
  * BEFORE FirebaseAppCheck / DebugAppCheckProviderFactory reads SharedPreferences.
  */
@@ -70,8 +100,8 @@ internal fun persistDebugAppCheckToken(
 }
 
 /**
- * Clears any stale/unregistered random debug secret stored in SharedPreferences so it cannot
- * cause persistent "Firebase App Check token is invalid" errors.
+ * Clears any stale/unregistered random debug secret stored in SharedPreferences on standalone
+ * physical phones. Never called for emulator / harness debug tokens.
  */
 @SuppressLint("ApplySharedPref")
 internal fun clearStoredDebugAppCheckToken(context: Context, persistenceKey: String) {
@@ -103,21 +133,21 @@ internal fun resolveRecaptchaSiteKey(context: Context): String? {
 /**
  * Determines which App Check provider should be installed for the current launch:
  * - Release builds: ALWAYS RecaptchaAppCheckProviderFactory (reCAPTCHA Enterprise).
- * - Debug builds WITH explicit FIREBASE_APPCHECK_DEBUG_TOKEN in Intent (AI Studio emulator / CI):
- *   DebugAppCheckProviderFactory with the synchronously committed token.
- * - Debug builds WITHOUT Intent token:
- *   - If an explicit registered debug token was previously saved from a harness Intent and still
- *     matches the debug store -> DebugAppCheckProviderFactory.
- *   - Otherwise (e.g., standalone Debug APK installed on a real Android phone) ->
- *     RecaptchaAppCheckProviderFactory using the project's provisioned recaptcha_site_key so
- *     attestation succeeds with a real valid App Check JWT instead of an unregistered random UUID.
+ * - Debug builds WITH explicit FIREBASE_APPCHECK_DEBUG_TOKEN in Intent:
+ *   ALWAYS DebugAppCheckProviderFactory with the synchronously committed token.
+ * - Debug builds on an Android Emulator OR with a previously saved explicit harness token:
+ *   ALWAYS DebugAppCheckProviderFactory (never downgraded to reCAPTCHA on emulators).
+ * - Standalone Debug APK on a real physical phone WITHOUT any harness debug token:
+ *   RecaptchaAppCheckProviderFactory using the project's provisioned recaptcha_site_key so
+ *   attestation succeeds with a real valid App Check JWT instead of an unregistered random UUID.
  */
 internal fun decideAppCheckProviderKind(
     isDebugBuild: Boolean,
     intentDebugToken: String?,
     storedExplicitDebugToken: String?,
     storedSdkDebugSecret: String?,
-    recaptchaSiteKey: String?
+    recaptchaSiteKey: String?,
+    isEmulator: Boolean = isAndroidEmulator()
 ): AppCheckProviderKind {
     if (!isDebugBuild) {
         return if (!recaptchaSiteKey.isNullOrBlank()) AppCheckProviderKind.RECAPTCHA else AppCheckProviderKind.NONE
@@ -127,7 +157,7 @@ internal fun decideAppCheckProviderKind(
     }
     val hasValidExplicitCachedToken = !storedExplicitDebugToken.isNullOrBlank() &&
         storedExplicitDebugToken == storedSdkDebugSecret
-    if (hasValidExplicitCachedToken) {
+    if (hasValidExplicitCachedToken || isEmulator) {
         return AppCheckProviderKind.DEBUG
     }
     return if (!recaptchaSiteKey.isNullOrBlank()) {
@@ -154,6 +184,7 @@ fun configureAppCheck(context: Context, intent: Intent?) {
         val persistenceKey = firebaseApp.persistenceKey
         val intentDebugToken = intent?.getStringExtra(DEBUG_TOKEN_EXTRA)?.trim()?.takeIf { it.isNotEmpty() }
         val recaptchaSiteKey = resolveRecaptchaSiteKey(appContext)
+        val emulator = isAndroidEmulator()
 
         val metaPrefs = appContext.getSharedPreferences(APPCHECK_META_PREFS, Context.MODE_PRIVATE)
         val storedExplicitToken = metaPrefs.getString(META_EXPLICIT_DEBUG_TOKEN_KEY, null)?.trim()
@@ -167,7 +198,8 @@ fun configureAppCheck(context: Context, intent: Intent?) {
             intentDebugToken = intentDebugToken,
             storedExplicitDebugToken = storedExplicitToken,
             storedSdkDebugSecret = storedSdkSecret,
-            recaptchaSiteKey = recaptchaSiteKey
+            recaptchaSiteKey = recaptchaSiteKey,
+            isEmulator = emulator
         )
 
         when (targetKind) {
@@ -176,6 +208,12 @@ fun configureAppCheck(context: Context, intent: Intent?) {
                 if (!intentDebugToken.isNullOrEmpty()) {
                     val persisted = persistDebugAppCheckToken(appContext, persistenceKey, intentDebugToken)
                     Log.d(TAG, "App Check debug secret committed synchronously: $persisted")
+                } else if (!storedExplicitToken.isNullOrEmpty() && storedSdkSecret != storedExplicitToken) {
+                    // Restore previously saved explicit harness token if SDK prefs drifted
+                    persistDebugAppCheckToken(appContext, persistenceKey, storedExplicitToken)
+                    Log.d(TAG, "Restored saved explicit App Check debug secret synchronously.")
+                } else {
+                    Log.d(TAG, "Using DebugAppCheckProviderFactory (emulator=$emulator).")
                 }
                 val appCheck = FirebaseAppCheck.getInstance(firebaseApp)
                 if (activeAppCheckProviderKind != AppCheckProviderKind.DEBUG || !intentDebugToken.isNullOrEmpty()) {
@@ -188,8 +226,8 @@ fun configureAppCheck(context: Context, intent: Intent?) {
                 }
             }
             AppCheckProviderKind.RECAPTCHA -> {
-                // Clear any stale unregistered SDK-generated random debug secret on standalone debug installs
-                if (BuildConfig.DEBUG && !storedSdkSecret.isNullOrEmpty() && storedExplicitToken.isNullOrEmpty()) {
+                // Only clear unregistered random debug secret on standalone physical-phone debug installs
+                if (BuildConfig.DEBUG && !emulator && !storedSdkSecret.isNullOrEmpty() && storedExplicitToken.isNullOrEmpty()) {
                     clearStoredDebugAppCheckToken(appContext, persistenceKey)
                 }
                 val siteKey = recaptchaSiteKey
@@ -228,12 +266,11 @@ internal fun isValidAppCheckJwt(token: String?): Boolean {
 }
 
 /**
- * Validates and refreshes the Firebase App Check token.
- * If the Debug provider fails (e.g., expired/revoked/unregistered debug secret on a real phone),
- * seamlessly upgrades to RecaptchaAppCheckProviderFactory using the project's provisioned
- * recaptcha_site_key and requests a fresh attested JWT — keeping full App Check security active.
+ * Force-refreshes the active Firebase App Check token when an AI call encounters an App Check error.
+ * Preserves the Debug provider and harness debug token on emulators; only upgrades to reCAPTCHA
+ * Enterprise on standalone physical-phone debug builds that have no explicit harness token.
  */
-suspend fun refreshAppCheckToken(forceRefresh: Boolean = false): Boolean {
+suspend fun refreshAppCheckToken(forceRefresh: Boolean = true): Boolean {
     return try {
         val firebaseApp = FirebaseApp.getInstance()
         val appCheck = FirebaseAppCheck.getInstance(firebaseApp)
@@ -244,13 +281,23 @@ suspend fun refreshAppCheckToken(forceRefresh: Boolean = false): Boolean {
             return true
         }
 
-        // If Debug provider failed to produce a valid token, switch to real reCAPTCHA Enterprise attestation
         val ctx = appCheckAppContext ?: firebaseApp.applicationContext
+        val emulator = isAndroidEmulator()
+        val storedExplicitToken = ctx.getSharedPreferences(APPCHECK_META_PREFS, Context.MODE_PRIVATE)
+            .getString(META_EXPLICIT_DEBUG_TOKEN_KEY, null)
+            ?.trim()
         val siteKey = resolveRecaptchaSiteKey(ctx)
-        if (activeAppCheckProviderKind != AppCheckProviderKind.RECAPTCHA && !siteKey.isNullOrBlank()) {
+
+        // NEVER overwrite Debug provider on an emulator or when an explicit harness debug token is registered.
+        val canUpgradeToRecaptcha = !emulator &&
+            storedExplicitToken.isNullOrBlank() &&
+            activeAppCheckProviderKind != AppCheckProviderKind.RECAPTCHA &&
+            !siteKey.isNullOrBlank()
+
+        if (canUpgradeToRecaptcha) {
             Log.w(
                 TAG,
-                "App Check token invalid under $activeAppCheckProviderKind; switching to RecaptchaAppCheckProviderFactory for real attestation.",
+                "App Check token invalid on standalone physical device; upgrading to RecaptchaAppCheckProviderFactory.",
                 firstResult.exceptionOrNull()
             )
             clearStoredDebugAppCheckToken(ctx, firebaseApp.persistenceKey)
@@ -266,7 +313,11 @@ suspend fun refreshAppCheckToken(forceRefresh: Boolean = false): Boolean {
             return recoveredValid
         }
 
-        Log.w(TAG, "App Check token refresh did not return a valid JWT.", firstResult.exceptionOrNull())
+        Log.w(
+            TAG,
+            "App Check token refresh did not return a valid JWT (provider=$activeAppCheckProviderKind, emulator=$emulator).",
+            firstResult.exceptionOrNull()
+        )
         false
     } catch (e: Exception) {
         Log.e(TAG, "App Check token refresh failed (forceRefresh=$forceRefresh)", e)

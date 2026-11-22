@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
@@ -9,6 +12,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.EventNote
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,6 +22,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -25,10 +30,317 @@ import androidx.compose.ui.unit.dp
 import com.example.core.AppLanguage
 import com.example.core.str
 import com.example.data.model.*
+import com.example.data.repository.AiWorkPlan
 import com.example.data.repository.VoiceEntryDraft
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.AiChatMessage
 import com.example.ui.viewmodel.AiUiState
+import com.example.ui.viewmodel.AiWorkPlanUiState
+import kotlinx.coroutines.delay
+
+internal fun copyTextToClipboard(context: Context, label: String, text: String): Boolean {
+    return runCatching {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.setPrimaryClip(ClipData.newPlainText(label, text))
+        clipboard != null
+    }.getOrDefault(false)
+}
+
+internal fun formatWorkPlanForClipboard(plan: AiWorkPlan): String = buildString {
+    appendLine("${plan.title} (${plan.dateLabel})")
+    if (plan.summary.isNotBlank()) {
+        appendLine(plan.summary)
+    }
+    appendLine()
+    plan.tasks.forEachIndexed { idx, item ->
+        appendLine("${idx + 1}. [${item.period} | ${item.timeSlot}] ${item.task}")
+        appendLine("   जिम्मेदार: ${item.responsiblePerson} | प्राथमिकता: ${item.priority}")
+    }
+}.trim()
+
+@Composable
+internal fun WorkPlanPanel(
+    language: AppLanguage,
+    workPlanState: AiWorkPlanUiState,
+    onGeneratePlan: (focusTopic: String) -> Unit
+) {
+    val context = LocalContext.current
+    var selectedFocus by remember { mutableStateOf("") }
+    var copied by remember(workPlanState) { mutableStateOf(false) }
+
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(2000)
+            copied = false
+        }
+    }
+
+    val focusTopics = remember(language) {
+        listOf(
+            "" to str(language, "पूर्ण दैनिक योजना", "Full Daily Plan"),
+            "दैनिक चारा, पानी और शेड सफाई" to str(language, "चारा व सफाई", "Fodder & Cleaning"),
+            "बीमार गायों की देखभाल और स्वास्थ्य जांच" to str(language, "स्वास्थ्य देखभाल", "Health Care"),
+            "गोबर से खाद, कंडे, गोबर लकड़ी और बिक्री" to str(language, "खाद व उत्पाद", "Compost & Products"),
+            "गौशाला खर्च नियंत्रण और स्टाफ कार्य वितरण" to str(language, "खर्च व स्टाफ", "Cost & Staff")
+        )
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("ai_work_plan_card"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.AutoMirrored.Filled.EventNote, contentDescription = null, tint = ForestGreen)
+                Spacer(Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = str(language, "AI दैनिक कार्य योजना (Work Plan)", "AI Daily Work Plan"),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = str(
+                            language,
+                            "समय, कार्य, जिम्मेदार व्यक्ति और प्राथमिकता सहित व्यवस्थित योजना",
+                            "Structured schedule with time, task, responsible person & priority"
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                focusTopics.forEach { (topicValue, label) ->
+                    FilterChip(
+                        selected = selectedFocus == topicValue,
+                        onClick = { selectedFocus = topicValue },
+                        label = { Text(label, maxLines = 1) }
+                    )
+                }
+            }
+
+            Button(
+                onClick = { onGeneratePlan(selectedFocus) },
+                enabled = workPlanState !is AiWorkPlanUiState.Loading,
+                colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .testTag("ai_generate_work_plan_btn")
+            ) {
+                Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = str(language, "आज की AI कार्य योजना बनाएँ", "Generate Today's AI Work Plan"),
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            when (workPlanState) {
+                is AiWorkPlanUiState.Loading -> {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("ai_work_plan_loading")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                text = str(language, "AI जवाब तैयार कर रहा है...", "AI is preparing the work plan..."),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+                is AiWorkPlanUiState.Error -> {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("ai_work_plan_error")
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.WarningAmber, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = workPlanState.message,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = { onGeneratePlan(selectedFocus) },
+                                modifier = Modifier.testTag("ai_work_plan_retry_btn")
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(str(language, "पुनः प्रयास करें", "Retry"))
+                            }
+                        }
+                    }
+                }
+                is AiWorkPlanUiState.Success -> {
+                    val plan = workPlanState.plan
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = SoftGreenTint,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, ForestGreen.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                            .testTag("ai_work_plan_result")
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Checklist, contentDescription = null, tint = ForestGreen, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = plan.title,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = ForestGreen
+                                    )
+                                    Text(
+                                        text = str(language, "दिनांक: ${plan.dateLabel}", "Date: ${plan.dateLabel}"),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = DarkText
+                                    )
+                                }
+                                TextButton(
+                                    onClick = {
+                                        if (copyTextToClipboard(context, "AI Work Plan", formatWorkPlanForClipboard(plan))) {
+                                            copied = true
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("ai_work_plan_copy_btn")
+                                ) {
+                                    Icon(
+                                        if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                                        contentDescription = str(language, "कार्य योजना कॉपी करें", "Copy work plan"),
+                                        modifier = Modifier.size(16.dp),
+                                        tint = ForestGreen
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        text = if (copied) str(language, "कॉपी हो गया", "Copied") else str(language, "कॉपी", "Copy"),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = ForestGreen
+                                    )
+                                }
+                            }
+
+                            if (plan.summary.isNotBlank()) {
+                                Text(
+                                    text = plan.summary,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = DarkText
+                                )
+                            }
+
+                            plan.tasks.forEachIndexed { idx, item ->
+                                val priorityColor = when {
+                                    item.priority.contains("उच्च") || item.priority.equals("HIGH", ignoreCase = true) -> AlertRed
+                                    item.priority.contains("मध्यम") || item.priority.equals("MEDIUM", ignoreCase = true) -> Saffron
+                                    else -> ForestGreen
+                                }
+                                Card(
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("ai_work_plan_item_$idx")
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    Icons.Default.Schedule,
+                                                    contentDescription = null,
+                                                    tint = ForestGreen,
+                                                    modifier = Modifier.size(15.dp)
+                                                )
+                                                Spacer(Modifier.width(4.dp))
+                                                Text(
+                                                    text = "${item.period} • ${item.timeSlot}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = ForestGreen
+                                                )
+                                            }
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = priorityColor.copy(alpha = 0.14f)
+                                            ) {
+                                                Text(
+                                                    text = str(language, "प्राथमिकता: ${item.priority}", "Priority: ${item.priority}"),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = priorityColor,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = item.task,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = DarkText
+                                        )
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                Icons.Default.Person,
+                                                contentDescription = null,
+                                                tint = Saffron,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Text(
+                                                text = str(
+                                                    language,
+                                                    "जिम्मेदार: ${item.responsiblePerson}",
+                                                    "Responsible: ${item.responsiblePerson}"
+                                                ),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color(0xFF4E4E4E)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                AiWorkPlanUiState.Idle -> Unit
+            }
+        }
+    }
+}
 
 @Composable
 internal fun CowContextSelectorCard(
@@ -136,6 +448,16 @@ internal fun PhotoHealthCheckCard(
     onClearPhoto: () -> Unit,
     onAnalyze: () -> Unit
 ) {
+    val context = LocalContext.current
+    var reportCopied by remember(photoState) { mutableStateOf(false) }
+
+    LaunchedEffect(reportCopied) {
+        if (reportCopied) {
+            delay(2000)
+            reportCopied = false
+        }
+    }
+
     val quickSymptoms = remember(language) {
         listOf(
             str(language, "सुस्त / उदास", "Dull / Lethargic"),
@@ -344,7 +666,7 @@ internal fun PhotoHealthCheckCard(
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(10.dp))
                             Text(
-                                str(language, "गाय की फोटो और रिकॉर्ड का AI विश्लेषण हो रहा है...", "Analyzing cow photo & available records..."),
+                                str(language, "AI जवाब तैयार कर रहा है...", "AI is analyzing cow photo & records..."),
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
@@ -367,8 +689,30 @@ internal fun PhotoHealthCheckCard(
                                     text = str(language, "प्रारंभिक AI स्वास्थ्य रिपोर्ट तैयार", "Preliminary AI Health Report Ready"),
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.Bold,
-                                    color = ForestGreen
+                                    color = ForestGreen,
+                                    modifier = Modifier.weight(1f)
                                 )
+                                TextButton(
+                                    onClick = {
+                                        if (copyTextToClipboard(context, "AI Health Report", photoState.text)) {
+                                            reportCopied = true
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("ai_photo_copy_btn")
+                                ) {
+                                    Icon(
+                                        if (reportCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                                        contentDescription = str(language, "रिपोर्ट कॉपी करें", "Copy report"),
+                                        modifier = Modifier.size(16.dp),
+                                        tint = ForestGreen
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        text = if (reportCopied) str(language, "कॉपी हो गया", "Copied") else str(language, "कॉपी", "Copy"),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = ForestGreen
+                                    )
+                                }
                             }
                             Text(
                                 text = photoState.text,
@@ -589,7 +933,21 @@ internal fun VoiceDraftPanel(
 }
 
 @Composable
-internal fun ChatBubble(message: AiChatMessage) {
+internal fun ChatBubble(
+    message: AiChatMessage,
+    language: AppLanguage = AppLanguage.HINDI,
+    copyTag: String? = null
+) {
+    val context = LocalContext.current
+    var copied by remember(message.text) { mutableStateOf(false) }
+
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(2000)
+            copied = false
+        }
+    }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (message.isUser) Arrangement.End else Arrangement.Start
@@ -634,6 +992,38 @@ internal fun ChatBubble(message: AiChatMessage) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (message.isUser) Color.White else MaterialTheme.colorScheme.onSurface
                 )
+                if (!message.isUser && copyTag != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(
+                            onClick = {
+                                if (copyTextToClipboard(context, "AI Goshala Reply", message.text)) {
+                                    copied = true
+                                }
+                            },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            modifier = Modifier
+                                .heightIn(min = 36.dp)
+                                .testTag(copyTag)
+                        ) {
+                            Icon(
+                                if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                                contentDescription = str(language, "उत्तर कॉपी करें", "Copy response"),
+                                modifier = Modifier.size(15.dp),
+                                tint = ForestGreen
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = if (copied) str(language, "कॉपी हो गया", "Copied") else str(language, "कॉपी करें", "Copy"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = ForestGreen
+                            )
+                        }
+                    }
+                }
             }
         }
     }

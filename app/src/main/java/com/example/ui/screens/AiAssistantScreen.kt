@@ -18,7 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -85,6 +85,7 @@ fun AiAssistantScreen(
     val messages by aiViewModel.messages.collectAsState()
     val voiceDraft by aiViewModel.voiceDraft.collectAsState()
     val photoState by aiViewModel.photoAnalysisState.collectAsState()
+    val workPlanState by aiViewModel.workPlanState.collectAsState()
 
     val isPublic = session.role == UserRole.PUBLIC
     val availableModes = remember(session) {
@@ -110,6 +111,8 @@ fun AiAssistantScreen(
     var lastSentPrompt by remember { mutableStateOf("") }
     var voiceInputText by remember { mutableStateOf("") }
     var speechError by remember { mutableStateOf<String?>(null) }
+    var voiceStatusMessage by remember { mutableStateOf<String?>(null) }
+    var isVoiceListening by remember { mutableStateOf(false) }
 
     // Photo picker & camera capture state for Cow Photo Health Check
     var selectedBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -182,18 +185,25 @@ fun AiAssistantScreen(
     val speechLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        isVoiceListening = false
         if (result.resultCode == Activity.RESULT_OK) {
             val matches = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
             val spoken = matches?.firstOrNull().orEmpty()
             if (spoken.isNotBlank()) {
                 voiceInputText = spoken
                 speechError = null
+                voiceStatusMessage = str(language, "आवाज़ से प्राप्त: $spoken", "Captured voice: $spoken")
                 if (selectedMode == AiMode.VOICE_DRAFT) {
                     aiViewModel.createVoiceDraft(spoken, language)
                 } else {
                     promptText = spoken
                 }
+            } else {
+                voiceStatusMessage = null
+                speechError = str(language, "आवाज़ स्पष्ट नहीं मिली। कृपया दोबारा बोलें या टाइप करें।", "Could not recognize speech. Please try again or type.")
             }
+        } else {
+            voiceStatusMessage = null
         }
     }
 
@@ -207,8 +217,13 @@ fun AiAssistantScreen(
             )
         }
         try {
+            speechError = null
+            isVoiceListening = true
+            voiceStatusMessage = str(language, "वॉइस इनपुट सुन रहा है (हिंदी)...", "Listening for voice input...")
             speechLauncher.launch(intent)
         } catch (_: Exception) {
+            isVoiceListening = false
+            voiceStatusMessage = null
             speechError = str(
                 language,
                 "इस डिवाइस पर वॉइस सेवा उपलब्ध नहीं है। कृपया नीचे टाइप करें।",
@@ -223,6 +238,8 @@ fun AiAssistantScreen(
         if (granted) {
             launchSpeechRecognizer()
         } else {
+            isVoiceListening = false
+            voiceStatusMessage = null
             speechError = str(
                 language,
                 "माइक्रोफ़ोन अनुमति अस्वीकृत। आप नीचे लिखकर भी प्रश्न पूछ सकते हैं।",
@@ -412,6 +429,34 @@ fun AiAssistantScreen(
                 }
             }
 
+            // 2B. DEDICATED AI WORK PLAN PANEL (Structured Time, Task, Responsible Person & Priority Card)
+            if (selectedMode == AiMode.ACTION_PLAN) {
+                item {
+                    WorkPlanPanel(
+                        language = language,
+                        workPlanState = workPlanState,
+                        onGeneratePlan = { focus ->
+                            aiViewModel.generateDailyWorkPlan(
+                                language = language,
+                                session = session,
+                                summary = summary,
+                                cattle = cattle,
+                                health = health,
+                                feedLogs = feedLogs,
+                                finance = finance,
+                                farmers = farmers,
+                                farmerTx = farmerTx,
+                                compost = compost,
+                                donations = donations,
+                                products = products,
+                                selectedCow = selectedCow,
+                                focusTopic = focus
+                            )
+                        }
+                    )
+                }
+            }
+
             // 3. VOICE DRAFT MODE PANEL (Explicit user confirmation required before saving)
             if (selectedMode == AiMode.VOICE_DRAFT && !isPublic) {
                 item {
@@ -520,10 +565,11 @@ fun AiAssistantScreen(
                             )
                         } else {
                             listOf(
+                                str(language, "50 गायों के लिए रोज़ कितना चारा और पानी चाहिए?", "Daily fodder & water needed for 50 cows?"),
                                 str(language, "आज गायों को कितना चारा देना चाहिए?", "How much fodder should be given today?"),
-                                str(language, "कुल गाय, बैल, बछड़े और बीमार गायों की वास्तविक स्थिति बताएं", "Real status of cows, bulls, calves & sick cattle"),
-                                str(language, "गौशाला में साफ-सफाई कैसे रखें?", "How to keep the goshala clean?"),
-                                str(language, "किसान से चारा कैसे खरीदें और गुणवत्ता कैसे जाँचें?", "How to buy fodder from farmers?")
+                                str(language, "गोबर से खाद कैसे बनाएँ और खर्च कम कैसे करें?", "How to make compost & reduce costs?"),
+                                str(language, "गौशाला का दैनिक कार्यक्रम और सफाई प्रबंधन बताएं", "Goshala daily routine & cleaning management"),
+                                str(language, "कुल गाय, बैल, बछड़े और बीमार गायों की वास्तविक स्थिति बताएं", "Real status of cows, bulls, calves & sick cattle")
                             )
                         }
                         AiMode.ACTION_PLAN -> listOf(
@@ -573,8 +619,12 @@ fun AiAssistantScreen(
             }
 
             // 5. CHAT HISTORY
-            items(messages) { msg ->
-                ChatBubble(msg)
+            itemsIndexed(messages) { idx, msg ->
+                ChatBubble(
+                    message = msg,
+                    language = language,
+                    copyTag = if (!msg.isUser) "ai_copy_msg_$idx" else null
+                )
             }
 
             // 6. STREAMING / LOADING / SUCCESS / ERROR FEEDBACK
@@ -589,7 +639,7 @@ fun AiAssistantScreen(
                         ) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(10.dp))
-                            Text(str(language, "AI गौशाला सहायक उत्तर तैयार कर रहा है...", "AI Goshala Assistant is thinking..."), style = MaterialTheme.typography.bodySmall)
+                            Text(str(language, "AI जवाब तैयार कर रहा है...", "AI is preparing your answer..."), style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
@@ -662,6 +712,51 @@ fun AiAssistantScreen(
                     }
                 }
                 else -> Unit
+            }
+        }
+
+        // Clear Voice Input Status / Error Strip (visible in all modes)
+        if (isVoiceListening || !voiceStatusMessage.isNullOrBlank() || !speechError.isNullOrBlank()) {
+            val isErr = !speechError.isNullOrBlank()
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = if (isErr) MaterialTheme.colorScheme.errorContainer else SoftSaffronTint,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp)
+                    .testTag("ai_voice_status_banner")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (isErr) Icons.Default.MicOff else Icons.Default.GraphicEq,
+                        contentDescription = null,
+                        tint = if (isErr) MaterialTheme.colorScheme.error else Saffron,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = speechError ?: voiceStatusMessage.orEmpty(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isErr) MaterialTheme.colorScheme.onErrorContainer else DarkText,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = {
+                            speechError = null
+                            voiceStatusMessage = null
+                        },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = str(language, "बंद करें", "Dismiss"),
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
             }
         }
 

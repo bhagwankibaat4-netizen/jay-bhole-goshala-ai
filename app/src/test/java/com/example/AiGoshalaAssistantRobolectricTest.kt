@@ -1,5 +1,6 @@
 package com.example
 
+import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -8,12 +9,16 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.core.app.ApplicationProvider
 import com.example.core.*
 import com.example.data.model.*
+import com.example.data.repository.AiWorkPlan
+import com.example.data.repository.AiWorkPlanItem
+import com.example.data.repository.GOSHALA_SYSTEM_INSTRUCTION
 import com.example.data.repository.GeminiAiRepository
 import com.example.ui.screens.AiAssistantScreen
 import com.example.ui.screens.AiMode
 import com.example.ui.theme.GosalaTheme
 import com.example.ui.viewmodel.AiUiState
 import com.example.ui.viewmodel.AiViewModel
+import com.example.ui.viewmodel.AiWorkPlanUiState
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
@@ -37,6 +42,19 @@ class AiGoshalaAssistantRobolectricTest {
         email = "bhagwankibaat4@gmail.com",
         role = UserRole.ADMIN,
         staffActive = true
+    )
+
+    private val limitedStaffSession = UserSession(
+        uid = "staff_ai_1",
+        displayName = "रामू सेवक",
+        email = "staff@example.com",
+        role = UserRole.STAFF,
+        staffActive = true,
+        permissions = mapOf(
+            AppModule.CATTLE.key to listOf(CrudAction.VIEW.name),
+            AppModule.FEED.key to listOf(CrudAction.VIEW.name, CrudAction.ADD.name),
+            AppModule.AI.key to listOf(CrudAction.VIEW.name)
+        )
     )
 
     private val publicSession = UserSession(
@@ -115,21 +133,23 @@ class AiGoshalaAssistantRobolectricTest {
     fun setUp() {
         GeminiAiRepository.testStreamHandler = null
         GeminiAiRepository.testPhotoAnalyzer = null
+        GeminiAiRepository.testWorkPlanGenerator = null
     }
 
     @After
     fun tearDown() {
         GeminiAiRepository.testStreamHandler = null
         GeminiAiRepository.testPhotoAnalyzer = null
+        GeminiAiRepository.testWorkPlanGenerator = null
     }
 
     @Test
-    fun `app check debug token persists synchronously via commit, standalone debug APK uses provisioned reCAPTCHA, and dummy tokens are rejected`() {
+    fun `app check keeps DEBUG on emulators, uses reCAPTCHA on standalone physical phones and release, commits synchronously, and rejects dummy JWTs`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val persistenceKey = "test_goshala_app"
         val testToken = "12345678-ABCD-EF01-2345-6789ABCDEF01"
 
-        // 1. Provisioned reCAPTCHA Enterprise site key must resolve cleanly from resources
+        // 1. Provisioned reCAPTCHA Enterprise site key resolves cleanly from resources
         val siteKey = resolveRecaptchaSiteKey(context)
         assertFalse(siteKey.isNullOrBlank())
 
@@ -142,7 +162,8 @@ class AiGoshalaAssistantRobolectricTest {
         ).getString(DEBUG_SECRET_KEY, null)
         assertEquals(testToken, stored)
 
-        // 3. Provider selection matrix prevents unregistered random UUIDs on standalone phones
+        // 3. Provider selection matrix
+        // Debug with explicit Intent token -> DEBUG
         assertEquals(
             AppCheckProviderKind.DEBUG,
             decideAppCheckProviderKind(
@@ -150,10 +171,23 @@ class AiGoshalaAssistantRobolectricTest {
                 intentDebugToken = testToken,
                 storedExplicitDebugToken = null,
                 storedSdkDebugSecret = null,
-                recaptchaSiteKey = siteKey
+                recaptchaSiteKey = siteKey,
+                isEmulator = true
             )
         )
-        // Standalone Debug APK installed on user's phone (no intent token, stale random UUID) -> RECAPTCHA!
+        // Debug on Android Emulator WITHOUT Intent token (e.g. launcher relaunch) -> MUST STAY DEBUG (never RECAPTCHA!)
+        assertEquals(
+            AppCheckProviderKind.DEBUG,
+            decideAppCheckProviderKind(
+                isDebugBuild = true,
+                intentDebugToken = null,
+                storedExplicitDebugToken = null,
+                storedSdkDebugSecret = null,
+                recaptchaSiteKey = siteKey,
+                isEmulator = true
+            )
+        )
+        // Standalone Debug APK on real physical phone (no intent token, stale random UUID) -> RECAPTCHA!
         assertEquals(
             AppCheckProviderKind.RECAPTCHA,
             decideAppCheckProviderKind(
@@ -161,10 +195,11 @@ class AiGoshalaAssistantRobolectricTest {
                 intentDebugToken = null,
                 storedExplicitDebugToken = null,
                 storedSdkDebugSecret = "unregistered-random-uuid",
-                recaptchaSiteKey = siteKey
+                recaptchaSiteKey = siteKey,
+                isEmulator = false
             )
         )
-        // AI Studio emulator relaunched with matching explicit harness token -> DEBUG!
+        // Relaunched Debug build with matching explicit harness token -> DEBUG!
         assertEquals(
             AppCheckProviderKind.DEBUG,
             decideAppCheckProviderKind(
@@ -172,10 +207,11 @@ class AiGoshalaAssistantRobolectricTest {
                 intentDebugToken = null,
                 storedExplicitDebugToken = testToken,
                 storedSdkDebugSecret = testToken,
-                recaptchaSiteKey = siteKey
+                recaptchaSiteKey = siteKey,
+                isEmulator = false
             )
         )
-        // Release build -> ALWAYS RECAPTCHA!
+        // Release build -> ALWAYS RECAPTCHA (even if token present)!
         assertEquals(
             AppCheckProviderKind.RECAPTCHA,
             decideAppCheckProviderKind(
@@ -183,7 +219,8 @@ class AiGoshalaAssistantRobolectricTest {
                 intentDebugToken = testToken,
                 storedExplicitDebugToken = testToken,
                 storedSdkDebugSecret = testToken,
-                recaptchaSiteKey = siteKey
+                recaptchaSiteKey = siteKey,
+                isEmulator = false
             )
         )
 
@@ -207,7 +244,14 @@ class AiGoshalaAssistantRobolectricTest {
     }
 
     @Test
-    fun `role scoped context accurately reflects verified real data and reports missing records without inventing numbers`() {
+    fun `system instruction and role-scoped context enforce exact RBAC isolation for Admin, limited Staff, and Public users without fabricating missing cow fields`() {
+        // Verify official Jay Bhole Gosala Samiti Hindi system instructions
+        assertTrue(GOSHALA_SYSTEM_INSTRUCTION.contains("Jay Bhole Gosala Samiti"))
+        assertTrue(GOSHALA_SYSTEM_INSTRUCTION.contains("केवल सलाह देंगे"))
+        assertTrue(GOSHALA_SYSTEM_INSTRUCTION.contains("योग्य पशु चिकित्सक"))
+        assertTrue(GOSHALA_SYSTEM_INSTRUCTION.contains("खतरनाक दवा या निश्चित खुराक"))
+        assertTrue(GOSHALA_SYSTEM_INSTRUCTION.contains("अधूरी जानकारी को कभी गढ़ेंगे नहीं"))
+
         val repo = GeminiAiRepository()
         val today = QrAndExportUtils.todayIso()
 
@@ -250,10 +294,12 @@ class AiGoshalaAssistantRobolectricTest {
             selectedCow = sampleCow
         )
 
-        // Verify exact real numbers & selected cow history
+        // Verify exact real numbers & selected cow history + missing pregnancy/milk marked explicitly
         assertTrue(fullContext.contains("Total=3 | गाय (Cows)=1 | बैल (Bulls)=1 | बछड़े (Calves)=1"))
         assertTrue(fullContext.contains("बीमार/देखरेख (Sick/Attention)=1"))
         assertTrue(fullContext.contains("नंदिनी [JBGS-G-001]"))
+        assertTrue(fullContext.contains("Pregnancy Status (गर्भावस्था): रिकॉर्ड उपलब्ध नहीं है"))
+        assertTrue(fullContext.contains("Milk Yield Record (दूध उत्पादन): रिकॉर्ड उपलब्ध नहीं है"))
         assertTrue(fullContext.contains("FMD खुरपका टीका"))
         assertTrue(fullContext.contains("हल्का बुखार व अपच"))
         assertTrue(fullContext.contains("Green=180.0kg"))
@@ -264,24 +310,23 @@ class AiGoshalaAssistantRobolectricTest {
         assertTrue(fullContext.contains("गोबर के कंडे"))
         assertTrue(fullContext.contains("Fodder Purchased=₹6500.0"))
 
-        // Empty data explicitly reports missing records
-        val emptyContext = repo.buildRoleScopedContext(
-            session = adminSession,
-            summary = PublicSummary(),
-            cattle = emptyList(),
-            health = emptyList(),
+        // Staff with limited permissions (only CATTLE + FEED) MUST NOT receive FINANCE or HEALTH details
+        val staffContext = repo.buildRoleScopedContext(
+            session = limitedStaffSession,
+            summary = PublicSummary(totalCattle = 3, healthyCattle = 2, sickCattle = 1),
+            cattle = listOf(sampleCow),
+            health = sampleHealthRecords,
             feedLogs = emptyList(),
-            finance = emptyList(),
+            finance = listOf(FinancialTransaction(txType = "EXPENSE", amountInr = 77777.0)),
             farmers = emptyList(),
             farmerTx = emptyList(),
             compost = emptyList(),
-            donations = emptyList(),
-            products = emptyList()
+            donations = emptyList()
         )
-        assertTrue(emptyContext.contains("Cattle Registry: रिकॉर्ड उपलब्ध नहीं है"))
-        assertTrue(emptyContext.contains("Feed & Operations: रिकॉर्ड उपलब्ध नहीं है"))
-        assertTrue(emptyContext.contains("Finance: रिकॉर्ड उपलब्ध नहीं है"))
-        assertTrue(emptyContext.contains("Donations: रिकॉर्ड उपलब्ध नहीं है"))
+        assertTrue(staffContext.contains("Cattle Registry (VERIFIED)"))
+        assertTrue(staffContext.contains("Finance: अनुमति नहीं है / Unauthorized"))
+        assertTrue(staffContext.contains("Health Records: अनुमति नहीं है / Unauthorized"))
+        assertFalse(staffContext.contains("77777.0"))
 
         // Public role strictly blocks internal finances & private medical details
         val publicContext = repo.buildRoleScopedContext(
@@ -332,18 +377,21 @@ class AiGoshalaAssistantRobolectricTest {
     }
 
     @Test
-    fun `AI chat send button, cow selector, action plan mode, success and error retry work without auto-modifying records`() {
+    fun `blank input blocked, chat send + error retry + copy button + anti-duplicate guard + clear chat work cleanly`() {
         var capturedContext = ""
+        var callCount = 0
         var failFirstAttempt = true
         var mutatedAnyRecord = false
+        val expectedReply = "50 गायों के लिए प्रतिदिन लगभग 750-1000 किलो हरा चारा, 300-400 किलो सूखा भूसा और 2000-2500 लीटर स्वच्छ पानी आवश्यक होता है।"
 
-        GeminiAiRepository.testStreamHandler = { prompt, context, _ ->
+        GeminiAiRepository.testStreamHandler = { _, context, _ ->
+            callCount++
             capturedContext = context
             if (failFirstAttempt) {
                 failFirstAttempt = false
                 throw IllegalStateException("Firebase App Check token is invalid.")
             }
-            listOf("आज 3 गोवंश के लिए लगभग 60-75 किलो हरा चारा और पर्याप्त भूसा दें। (प्रश्न: $prompt)")
+            listOf(expectedReply)
         }
 
         val vm = AiViewModel()
@@ -375,50 +423,178 @@ class AiGoshalaAssistantRobolectricTest {
         }
         composeRule.waitForIdle()
 
-        // 1. Select cow record (read-only context)
+        // 1. Blank input MUST keep Send disabled and NOT trigger API
+        composeRule.onNodeWithTag("ai_send_button").assertIsNotEnabled()
+        composeRule.onNodeWithTag("ai_prompt_input").performTextInput("   ")
+        composeRule.onNodeWithTag("ai_send_button").assertIsNotEnabled()
+        assertEquals(0, callCount)
+
+        // 2. Select cow record (read-only context)
         composeRule.onNodeWithTag("ai_select_cow_JBGS-G-001").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("ai_selected_cow_summary").assertIsDisplayed()
 
-        // 2. Verify Action Plan chip exists
-        composeRule.onNodeWithTag("ai_mode_action_plan").assertIsDisplayed()
-
-        // 3. Send question -> first attempt triggers App Check error UI with Retry button
-        composeRule.onNodeWithTag("ai_prompt_input").performTextInput("आज गायों को कितना चारा देना चाहिए?")
+        // 3. Send Hindi question -> first attempt triggers App Check error with clean Hindi message + Retry button
+        composeRule.onNodeWithTag("ai_prompt_input").performTextClearance()
+        composeRule.onNodeWithTag("ai_prompt_input").performTextInput("50 गायों के लिए रोज़ कितना चारा चाहिए?")
         composeRule.onNodeWithTag("ai_send_button").assertIsEnabled().performClick()
         composeRule.waitForIdle()
 
         composeRule.onNodeWithTag("ai_content_list").performScrollToNode(hasTestTag("ai_chat_error"))
         composeRule.onNodeWithTag("ai_chat_error").assertIsDisplayed()
+        val errMsg = (vm.uiState.value as AiUiState.Error).message
+        assertTrue(errMsg.contains("सुरक्षा सत्यापन") || errMsg.contains("App Check"))
+        assertFalse(errMsg.contains("Exception"))
+
+        // 4. Tap Retry -> succeeds without duplicating user message
         composeRule.onNodeWithTag("ai_chat_retry_btn").assertIsDisplayed().performClick()
         composeRule.waitForIdle()
 
-        // 4. Retry succeeds and displays response + success badge + selected cow was passed in context
         composeRule.onNodeWithTag("ai_content_list").performScrollToNode(hasTestTag("ai_chat_success_badge"))
         composeRule.onNodeWithTag("ai_chat_success_badge").assertIsDisplayed()
         assertTrue(capturedContext.contains("SELECTED COW RECORD"))
         assertTrue(capturedContext.contains("JBGS-G-001"))
-
-        // 5. Verify Retry did NOT create duplicate user messages (exactly 1 user msg + 1 AI reply)
         assertEquals(1, vm.messages.value.count { it.isUser })
         assertEquals(1, vm.messages.value.count { !it.isUser })
 
-        // 6. Verify AI never auto-mutated any record
+        // 5. Copy AI reply button copies full Hindi text to system clipboard
+        composeRule.onNodeWithTag("ai_content_list").performScrollToNode(hasTestTag("ai_copy_msg_1"))
+        composeRule.onNodeWithTag("ai_copy_msg_1").performClick()
+        composeRule.waitForIdle()
+        val clipboard = ApplicationProvider.getApplicationContext<Context>()
+            .getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        assertEquals(expectedReply, clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+
+        // 6. Anti-duplicate guard blocks immediate duplicate non-retry submission of the exact same prompt
+        val callsBeforeDuplicate = callCount
+        vm.askAssistant(
+            prompt = "50 गायों के लिए रोज़ कितना चारा चाहिए?",
+            modeLabel = "गौशाला सवाल-जवाब",
+            language = AppLanguage.HINDI,
+            session = adminSession,
+            summary = PublicSummary(),
+            cattle = emptyList(),
+            health = emptyList(),
+            feedLogs = emptyList(),
+            finance = emptyList(),
+            farmers = emptyList(),
+            farmerTx = emptyList(),
+            compost = emptyList(),
+            donations = emptyList(),
+            isRetry = false
+        )
+        assertEquals(callsBeforeDuplicate, callCount)
+
+        // 7. Clear Chat clears messages cleanly
+        composeRule.onNodeWithTag("ai_clear_chat_btn").performClick()
+        composeRule.waitForIdle()
+        assertTrue(vm.messages.value.isEmpty())
+        assertTrue(vm.uiState.value is AiUiState.Idle)
+
+        // 8. Verify AI never auto-mutated any record
         assertFalse(mutatedAnyRecord)
     }
 
     @Test
-    fun `photo health check UI shows camera and gallery buttons and displays AI health report`() {
-        GeminiAiRepository.testPhotoAnalyzer = { _, _ ->
-            "गंभीरता स्तर: मध्यम\nप्रारंभिक सुझाव: स्वच्छ पानी व छाया दें और पशु चिकित्सक से जाँच कराएँ।"
+    fun `AI Work Plan mode renders dedicated structured card with time, task, responsible person, priority, error retry, and copy`() {
+        var failFirst = true
+        GeminiAiRepository.testWorkPlanGenerator = { _, _ ->
+            if (failFirst) {
+                failFirst = false
+                throw IllegalStateException("network offline")
+            }
+            AiWorkPlan(
+                dateLabel = "2026-11-22",
+                title = "आज की गौशाला कार्य योजना",
+                summary = "3 गोवंश (1 देखरेख में) के लिए सुबह, दोपहर और शाम की व्यावहारिक कार्य सूची।",
+                tasks = listOf(
+                    AiWorkPlanItem(
+                        timeSlot = "05:30 - 07:00",
+                        period = "सुबह",
+                        task = "शेड की सफाई व गोबर संग्रहण, बीमार गाय नंदिनी की जाँच",
+                        responsiblePerson = "गौशाला सेवक",
+                        priority = "उच्च",
+                        category = "स्वास्थ्य व सफाई"
+                    ),
+                    AiWorkPlanItem(
+                        timeSlot = "12:00 - 13:30",
+                        period = "दोपहर",
+                        task = "स्वच्छ पेयजल भरना और छाया व्यवस्था जाँचना",
+                        responsiblePerson = "चारा प्रभारी",
+                        priority = "मध्यम",
+                        category = "पानी व देखभाल"
+                    )
+                )
+            )
         }
+
+        val vm = AiViewModel()
+        composeRule.setContent {
+            GosalaTheme {
+                AiAssistantScreen(
+                    language = AppLanguage.HINDI,
+                    session = adminSession,
+                    summary = PublicSummary(totalCattle = 3, healthyCattle = 2, sickCattle = 1),
+                    cattle = listOf(sampleCow, sampleBull, sampleCalf),
+                    health = sampleHealthRecords,
+                    feedLogs = emptyList(),
+                    finance = emptyList(),
+                    farmers = emptyList(),
+                    farmerTx = emptyList(),
+                    compost = emptyList(),
+                    donations = emptyList(),
+                    products = emptyList(),
+                    aiViewModel = vm,
+                    initialMode = AiMode.ACTION_PLAN,
+                    onSaveCattleDraft = {},
+                    onSaveFeedDraft = {},
+                    onSaveExpenseDraft = {},
+                    onSaveHealthDraft = {},
+                    onNavigateToCattleSearch = {}
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. Dedicated Work Plan card is displayed in ACTION_PLAN mode
+        composeRule.onNodeWithTag("ai_work_plan_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("ai_generate_work_plan_btn").performClick()
+        composeRule.waitForIdle()
+
+        // 2. First call fails with clear Hindi network error + Retry button
+        assertTrue(vm.workPlanState.value is AiWorkPlanUiState.Error)
+        composeRule.onNodeWithTag("ai_work_plan_error").assertExists()
+        composeRule.onNodeWithTag("ai_work_plan_retry_btn").performScrollTo().performClick()
+        composeRule.waitForIdle()
+
+        // 3. Retry succeeds and shows structured Work Plan items (Time, Task, Responsible Person, Priority)
+        assertTrue(vm.workPlanState.value is AiWorkPlanUiState.Success)
+        composeRule.onNodeWithTag("ai_work_plan_result").assertExists()
+        composeRule.onNodeWithTag("ai_work_plan_item_0").assertExists()
+        composeRule.onNodeWithTag("ai_work_plan_item_1").assertExists()
+
+        // 4. Copy Work Plan button copies formatted Hindi schedule to clipboard
+        composeRule.onNodeWithTag("ai_work_plan_copy_btn").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        val clipboard = ApplicationProvider.getApplicationContext<Context>()
+            .getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val copiedText = clipboard.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+        assertTrue(copiedText.contains("05:30 - 07:00"))
+        assertTrue(copiedText.contains("गौशाला सेवक"))
+        assertTrue(copiedText.contains("उच्च"))
+    }
+
+    @Test
+    fun `photo health check UI shows camera and gallery buttons, displays AI health report with copy, and public users see only permitted modes`() {
+        val reportText = "गंभीरता स्तर: मध्यम\nप्रारंभिक सुझाव: स्वच्छ पानी व छाया दें और पशु चिकित्सक से जाँच कराएँ।"
+        GeminiAiRepository.testPhotoAnalyzer = { _, _ -> reportText }
         val vm = AiViewModel()
 
         composeRule.setContent {
             GosalaTheme {
                 AiAssistantScreen(
                     language = AppLanguage.HINDI,
-                    session = adminSession,
+                    session = publicSession,
                     summary = PublicSummary(totalCattle = 1, healthyCattle = 0, sickCattle = 1),
                     cattle = listOf(sampleCow),
                     health = sampleHealthRecords,
@@ -441,12 +617,21 @@ class AiGoshalaAssistantRobolectricTest {
         }
         composeRule.waitForIdle()
 
+        // Public user MUST NOT see internal admin/business/voice-draft modes
+        composeRule.onNodeWithTag("ai_mode_animal_care").assertExists()
+        composeRule.onNodeWithTag("ai_mode_management").assertExists()
+        composeRule.onNodeWithTag("ai_mode_action_plan").assertExists()
+        composeRule.onNodeWithTag("ai_mode_admin_summary").assertDoesNotExist()
+        composeRule.onNodeWithTag("ai_mode_business").assertDoesNotExist()
+        composeRule.onNodeWithTag("ai_mode_voice_draft").assertDoesNotExist()
+        composeRule.onNodeWithTag("ai_mic_button").assertExists()
+
         composeRule.onNodeWithTag("ai_content_list")
             .performScrollToNode(hasTestTag("ai_photo_health_card"))
         composeRule.onNodeWithTag("camera_cattle_photo_ai_btn").assertIsDisplayed()
         composeRule.onNodeWithTag("pick_cattle_photo_ai_btn").assertIsDisplayed()
 
-        // Trigger photo analysis via ViewModel and verify success report renders in UI
+        // Trigger photo analysis via ViewModel and verify success report & Copy button work
         val bmp = Bitmap.createBitmap(24, 24, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
         vm.analyzeCattlePhoto(
             bitmap = bmp,
@@ -454,11 +639,16 @@ class AiGoshalaAssistantRobolectricTest {
             language = AppLanguage.HINDI,
             selectedCow = sampleCow,
             cowHealthRecords = sampleHealthRecords,
-            isPublic = false
+            isPublic = true
         )
         composeRule.waitForIdle()
 
         assertTrue(vm.photoAnalysisState.value is AiUiState.Success)
         composeRule.onNodeWithTag("ai_photo_success_report").assertExists()
+        composeRule.onNodeWithTag("ai_photo_copy_btn").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        val clipboard = ApplicationProvider.getApplicationContext<Context>()
+            .getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        assertEquals(reportText, clipboard.primaryClip?.getItemAt(0)?.text?.toString())
     }
 }

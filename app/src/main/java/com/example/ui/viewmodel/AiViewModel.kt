@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.core.AppLanguage
 import com.example.core.isAppCheckTokenError
 import com.example.data.model.*
+import com.example.data.repository.AiWorkPlan
 import com.example.data.repository.GeminiAiRepository
 import com.example.data.repository.VoiceEntryDraft
 import kotlinx.coroutines.CancellationException
@@ -22,6 +23,13 @@ sealed interface AiUiState {
     data class Streaming(val text: String) : AiUiState
     data class Success(val text: String) : AiUiState
     data class Error(val message: String) : AiUiState
+}
+
+sealed interface AiWorkPlanUiState {
+    data object Idle : AiWorkPlanUiState
+    data object Loading : AiWorkPlanUiState
+    data class Success(val plan: AiWorkPlan) : AiWorkPlanUiState
+    data class Error(val message: String) : AiWorkPlanUiState
 }
 
 data class AiChatMessage(
@@ -47,6 +55,12 @@ class AiViewModel(
     private val _photoAnalysisState = MutableStateFlow<AiUiState>(AiUiState.Idle)
     val photoAnalysisState: StateFlow<AiUiState> = _photoAnalysisState.asStateFlow()
 
+    private val _workPlanState = MutableStateFlow<AiWorkPlanUiState>(AiWorkPlanUiState.Idle)
+    val workPlanState: StateFlow<AiWorkPlanUiState> = _workPlanState.asStateFlow()
+
+    private var lastSubmittedPrompt: String = ""
+    private var lastSubmittedAtMs: Long = 0L
+
     fun askAssistant(
         prompt: String,
         modeLabel: String,
@@ -70,6 +84,14 @@ class AiViewModel(
         // Prevent overlapping duplicate requests while a response is already in flight
         if (_uiState.value is AiUiState.Loading || _uiState.value is AiUiState.Streaming) return
 
+        // Anti-duplicate guard for rapid double-taps on identical non-retry prompts
+        val now = System.currentTimeMillis()
+        if (!isRetry && trimmed == lastSubmittedPrompt && (now - lastSubmittedAtMs) < DUPLICATE_GUARD_MS) {
+            return
+        }
+        lastSubmittedPrompt = trimmed
+        lastSubmittedAtMs = now
+
         val roleContext = aiRepository.buildRoleScopedContext(
             session = session,
             summary = summary,
@@ -85,6 +107,8 @@ class AiViewModel(
             selectedCow = selectedCow
         )
         val cowTag = selectedCow?.let { "${it.name} (${it.animalCode})" }.orEmpty()
+        val priorHistory = _messages.value.takeLast(6).map { it.isUser to it.text }
+
         val lastMsg = _messages.value.lastOrNull()
         val isDuplicateRetryOfLastUserMsg = isRetry && lastMsg?.isUser == true && lastMsg.text == trimmed
         if (!isDuplicateRetryOfLastUserMsg) {
@@ -100,7 +124,13 @@ class AiViewModel(
         viewModelScope.launch {
             var finalText = ""
             try {
-                aiRepository.streamAssistantResponse(trimmed, roleContext, modeLabel, language).collect { partial ->
+                aiRepository.streamAssistantResponse(
+                    userPrompt = trimmed,
+                    roleContext = roleContext,
+                    modeLabel = modeLabel,
+                    language = language,
+                    recentHistory = priorHistory
+                ).collect { partial ->
                     finalText = partial
                     _uiState.value = AiUiState.Streaming(partial)
                 }
@@ -115,7 +145,7 @@ class AiViewModel(
                 Log.e(TAG, "AI request timed out", e)
                 _uiState.value = AiUiState.Error(
                     if (language == AppLanguage.HINDI) {
-                        "AI सहायक का समय समाप्त हो गया (60 सेकंड)। कृपया नेटवर्क जांचकर पुनः प्रयास करें।"
+                        "AI उत्तर आने में समय अधिक लग गया। कृपया इंटरनेट जांचकर पुनः प्रयास करें।"
                     } else {
                         "AI request timed out after 60 seconds. Please check network and retry."
                     }
@@ -127,6 +157,60 @@ class AiViewModel(
                 _uiState.value = AiUiState.Error(formatAiErrorMessage(e, language))
             }
         }
+    }
+
+    fun generateDailyWorkPlan(
+        language: AppLanguage,
+        session: UserSession,
+        summary: PublicSummary,
+        cattle: List<Cattle>,
+        health: List<HealthRecord>,
+        feedLogs: List<FeedAndOperationLog>,
+        finance: List<FinancialTransaction>,
+        farmers: List<FarmerRecord>,
+        farmerTx: List<FarmerTransaction>,
+        compost: List<CompostBatch>,
+        donations: List<Donation>,
+        products: List<GoshalaProduct> = emptyList(),
+        selectedCow: Cattle? = null,
+        focusTopic: String = ""
+    ) {
+        if (_workPlanState.value is AiWorkPlanUiState.Loading) return
+        val roleContext = aiRepository.buildRoleScopedContext(
+            session = session,
+            summary = summary,
+            cattle = cattle,
+            health = health,
+            feedLogs = feedLogs,
+            finance = finance,
+            farmers = farmers,
+            farmerTx = farmerTx,
+            compost = compost,
+            donations = donations,
+            products = products,
+            selectedCow = selectedCow
+        )
+        _workPlanState.value = AiWorkPlanUiState.Loading
+        viewModelScope.launch {
+            val res = aiRepository.generateWorkPlan(
+                roleContext = roleContext,
+                language = language,
+                focusTopic = focusTopic
+            )
+            res.fold(
+                onSuccess = { plan ->
+                    _workPlanState.value = AiWorkPlanUiState.Success(plan)
+                },
+                onFailure = { e ->
+                    Log.e(TAG, "Daily work plan generation failed", e)
+                    _workPlanState.value = AiWorkPlanUiState.Error(formatAiErrorMessage(e, language))
+                }
+            )
+        }
+    }
+
+    fun clearWorkPlan() {
+        _workPlanState.value = AiWorkPlanUiState.Idle
     }
 
     fun analyzeCattlePhoto(
@@ -166,6 +250,7 @@ class AiViewModel(
 
     fun createVoiceDraft(spokenText: String, language: AppLanguage) {
         if (spokenText.isBlank()) return
+        if (_uiState.value is AiUiState.Loading || _uiState.value is AiUiState.Streaming) return
         viewModelScope.launch {
             _uiState.value = AiUiState.Loading
             val res = aiRepository.extractVoiceEntryDraft(spokenText)
@@ -195,27 +280,62 @@ class AiViewModel(
     fun clearChat() {
         _messages.value = emptyList()
         _uiState.value = AiUiState.Idle
+        lastSubmittedPrompt = ""
+        lastSubmittedAtMs = 0L
     }
 
     private fun formatAiErrorMessage(e: Throwable, language: AppLanguage): String {
-        val raw = e.localizedMessage?.trim().orEmpty()
+        val rawLower = buildString {
+            var cur: Throwable? = e
+            while (cur != null) {
+                append(cur.message.orEmpty()).append(' ')
+                cur = cur.cause
+            }
+        }.lowercase()
+
         if (isAppCheckTokenError(e)) {
             return if (language == AppLanguage.HINDI) {
-                "Firebase App Check सत्यापन में त्रुटि आई है। कृपया ऐप को पुनः खोलें या कुछ सेकंड बाद पुनः प्रयास करें। ($raw)"
+                "ऐप सुरक्षा सत्यापन (App Check) में अस्थायी समस्या आई है। कृपया कुछ सेकंड बाद 'पुनः प्रयास करें' दबाएँ या ऐप दोबारा खोलें।"
             } else {
-                "Firebase App Check verification failed. Please relaunch the app or retry in a moment. ($raw)"
+                "Temporary App Check verification issue. Please tap Retry in a moment or reopen the app."
             }
         }
-        return if (raw.isNotBlank()) {
-            raw
-        } else if (language == AppLanguage.HINDI) {
-            "AI सेवा अभी उपलब्ध नहीं है। कृपया इंटरनेट कनेक्शन जांचकर पुनः प्रयास करें।"
+        if (
+            rawLower.contains("unable to resolve host") ||
+            rawLower.contains("network") ||
+            rawLower.contains("offline") ||
+            rawLower.contains("failed to connect") ||
+            rawLower.contains("socket")
+        ) {
+            return if (language == AppLanguage.HINDI) {
+                "इंटरनेट कनेक्शन नहीं मिल रहा है। कृपया नेटवर्क जांचकर पुनः प्रयास करें।"
+            } else {
+                "No internet connection detected. Please check your network and retry."
+            }
+        }
+        if (rawLower.contains("429") || rawLower.contains("quota") || rawLower.contains("resource exhausted")) {
+            return if (language == AppLanguage.HINDI) {
+                "अभी AI सेवा पर बहुत अधिक अनुरोध हैं। कृपया कुछ सेकंड रुककर पुनः प्रयास करें।"
+            } else {
+                "AI service is busy right now. Please wait a few seconds and retry."
+            }
+        }
+        if (rawLower.contains("timeout") || rawLower.contains("timed out") || rawLower.contains("समय समाप्त")) {
+            return if (language == AppLanguage.HINDI) {
+                "AI उत्तर आने में समय अधिक लग गया। कृपया इंटरनेट जांचकर पुनः प्रयास करें।"
+            } else {
+                "AI response took too long. Please check your connection and retry."
+            }
+        }
+        return if (language == AppLanguage.HINDI) {
+            "AI सेवा से अभी उत्तर प्राप्त नहीं हो सका। कृपया कुछ सेकंड बाद पुनः प्रयास करें।"
         } else {
-            "AI service is currently unavailable. Please check your connection and retry."
+            "Unable to get an AI response right now. Please retry in a moment."
         }
     }
 
     private companion object {
         const val TAG = "AiViewModel"
+        const val DUPLICATE_GUARD_MS = 2_500L
     }
 }
