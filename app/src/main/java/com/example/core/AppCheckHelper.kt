@@ -41,9 +41,45 @@ private var appCheckAppContext: Context? = null
 internal var activeAppCheckProviderKind: AppCheckProviderKind = AppCheckProviderKind.NONE
     private set
 
+@Volatile
+internal var lastAppCheckDiagnostic: String? = null
+    private set
+
 /**
- * Detects Android emulator / virtual device runtimes so Debug builds on emulators
- * NEVER get switched to reCAPTCHA Enterprise (which cannot attest virtual devices).
+ * Returns a concise, user-safe diagnostic note describing the last App Check verification failure
+ * (e.g., provider type and root cause category) so the UI can show actionable guidance with Retry.
+ */
+fun describeAppCheckDiagnostic(language: AppLanguage): String? {
+    val diag = lastAppCheckDiagnostic?.trim().takeIf { !it.isNullOrBlank() } ?: return null
+    val lower = diag.lowercase()
+    return when {
+        lower.contains("missing_recaptcha") -> if (language == AppLanguage.HINDI) {
+            "कारण: reCAPTCHA साइट कुंजी उपलब्ध नहीं है।"
+        } else {
+            "Cause: reCAPTCHA site key is missing."
+        }
+        lower.contains("debug_unregistered") || (lower.contains("debug") && lower.contains("403")) -> if (language == AppLanguage.HINDI) {
+            "कारण: Debug App Check टोकन Firebase में सत्यापित नहीं हुआ।"
+        } else {
+            "Cause: Debug App Check token is not registered in Firebase."
+        }
+        lower.contains("recaptcha") -> if (language == AppLanguage.HINDI) {
+            "कारण: reCAPTCHA सत्यापन पूरा नहीं हो सका (Play Services/इंटरनेट जांचें)।"
+        } else {
+            "Cause: reCAPTCHA attestation did not complete (check Play Services & network)."
+        }
+        else -> if (language == AppLanguage.HINDI) {
+            "विवरण: $diag"
+        } else {
+            "Details: $diag"
+        }
+    }
+}
+
+/**
+ * Detects Android emulator / virtual device runtimes (including AVD, Genymotion, and Google Cloud
+ * Cuttlefish / AI Studio Streaming Emulators) so Debug builds on emulators NEVER get downgraded
+ * to reCAPTCHA Enterprise (which cannot attest virtualized devices).
  */
 internal fun isAndroidEmulator(): Boolean {
     val fingerprint = Build.FINGERPRINT.orEmpty().lowercase()
@@ -53,21 +89,67 @@ internal fun isAndroidEmulator(): Boolean {
     val device = Build.DEVICE.orEmpty().lowercase()
     val product = Build.PRODUCT.orEmpty().lowercase()
     val hardware = Build.HARDWARE.orEmpty().lowercase()
-    return fingerprint.startsWith("generic") ||
-        fingerprint.startsWith("unknown") ||
-        fingerprint.contains("emulator") ||
-        fingerprint.contains("sdk_gphone") ||
-        model.contains("google_sdk") ||
-        model.contains("emulator") ||
-        model.contains("android sdk built for x86") ||
-        model.contains("sdk_gphone") ||
-        manufacturer.contains("genymotion") ||
-        hardware.contains("goldfish") ||
-        hardware.contains("ranchu") ||
-        product.contains("sdk_gphone") ||
-        product.contains("emulator") ||
-        product.contains("simulator") ||
-        (brand.startsWith("generic") && device.startsWith("generic"))
+    return isEmulatorBuildProperties(
+        fingerprint = fingerprint,
+        model = model,
+        manufacturer = manufacturer,
+        brand = brand,
+        device = device,
+        product = product,
+        hardware = hardware
+    )
+}
+
+internal fun isEmulatorBuildProperties(
+    fingerprint: String,
+    model: String,
+    manufacturer: String,
+    brand: String,
+    device: String,
+    product: String,
+    hardware: String
+): Boolean {
+    val fp = fingerprint.lowercase()
+    val mdl = model.lowercase()
+    val mfg = manufacturer.lowercase()
+    val br = brand.lowercase()
+    val dev = device.lowercase()
+    val prd = product.lowercase()
+    val hw = hardware.lowercase()
+    return fp.startsWith("generic") ||
+        fp.startsWith("unknown") ||
+        fp.contains("emulator") ||
+        fp.contains("sdk_gphone") ||
+        fp.contains("cuttlefish") ||
+        fp.contains("aosp_cf") ||
+        fp.contains("cf_x86") ||
+        fp.contains("cf_arm") ||
+        fp.contains("vsoc") ||
+        mdl.contains("google_sdk") ||
+        mdl.contains("emulator") ||
+        mdl.contains("android sdk built for x86") ||
+        mdl.contains("sdk_gphone") ||
+        mdl.contains("cuttlefish") ||
+        mdl.contains("aosp on") ||
+        mfg.contains("genymotion") ||
+        hw.contains("goldfish") ||
+        hw.contains("ranchu") ||
+        hw.contains("cutf") ||
+        hw.contains("virtio") ||
+        hw.contains("crosvm") ||
+        hw.contains("qemu") ||
+        dev.contains("vsoc") ||
+        dev.contains("emu64") ||
+        prd.contains("sdk_gphone") ||
+        prd.contains("emulator") ||
+        prd.contains("simulator") ||
+        prd.contains("cuttlefish") ||
+        prd.contains("aosp_cf") ||
+        prd.contains("cf_x86") ||
+        prd.contains("cf_arm") ||
+        prd.contains("vsoc") ||
+        prd.contains("vbox") ||
+        (br.startsWith("generic") && dev.startsWith("generic"))
 }
 
 /**
@@ -135,7 +217,8 @@ internal fun resolveRecaptchaSiteKey(context: Context): String? {
  * - Release builds: ALWAYS RecaptchaAppCheckProviderFactory (reCAPTCHA Enterprise).
  * - Debug builds WITH explicit FIREBASE_APPCHECK_DEBUG_TOKEN in Intent:
  *   ALWAYS DebugAppCheckProviderFactory with the synchronously committed token.
- * - Debug builds on an Android Emulator OR with a previously saved explicit harness token:
+ * - Debug builds on an Android Emulator (including Cuttlefish/AI Studio Streaming Emulator)
+ *   OR with a previously saved explicit harness token:
  *   ALWAYS DebugAppCheckProviderFactory (never downgraded to reCAPTCHA on emulators).
  * - Standalone Debug APK on a real physical phone WITHOUT any harness debug token:
  *   RecaptchaAppCheckProviderFactory using the project's provisioned recaptcha_site_key so
@@ -222,6 +305,7 @@ fun configureAppCheck(context: Context, intent: Intent?) {
                         /* isTokenAutoRefreshEnabled = */ true
                     )
                     activeAppCheckProviderKind = AppCheckProviderKind.DEBUG
+                    lastAppCheckDiagnostic = null
                     Log.d(TAG, "DebugAppCheckProviderFactory installed with auto-refresh enabled.")
                 }
             }
@@ -239,17 +323,21 @@ fun configureAppCheck(context: Context, intent: Intent?) {
                             /* isTokenAutoRefreshEnabled = */ true
                         )
                         activeAppCheckProviderKind = AppCheckProviderKind.RECAPTCHA
+                        lastAppCheckDiagnostic = null
                         Log.d(TAG, "RecaptchaAppCheckProviderFactory installed with auto-refresh enabled.")
                     }
                 } else {
+                    lastAppCheckDiagnostic = "missing_recaptcha_site_key"
                     Log.e(TAG, "recaptcha_site_key string resource not found or blank.")
                 }
             }
             AppCheckProviderKind.NONE -> {
+                lastAppCheckDiagnostic = "missing_recaptcha_site_key"
                 Log.e(TAG, "No valid App Check provider could be configured (missing recaptcha_site_key).")
             }
         }
     } catch (e: Exception) {
+        lastAppCheckDiagnostic = e.message?.take(120) ?: "init_failed"
         // Log explicitly to keep App Check attestation failures visible
         Log.e(TAG, "Failed to initialize Firebase App Check", e)
     }
@@ -273,15 +361,19 @@ internal fun isValidAppCheckJwt(token: String?): Boolean {
 suspend fun refreshAppCheckToken(forceRefresh: Boolean = true): Boolean {
     return try {
         val firebaseApp = FirebaseApp.getInstance()
+        val ctx = appCheckAppContext ?: firebaseApp.applicationContext
+        if (activeAppCheckProviderKind == AppCheckProviderKind.NONE) {
+            configureAppCheck(ctx, null)
+        }
         val appCheck = FirebaseAppCheck.getInstance(firebaseApp)
         val firstResult = runCatching { appCheck.getAppCheckToken(forceRefresh).await() }
         val firstToken = firstResult.getOrNull()?.token
         if (isValidAppCheckJwt(firstToken)) {
+            lastAppCheckDiagnostic = null
             Log.d(TAG, "App Check token valid (provider=$activeAppCheckProviderKind, forceRefresh=$forceRefresh)")
             return true
         }
 
-        val ctx = appCheckAppContext ?: firebaseApp.applicationContext
         val emulator = isAndroidEmulator()
         val storedExplicitToken = ctx.getSharedPreferences(APPCHECK_META_PREFS, Context.MODE_PRIVATE)
             .getString(META_EXPLICIT_DEBUG_TOKEN_KEY, null)
@@ -309,17 +401,29 @@ suspend fun refreshAppCheckToken(forceRefresh: Boolean = true): Boolean {
 
             val recovered = runCatching { appCheck.getAppCheckToken(true).await() }
             val recoveredValid = isValidAppCheckJwt(recovered.getOrNull()?.token)
+            if (recoveredValid) {
+                lastAppCheckDiagnostic = null
+            } else {
+                lastAppCheckDiagnostic = "recaptcha: ${recovered.exceptionOrNull()?.message?.take(100) ?: "invalid_token"}"
+            }
             Log.d(TAG, "App Check recovery via reCAPTCHA Enterprise succeeded=$recoveredValid")
             return recoveredValid
         }
 
+        val errMsg = firstResult.exceptionOrNull()?.message?.take(100)
+        lastAppCheckDiagnostic = when (activeAppCheckProviderKind) {
+            AppCheckProviderKind.DEBUG -> "debug_unregistered: ${errMsg ?: "invalid_token"}"
+            AppCheckProviderKind.RECAPTCHA -> "recaptcha: ${errMsg ?: "invalid_token"}"
+            AppCheckProviderKind.NONE -> "missing_recaptcha_site_key"
+        }
         Log.w(
             TAG,
-            "App Check token refresh did not return a valid JWT (provider=$activeAppCheckProviderKind, emulator=$emulator).",
+            "App Check token refresh did not return a valid JWT (provider=$activeAppCheckProviderKind, emulator=$emulator, diag=$lastAppCheckDiagnostic).",
             firstResult.exceptionOrNull()
         )
         false
     } catch (e: Exception) {
+        lastAppCheckDiagnostic = "${activeAppCheckProviderKind.name.lowercase()}: ${e.message?.take(100) ?: "refresh_failed"}"
         Log.e(TAG, "App Check token refresh failed (forceRefresh=$forceRefresh)", e)
         false
     }

@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.AppLanguage
+import com.example.core.describeAppCheckDiagnostic
 import com.example.core.isAppCheckTokenError
 import com.example.data.model.*
 import com.example.data.repository.AiWorkPlan
@@ -77,7 +78,8 @@ class AiViewModel(
         donations: List<Donation>,
         products: List<GoshalaProduct> = emptyList(),
         selectedCow: Cattle? = null,
-        isRetry: Boolean = false
+        isRetry: Boolean = false,
+        staffAccounts: List<StaffAccount> = emptyList()
     ) {
         val trimmed = prompt.trim()
         if (trimmed.isBlank()) return
@@ -104,7 +106,8 @@ class AiViewModel(
             compost = compost,
             donations = donations,
             products = products,
-            selectedCow = selectedCow
+            selectedCow = selectedCow,
+            staffAccounts = staffAccounts
         )
         val cowTag = selectedCow?.let { "${it.name} (${it.animalCode})" }.orEmpty()
         val priorHistory = _messages.value.takeLast(6).map { it.isUser to it.text }
@@ -173,7 +176,9 @@ class AiViewModel(
         donations: List<Donation>,
         products: List<GoshalaProduct> = emptyList(),
         selectedCow: Cattle? = null,
-        focusTopic: String = ""
+        focusTopic: String = "",
+        planHorizon: String = "DAILY",
+        staffAccounts: List<StaffAccount> = emptyList()
     ) {
         if (_workPlanState.value is AiWorkPlanUiState.Loading) return
         val roleContext = aiRepository.buildRoleScopedContext(
@@ -188,21 +193,23 @@ class AiViewModel(
             compost = compost,
             donations = donations,
             products = products,
-            selectedCow = selectedCow
+            selectedCow = selectedCow,
+            staffAccounts = staffAccounts
         )
         _workPlanState.value = AiWorkPlanUiState.Loading
         viewModelScope.launch {
             val res = aiRepository.generateWorkPlan(
                 roleContext = roleContext,
                 language = language,
-                focusTopic = focusTopic
+                focusTopic = focusTopic,
+                planHorizon = planHorizon
             )
             res.fold(
                 onSuccess = { plan ->
                     _workPlanState.value = AiWorkPlanUiState.Success(plan)
                 },
                 onFailure = { e ->
-                    Log.e(TAG, "Daily work plan generation failed", e)
+                    Log.e(TAG, "Work plan generation failed (horizon=$planHorizon)", e)
                     _workPlanState.value = AiWorkPlanUiState.Error(formatAiErrorMessage(e, language))
                 }
             )
@@ -213,18 +220,19 @@ class AiViewModel(
         _workPlanState.value = AiWorkPlanUiState.Idle
     }
 
-    fun analyzeCattlePhoto(
-        bitmap: Bitmap,
+    fun analyzeHealthReport(
+        bitmap: Bitmap?,
         notes: String,
         language: AppLanguage,
         selectedCow: Cattle? = null,
         cowHealthRecords: List<HealthRecord> = emptyList(),
         isPublic: Boolean = false
     ) {
+        if (bitmap == null && notes.isBlank()) return
         if (_photoAnalysisState.value is AiUiState.Loading) return
         _photoAnalysisState.value = AiUiState.Loading
         viewModelScope.launch {
-            val res = aiRepository.analyzeCattlePhoto(
+            val res = aiRepository.analyzeHealthGuidance(
                 bitmap = bitmap,
                 notes = notes,
                 language = language,
@@ -237,11 +245,29 @@ class AiViewModel(
                     _photoAnalysisState.value = AiUiState.Success(text)
                 },
                 onFailure = { e ->
-                    Log.e(TAG, "Photo analysis failed", e)
+                    Log.e(TAG, "Health guidance analysis failed", e)
                     _photoAnalysisState.value = AiUiState.Error(formatAiErrorMessage(e, language))
                 }
             )
         }
+    }
+
+    fun analyzeCattlePhoto(
+        bitmap: Bitmap,
+        notes: String,
+        language: AppLanguage,
+        selectedCow: Cattle? = null,
+        cowHealthRecords: List<HealthRecord> = emptyList(),
+        isPublic: Boolean = false
+    ) {
+        analyzeHealthReport(
+            bitmap = bitmap,
+            notes = notes,
+            language = language,
+            selectedCow = selectedCow,
+            cowHealthRecords = cowHealthRecords,
+            isPublic = isPublic
+        )
     }
 
     fun clearPhotoAnalysis() {
@@ -294,14 +320,18 @@ class AiViewModel(
         }.lowercase()
 
         if (isAppCheckTokenError(e)) {
-            return if (language == AppLanguage.HINDI) {
-                "ऐप सुरक्षा सत्यापन (App Check) में अस्थायी समस्या आई है। कृपया कुछ सेकंड बाद 'पुनः प्रयास करें' दबाएँ या ऐप दोबारा खोलें।"
+            val diag = describeAppCheckDiagnostic(language)
+            val base = if (language == AppLanguage.HINDI) {
+                "ऐप सुरक्षा सत्यापन (App Check) में अस्थायी समस्या आई है। कृपया इंटरनेट व समय जांचकर 'पुनः प्रयास करें' दबाएँ या ऐप दोबारा खोलें।"
             } else {
-                "Temporary App Check verification issue. Please tap Retry in a moment or reopen the app."
+                "Temporary App Check verification issue. Please check network/device time and tap Retry, or reopen the app."
             }
+            return if (diag.isNullOrBlank()) base else "$base\n$diag"
         }
         if (
             rawLower.contains("unable to resolve host") ||
+            rawLower.contains("no address associated") ||
+            rawLower.contains("unknownhost") ||
             rawLower.contains("network") ||
             rawLower.contains("offline") ||
             rawLower.contains("failed to connect") ||
@@ -313,11 +343,17 @@ class AiViewModel(
                 "No internet connection detected. Please check your network and retry."
             }
         }
-        if (rawLower.contains("429") || rawLower.contains("quota") || rawLower.contains("resource exhausted")) {
+        if (
+            rawLower.contains("429") ||
+            rawLower.contains("quota") ||
+            rawLower.contains("rate limit") ||
+            rawLower.contains("too many requests") ||
+            rawLower.contains("resource exhausted")
+        ) {
             return if (language == AppLanguage.HINDI) {
-                "अभी AI सेवा पर बहुत अधिक अनुरोध हैं। कृपया कुछ सेकंड रुककर पुनः प्रयास करें।"
+                "अभी AI सेवा पर बहुत अधिक अनुरोध हैं (Rate Limit)। कृपया कुछ सेकंड रुककर पुनः प्रयास करें।"
             } else {
-                "AI service is busy right now. Please wait a few seconds and retry."
+                "AI service rate limit reached. Please wait a few seconds and retry."
             }
         }
         if (rawLower.contains("timeout") || rawLower.contains("timed out") || rawLower.contains("समय समाप्त")) {

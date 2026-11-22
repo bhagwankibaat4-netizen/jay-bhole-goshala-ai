@@ -22,17 +22,18 @@ import kotlinx.coroutines.withTimeout
 private const val AI_REPO_TAG = "GeminiAiRepository"
 
 internal val GOSHALA_SYSTEM_INSTRUCTION = """
-आप Jay Bhole Gosala Samiti के AI गौशाला प्रबंधन सहायक हैं।
-आपका कार्य सरल, स्पष्ट और व्यावहारिक हिंदी में उत्तर देना है।
-आप गौशाला प्रबंधन, गाय देखभाल, चारा प्रबंधन, सफाई, स्वास्थ्य सावधानी, गोबर उत्पाद, खर्च नियंत्रण और दैनिक कार्य योजना में सहायता करेंगे।
+आप Jay Bhole Gosala Samiti (मेहदोरा, पोरसा, मुरैना, मध्य प्रदेश) के AI गौशाला प्रबंधन सहायक हैं।
+आपका कार्य सरल, स्पष्ट और व्यावहारिक हिंदी में चरणबद्ध (Step-by-step) उत्तर देना है ताकि गौशाला के सेवक, कर्मचारी और प्रबंधक आसानी से समझ सकें।
+आप हिंदी (देवनागरी) और Hinglish (जैसे "gay chara nahi kha rahi", "50 gay ke liye kitna bhusa chahiye") दोनों प्रकार के प्रश्न पूरी तरह समझते हैं, और हिंदी मोड में हमेशा सरल देवनागरी हिंदी में उत्तर देते हैं।
+आप गौशाला प्रबंधन, गाय स्वास्थ्य देखभाल, चारा व पानी प्रबंधन, सफाई, टीकाकरण रिकॉर्ड, बीमारी रोकथाम, कर्मचारी जिम्मेदारी, गोबर प्रबंधन, जैविक खाद व गोबर उत्पाद, खर्च नियंत्रण, आय वृद्धि, सरकारी योजना/दस्तावेज मार्गदर्शन और दैनिक/साप्ताहिक/मासिक कार्य योजना में सहायता करेंगे।
 आप केवल सलाह देंगे, किसी डेटाबेस रिकॉर्ड में अपने आप बदलाव नहीं करेंगे।
-गंभीर बीमारी, चोट, रक्तस्राव, सांस लेने में दिक्कत या प्रसव संबंधी समस्या में हमेशा योग्य पशु चिकित्सक से तुरंत संपर्क करने की सलाह देंगे।
-आप कभी भी खतरनाक दवा या निश्चित खुराक तय नहीं करेंगे।
+गंभीर बीमारी, चोट, रक्तस्राव, सांस लेने में दिक्कत, उठ न पाना, विषाक्तता या प्रसव संबंधी समस्या में हमेशा योग्य पशु चिकित्सक से तुरंत संपर्क करने की सलाह देंगे।
+आप कभी भी बिना पर्याप्त जांच के निश्चित बीमारी की घोषणा नहीं करेंगे, और कभी खतरनाक दवा या निश्चित खुराक तय नहीं करेंगे।
 आप केवल उपलब्ध सही डेटा का ही उपयोग करेंगे और अधूरी जानकारी को कभी गढ़ेंगे नहीं।
 
 अतिरिक्त अनिवार्य नियम:
 - यदि कोई डेटा या रिकॉर्ड उपलब्ध नहीं है, तो स्पष्ट लिखें: "रिकॉर्ड उपलब्ध नहीं है"। कभी अनुमान से आँकड़े न बनाएँ।
-- यदि उपयोगकर्ता की भूमिका PUBLIC है, तो कभी भी आंतरिक वित्त, खर्च, स्टाफ वेतन, किसान खाता या निजी चिकित्सा रिकॉर्ड न दिखाएँ और न अनुमान लगाएँ।
+- यदि उपयोगकर्ता की भूमिका PUBLIC है, तो कभी भी आंतरिक वित्त, खर्च, स्टाफ सूची/वेतन, किसान खाता या निजी चिकित्सा रिकॉर्ड न दिखाएँ और न अनुमान लगाएँ।
 - यदि उपयोगकर्ता अंग्रेजी चुने, तो सरल अंग्रेजी में उत्तर दें; अन्यथा हमेशा सरल, सम्मानजनक हिंदी (देवनागरी) में छोटे बुलेट पॉइंट व चरणबद्ध उत्तर दें।
 """.trimIndent()
 
@@ -58,7 +59,8 @@ data class AiWorkPlan(
     val dateLabel: String,
     val title: String,
     val summary: String,
-    val tasks: List<AiWorkPlanItem>
+    val tasks: List<AiWorkPlanItem>,
+    val planHorizon: String = "DAILY"
 )
 
 class GeminiAiRepository {
@@ -73,6 +75,9 @@ class GeminiAiRepository {
 
         @Volatile
         internal var testPhotoAnalyzer: (suspend (bitmap: Bitmap, promptText: String) -> String)? = null
+
+        @Volatile
+        internal var testSymptomHealthAnalyzer: (suspend (promptText: String) -> String)? = null
 
         @Volatile
         internal var testWorkPlanGenerator: (suspend (roleContext: String, focusTopic: String) -> AiWorkPlan)? = null
@@ -116,26 +121,23 @@ class GeminiAiRepository {
 
     private val workPlanSchema = Schema.obj(
         properties = mapOf(
-            "title" to Schema.string(description = "Short title of the daily goshala work plan"),
+            "title" to Schema.string(description = "Short title of the Daily, Weekly, or Monthly goshala work plan"),
             "summary" to Schema.string(description = "1-2 sentence practical summary based only on verified goshala records"),
             "tasks" to Schema.array(
                 items = Schema.obj(
                     properties = mapOf(
-                        "timeSlot" to Schema.string(description = "Clear time slot e.g. 05:30 - 07:00"),
-                        "period" to Schema.enumeration(
-                            values = listOf("सुबह", "दोपहर", "शाम"),
-                            description = "Part of day: सुबह, दोपहर, or शाम"
-                        ),
+                        "timeSlot" to Schema.string(description = "Clear time/day slot e.g. 05:30 - 07:00, सोमवार, or सप्ताह 1"),
+                        "period" to Schema.string(description = "Period label e.g. सुबह / दोपहर / शाम (Daily), सोमवार–रविवार (Weekly), or सप्ताह 1–4 (Monthly)"),
                         "task" to Schema.string(description = "Concrete, actionable goshala task description"),
                         "responsiblePerson" to Schema.string(description = "Responsible role/staff e.g. गौशाला सेवक / चारा प्रभारी / पशु देखभाल कर्मी / प्रबंधक"),
                         "priority" to Schema.enumeration(
                             values = listOf("उच्च", "मध्यम", "सामान्य"),
                             description = "Priority level: उच्च, मध्यम, or सामान्य"
                         ),
-                        "category" to Schema.string(description = "Category such as चारा, सफाई, स्वास्थ्य, खाद-उत्पाद, या जांच")
+                        "category" to Schema.string(description = "Category such as चारा-पानी, सफाई, गाय निरीक्षण, गोबर संग्रह, खाद निर्माण, स्टाफ जिम्मेदारी, बिक्री-आय, या शाम निरीक्षण")
                     )
                 ),
-                description = "5 to 8 ordered daily tasks covering morning, afternoon, and evening"
+                description = "7 to 10 ordered actionable tasks covering all core goshala operations"
             )
         )
     )
@@ -234,12 +236,13 @@ class GeminiAiRepository {
         compost: List<CompostBatch>,
         donations: List<Donation>,
         products: List<GoshalaProduct> = emptyList(),
-        selectedCow: Cattle? = null
+        selectedCow: Cattle? = null,
+        staffAccounts: List<StaffAccount> = emptyList()
     ): String {
         val sb = StringBuilder()
         val todayIso = QrAndExportUtils.todayIso()
-        sb.appendLine("Organization: ${GosalaBrand.NAME_HI} (${GosalaBrand.NAME_EN})")
-        sb.appendLine("Address: ${GosalaBrand.ADDRESS_HI}")
+        sb.appendLine("Organization: ${GosalaBrand.NAME_EN} (${GosalaBrand.NAME_HI})")
+        sb.appendLine("Location: मेहदोरा, पोरसा, मुरैना, मध्य प्रदेश (${GosalaBrand.ADDRESS_HI})")
         sb.appendLine("Today Date: $todayIso")
         sb.appendLine("Logged-in Role: ${session.role.name}")
 
@@ -250,7 +253,7 @@ class GeminiAiRepository {
 
         if (session.role == UserRole.PUBLIC) {
             sb.appendLine()
-            sb.appendLine("PUBLIC ACCESS ONLY: Never reveal or invent internal finances, staff salaries, farmer ledgers, or private medical records.")
+            sb.appendLine("PUBLIC ACCESS ONLY: Never reveal or invent internal finances, staff accounts/salaries, farmer ledgers, or private medical records.")
             sb.appendLine("Public Summary: Total Cattle=${summary.totalCattle}, Healthy=${summary.healthyCattle}, Public Approved Cattle=${cattle.size}.")
             if (cattle.isEmpty()) {
                 sb.appendLine("Approved Public Cows: रिकॉर्ड उपलब्ध नहीं है (No public cows currently listed).")
@@ -417,7 +420,36 @@ class GeminiAiRepository {
             sb.appendLine("Farmer Cooperation: अनुमति नहीं है / Unauthorized.")
         }
 
+        // 8. Staff Roster (Role-Scoped — Admin or authorized Staff module viewers ONLY)
+        if (session.role == UserRole.ADMIN || session.canView(AppModule.STAFF)) {
+            val activeStaff = staffAccounts.filter { it.active }
+            if (staffAccounts.isEmpty()) {
+                sb.appendLine("Staff Roster: रिकॉर्ड उपलब्ध नहीं है (0 staff records in database).")
+            } else {
+                sb.appendLine("Staff Roster (VERIFIED): Total=${staffAccounts.size}, Active=${activeStaff.size}")
+                activeStaff.take(15).forEach { st ->
+                    val roleDesc = st.designation.ifBlank { "गौशाला कर्मचारी" }
+                    sb.appendLine("  * ${st.name.ifBlank { "स्टाफ" }} ($roleDesc) | Active=${st.active}")
+                }
+            }
+        } else {
+            sb.appendLine("Staff Roster: अनुमति नहीं है / Unauthorized.")
+        }
+
         return sb.toString()
+    }
+
+    private fun isHealthSymptomQuestion(modeLabel: String, userPrompt: String): Boolean {
+        val modeLower = modeLabel.lowercase()
+        val promptLower = userPrompt.lowercase()
+        if (modeLower.contains("स्वास्थ्य") || modeLower.contains("health")) return true
+        val healthMarkers = listOf(
+            "चारा नहीं", "चारा ठीक से नहीं", "खाना नहीं", "बीमार", "बुखार", "दस्त", "सूजन",
+            "घाव", "लंगड़ा", "सुस्त", "उदास", "कमजोरी", "खून", "साँस", "सांस", "प्रसव", "थनैला",
+            "chara nahi", "khana nahi", "bimar", "bukhar", "dast", "sujan", "ghav", "sust",
+            "not eating", "sick", "fever", "diarrhea", "swelling", "wound", "limping", "symptom"
+        )
+        return healthMarkers.any { promptLower.contains(it) }
     }
 
     fun streamAssistantResponse(
@@ -428,9 +460,9 @@ class GeminiAiRepository {
         recentHistory: List<Pair<Boolean, String>> = emptyList()
     ): Flow<String> = flow {
         val langInstruction = if (language == AppLanguage.HINDI) {
-            "हमेशा सरल, स्पष्ट और व्यावहारिक हिंदी (देवनागरी) में उत्तर दें ताकि गौशाला का कर्मचारी भी आसानी से समझ सके। छोटे बुलेट पॉइंट और चरणबद्ध (Step-by-step) तरीका अपनाएँ।"
+            "हमेशा सरल, स्पष्ट और व्यावहारिक हिंदी (देवनागरी) में उत्तर दें (भले ही प्रश्न Hinglish या रोमन हिंदी में पूछा गया हो) ताकि गौशाला का कर्मचारी भी आसानी से समझ सके। छोटे बुलेट पॉइंट और चरणबद्ध (Step-by-step) तरीका अपनाएँ।"
         } else {
-            "Respond clearly and concisely in simple English with respectful Indian Goshala terminology, using short bullet points and step-by-step guidance."
+            "Respond clearly and concisely in simple English with respectful Indian Goshala terminology, using short bullet points and step-by-step guidance. Understand Hindi, Hinglish, and English inputs accurately."
         }
         val historyBlock = if (recentHistory.isNotEmpty()) {
             buildString {
@@ -444,18 +476,41 @@ class GeminiAiRepository {
             ""
         }
 
+        val healthStructureInstruction = if (isHealthSymptomQuestion(modeLabel, userPrompt)) {
+            """
+            HEALTH GUIDANCE MANDATORY FORMAT (include ALL 7 clear numbered sections):
+            1. संभावित कारण (Possible Causes — NEVER declare a confirmed/definite diagnosis without veterinary examination)
+            2. लक्षणों की गंभीरता (Severity: कम / मध्यम / गंभीर / आपातकाल)
+            3. तत्काल देखभाल (Immediate Safe Care & Comfort)
+            4. पानी और चारे से संबंधित सावधानी (Water & Fodder Precautions)
+            5. क्या नहीं करना चाहिए (What NOT to Do — never give arbitrary human/strong medicines, exact drug dosages, or force-feed)
+            6. पशु चिकित्सक को कब बुलाना चाहिए (When to Call a Veterinarian)
+            7. आपातकालीन चेतावनी व अस्वीकरण (Emergency Warning for bleeding, breathing trouble, calving issue, inability to stand, poisoning — this is preliminary guidance, not a confirmed diagnosis)
+            """.trimIndent()
+        } else {
+            ""
+        }
+
         val fullPrompt = """
             Active Mode: $modeLabel
             $langInstruction
+            $healthStructureInstruction
 
-            CORE EXPERTISE AREAS:
-            - Daily fodder calculation (हरा चारा, सूखा चारा/भूसा, दाना, पानी) based on cow/bull/calf count and season
-            - Sick cow care, diarrhea precautions, loss of appetite causes, calf care, vaccination schedule, shed cleanliness, summer/winter care
-            - Cow dung utilization: vermicompost/organic manure, kande (गोबर के कंडे), gau-kashtha (गोबर की लकड़ी), natural dhoopbatti, packaging & sales growth
-            - Farmer fodder purchasing tips, cost reduction, daily routine & staff task planning
-            - Reading selected cow's profile, past illness, vaccination & treatment records when available
+            CORE GOSHALA EXPERTISE AREAS (answer practically & step-by-step):
+            1. 50 गायों या वास्तविक संख्या के अनुसार दैनिक चारा प्रबंधन (हरा चारा, सूखा चारा/भूसा, दाना/खली, खनिज मिश्रण)
+            2. प्रतिदिन स्वच्छ पानी की व्यवस्था व मौसम (गर्मी/सर्दी/बरसात) के अनुसार देखभाल
+            3. गोशाला व शेड की नियमित सफाई, नाली प्रबंधन व मक्खी-मच्छर नियंत्रण
+            4. टीकाकरण समय-सारणी व स्वास्थ्य रिकॉर्ड प्रबंधन
+            5. बीमारी की रोकथाम, बीमार गाय व नवजात बछड़े की देखभाल
+            6. कर्मचारियों की जिम्मेदारी, शिफ्ट व कार्य वितरण
+            7. गोबर प्रबंधन व संग्रह व्यवस्था
+            8. जैविक खाद / वर्मीकम्पोस्ट बनाने की सरल विधि
+            9. गोबर के कंडे, गोबर लकड़ी (गौ-काष्ठ), प्राकृतिक धूपबत्ती निर्माण व पैकेजिंग
+            10. गौशाला का खर्च कम करने के व्यावहारिक उपाय व किसान से चारा खरीद प्रबंधन
+            11. गोशाला उत्पादों की बिक्री व आय बढ़ाने की रणनीति
+            12. सरकारी योजना और आवश्यक दस्तावेज मार्गदर्शन (गौशाला पंजीकरण, राज्य/केंद्र पशुपालन विभाग सहायता — हमेशा उल्लेख करें कि नवीनतम पात्रता व आवेदन की पुष्टि स्थानीय पशुपालन विभाग/आधिकारिक पोर्टल से करें)
 
-            AUTHORIZED CONTEXT (VERIFIED APP DATA):
+            AUTHORIZED CONTEXT (VERIFIED FIREBASE APP DATA):
             $roleContext
 
             $historyBlock
@@ -512,19 +567,25 @@ class GeminiAiRepository {
     }
 
     /**
-     * Generates a structured daily AI Work Plan with explicit Time, Period, Task, Responsible Person,
-     * and Priority using Firebase AI Logic JSON Schema output (`responseSchema`).
+     * Generates a structured Daily, Weekly, or Monthly AI Work Plan with explicit Time/Slot, Period,
+     * Task, Responsible Person, and Priority using Firebase AI Logic JSON Schema output.
      */
     suspend fun generateWorkPlan(
         roleContext: String,
         language: AppLanguage,
-        focusTopic: String = ""
+        focusTopic: String = "",
+        planHorizon: String = "DAILY"
     ): Result<AiWorkPlan> {
+        val normalizedHorizon = when (planHorizon.uppercase()) {
+            "WEEKLY" -> "WEEKLY"
+            "MONTHLY" -> "MONTHLY"
+            else -> "DAILY"
+        }
         val todayIso = QrAndExportUtils.todayIso()
         val hook = testWorkPlanGenerator
         if (hook != null) {
             return try {
-                Result.success(hook(roleContext, focusTopic))
+                Result.success(hook(roleContext, "$normalizedHorizon:$focusTopic").copy(planHorizon = normalizedHorizon))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -533,26 +594,39 @@ class GeminiAiRepository {
         }
 
         val langInstruction = if (language == AppLanguage.HINDI) {
-            "सभी शीर्षक, सारांश, कार्य और जिम्मेदार भूमिका सरल, व्यावहारिक हिंदी (देवनागरी) में लिखें।"
+            "सभी शीर्षक, सारांश, अवधि, कार्य और जिम्मेदार भूमिका सरल, व्यावहारिक हिंदी (देवनागरी) में लिखें।"
         } else {
-            "Write title, summary, tasks, and responsible roles in simple, practical English (keeping period/priority schema enum values valid)."
+            "Write title, summary, period, tasks, and responsible roles in simple, practical English (keeping priority schema enum values valid)."
+        }
+
+        val horizonInstruction = when (normalizedHorizon) {
+            "WEEKLY" -> "7 दिनों की व्यवस्थित साप्ताहिक गौशाला कार्य योजना (सोमवार से रविवार) बनाएँ।"
+            "MONTHLY" -> "4 सप्ताहों की व्यवस्थित मासिक गौशाला कार्य योजना (सप्ताह 1 से सप्ताह 4) बनाएँ।"
+            else -> "आज के लिए सुबह, दोपहर और शाम की व्यवस्थित दैनिक गौशाला कार्य योजना बनाएँ।"
         }
 
         val focusInstruction = if (focusTopic.isNotBlank()) {
             "विशेष प्राथमिकता विषय (User Focus): $focusTopic"
         } else {
-            "आज के लिए सुबह, दोपहर और शाम की पूर्ण गौशाला दैनिक कार्य योजना बनाएँ (चारा, पानी, सफाई, बीमार गाय जांच, गोबर खाद/उत्पाद, और शाम की जांच शामिल करें)।"
+            "योजना में सभी 9 मुख्य गौशाला कार्य अवश्य शामिल करें: (1) सुबह के कार्य, (2) चारा और पानी, (3) गोशाला सफाई, (4) गायों का निरीक्षण, (5) गोबर संग्रह, (6) खाद निर्माण, (7) कर्मचारियों की जिम्मेदारी, (8) बिक्री एवं आय के कार्य, और (9) शाम का निरीक्षण।"
         }
 
         val prompt = """
             $langInstruction
+            योजना प्रकार: $normalizedHorizon — $horizonInstruction
             $focusInstruction
-            केवल नीचे दिए गए सत्यापित गौशाला रिकॉर्ड का उपयोग करें। यदि कोई डेटा उपलब्ध न हो तो उसे गढ़ें नहीं।
-            हर कार्य में स्पष्ट समय (timeSlot), अवधि (सुबह/दोपहर/शाम), कार्य (task), जिम्मेदार व्यक्ति (responsiblePerson), और प्राथमिकता (उच्च/मध्यम/सामान्य) दें।
+            केवल नीचे दिए गए सत्यापित गौशाला रिकॉर्ड (गायों की संख्या, स्टाफ, चारा, उत्पाद) का उपयोग करें। यदि कोई डेटा उपलब्ध न हो तो उसे गढ़ें नहीं।
+            हर कार्य में स्पष्ट समय/दिन (timeSlot), अवधि (period), कार्य (task), जिम्मेदार व्यक्ति (responsiblePerson), और प्राथमिकता (उच्च/मध्यम/सामान्य) दें।
 
             VERIFIED GOSHALA CONTEXT:
             $roleContext
         """.trimIndent()
+
+        val defaultTitle = when (normalizedHorizon) {
+            "WEEKLY" -> if (language == AppLanguage.HINDI) "साप्ताहिक AI गौशाला कार्य योजना" else "Weekly AI Goshala Work Plan"
+            "MONTHLY" -> if (language == AppLanguage.HINDI) "मासिक AI गौशाला कार्य योजना" else "Monthly AI Goshala Work Plan"
+            else -> if (language == AppLanguage.HINDI) "आज की AI गौशाला कार्य योजना" else "Daily AI Goshala Work Plan"
+        }
 
         var attempt = 0
         while (true) {
@@ -562,7 +636,7 @@ class GeminiAiRepository {
                 }
                 val rawJson = response.text ?: throw IllegalStateException("AI कार्य योजना से कोई उत्तर प्राप्त नहीं हुआ।")
                 val json = org.json.JSONObject(rawJson)
-                val title = json.optString("title", "आज की AI गौशाला कार्य योजना").ifBlank { "आज की AI गौशाला कार्य योजना" }
+                val title = json.optString("title", defaultTitle).ifBlank { defaultTitle }
                 val summary = json.optString("summary", "")
                 val tasksArray = json.optJSONArray("tasks")
                 val tasks = buildList {
@@ -574,7 +648,7 @@ class GeminiAiRepository {
                             add(
                                 AiWorkPlanItem(
                                     timeSlot = obj.optString("timeSlot", "-").trim(),
-                                    period = obj.optString("period", "सुबह").trim(),
+                                    period = obj.optString("period", if (normalizedHorizon == "DAILY") "सुबह" else "चरण ${i + 1}").trim(),
                                     task = taskText,
                                     responsiblePerson = obj.optString("responsiblePerson", "गौशाला स्टाफ").trim(),
                                     priority = obj.optString("priority", "मध्यम").trim(),
@@ -592,7 +666,8 @@ class GeminiAiRepository {
                         dateLabel = todayIso,
                         title = title,
                         summary = summary,
-                        tasks = tasks
+                        tasks = tasks,
+                        planHorizon = normalizedHorizon
                     )
                 )
             } catch (e: TimeoutCancellationException) {
@@ -602,6 +677,105 @@ class GeminiAiRepository {
             } catch (e: Exception) {
                 if (attempt == 0 && isAppCheckTokenError(e)) {
                     Log.w(AI_REPO_TAG, "App Check token error during work plan; forcing refresh and retrying once.", e)
+                    refreshAppCheckToken(forceRefresh = true)
+                    attempt++
+                    continue
+                }
+                return Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Generates a structured AI Goshala Health Guidance report from either:
+     * 1) Photo + caregiver symptoms + optional selected cow record, OR
+     * 2) Text symptoms alone (e.g., "चारा ठीक से नहीं खा रही है") + optional selected cow record.
+     */
+    suspend fun analyzeHealthGuidance(
+        bitmap: Bitmap?,
+        notes: String,
+        language: AppLanguage,
+        selectedCow: Cattle? = null,
+        cowHealthRecords: List<HealthRecord> = emptyList(),
+        isPublic: Boolean = false
+    ): Result<String> {
+        if (bitmap != null) {
+            return analyzeCattlePhoto(
+                bitmap = bitmap,
+                notes = notes,
+                language = language,
+                selectedCow = selectedCow,
+                cowHealthRecords = cowHealthRecords,
+                isPublic = isPublic
+            )
+        }
+
+        val cleanNotes = notes.trim()
+        if (cleanNotes.isBlank()) {
+            return Result.failure(IllegalArgumentException("कृपया गाय के लक्षण लिखें या फोटो चुनें।"))
+        }
+
+        val langPrompt = if (language == AppLanguage.HINDI) {
+            "पूरा उत्तर सरल, स्पष्ट और आसान हिंदी (देवनागरी) में दें (भले ही लक्षण Hinglish में लिखे हों) ताकि गौशाला कर्मचारी आसानी से समझ सके।"
+        } else {
+            "Provide the complete report in clear, simple English."
+        }
+        val cowRecordBlock = if (selectedCow != null) {
+            buildSelectedCowContext(selectedCow, cowHealthRecords, isPublic)
+        } else {
+            "SELECTED COW RECORD: कोई गाय रिकॉर्ड चयनित नहीं किया गया है (Only caregiver symptoms provided)."
+        }
+        val promptText = """
+            You are the AI Goshala Health Assistant for ${GosalaBrand.NAME_EN} (${GosalaBrand.NAME_HI}, मेहदोरा, पोरसा, मुरैना, मध्य प्रदेश).
+            A caregiver has described cattle health symptoms WITHOUT a photo. Provide careful, structured preliminary health guidance.
+            $langPrompt
+
+            $cowRecordBlock
+
+            Caregiver Symptoms / Description: $cleanNotes
+
+            REQUIRED OUTPUT STRUCTURE (MUST INCLUDE ALL 7 CLEAR HEADINGS):
+            1. संभावित कारण (Possible Causes — NEVER declare a definite/confirmed diagnosis without clinical examination)
+            2. लक्षणों की गंभीरता (Severity Level): स्पष्ट लिखें — [कम / मध्यम / गंभीर / आपातकाल]
+            3. तत्काल देखभाल (Immediate Safe Care — rest, shade, hygiene, monitoring)
+            4. पानी और चारे से संबंधित सावधानी (Water & Fodder Precautions — clean water, light/safe feed, observing rumination/जुगाली)
+            5. क्या नहीं करना चाहिए (What NOT to Do — NEVER prescribe definite medicines, human drugs, or exact dosages; warn against force-feeding or unverified home remedies)
+            6. पशु चिकित्सक को कब बुलाना चाहिए (When to Call Veterinarian — clear signs & timeframe)
+            7. आपातकालीन चेतावनी व अस्वीकरण (Emergency Warning for severe distress, calving trouble/प्रसव समस्या, breathing difficulty/साँस की तकलीफ, bleeding/खून, inability to stand/उठ न पाना, or poisoning/विषाक्तता; state clearly that this is preliminary AI guidance, NOT a confirmed medical diagnosis, and AI does not edit any records)
+        """.trimIndent()
+
+        val hook = testSymptomHealthAnalyzer
+        if (hook != null) {
+            return try {
+                val text = hook(promptText)
+                if (text.isBlank()) Result.failure(IllegalStateException("AI स्वास्थ्य रिपोर्ट से कोई उत्तर प्राप्त नहीं हुआ।"))
+                else Result.success(text)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+        var attempt = 0
+        while (true) {
+            try {
+                val response = withTimeout(60_000L) {
+                    chatModel.generateContent(promptText)
+                }
+                val text = response.text
+                return if (text.isNullOrBlank()) {
+                    Result.failure(IllegalStateException("AI स्वास्थ्य रिपोर्ट से कोई उत्तर प्राप्त नहीं हुआ।"))
+                } else {
+                    Result.success(text)
+                }
+            } catch (e: TimeoutCancellationException) {
+                return Result.failure(Exception("AI स्वास्थ्य रिपोर्ट तैयार करने में समय समाप्त हो गया (60 सेकंड)। कृपया पुनः प्रयास करें।", e))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (attempt == 0 && isAppCheckTokenError(e)) {
+                    Log.w(AI_REPO_TAG, "App Check token error during text health report; forcing refresh and retrying once.", e)
                     refreshAppCheckToken(forceRefresh = true)
                     attempt++
                     continue
@@ -630,7 +804,7 @@ class GeminiAiRepository {
             "SELECTED COW RECORD: कोई गाय रिकॉर्ड चयनित नहीं किया गया है (Only photo & caregiver notes provided)."
         }
         val promptText = """
-            You are assisting cattle caregivers at ${GosalaBrand.NAME_HI}.
+            You are assisting cattle caregivers at ${GosalaBrand.NAME_EN} (${GosalaBrand.NAME_HI}, मेहदोरा, पोरसा, मुरैना, मध्य प्रदेश).
             Carefully inspect this cow/bull/calf photograph and combine it with the available read-only cow record below.
             $langPrompt
 
@@ -648,13 +822,13 @@ class GeminiAiRepository {
             - व्यवहार के संकेत (उदासी, सुस्ती, खाना न खाना या असामान्य स्थिति)
 
             REQUIRED OUTPUT STRUCTURE (USE THESE CLEAR HEADINGS):
-            1. गाय व रिकॉर्ड सारांश (Cow ID, Name & available history; say "रिकॉर्ड चयनित नहीं" if none)
-            2. फोटो में दिखाई देने वाले लक्षण (Visible Observations)
-            3. संभावित समस्या / बीमारी (Possible Conditions — NEVER declare a definite/confirmed diagnosis from a photo)
-            4. गंभीरता स्तर (Severity): स्पष्ट लिखें — [कम / मध्यम / आपातकाल]
-            5. सुरक्षित शुरुआती देखभाल (Safe First-Aid, Hygiene, Water/Rest Care — NEVER prescribe definite medicines or exact drug dosages)
+            1. गाय व रिकॉर्ड सारांश व फोटो में दिखाई देने वाले लक्षण (Cow ID/History & Visible Observations)
+            2. संभावित कारण / समस्या (Possible Causes — NEVER declare a definite/confirmed diagnosis from a photo)
+            3. लक्षणों की गंभीरता (Severity): स्पष्ट लिखें — [कम / मध्यम / गंभीर / आपातकाल]
+            4. तत्काल देखभाल व पानी-चारे की सावधानी (Immediate Safe Care, Hygiene, Water & Fodder Precautions)
+            5. क्या नहीं करना चाहिए (What NOT to Do — NEVER prescribe definite medicines or exact drug dosages)
             6. पशु चिकित्सक को कब बुलाएँ (When to Call Veterinarian — explicitly warn to call a vet IMMEDIATELY for serious illness, calving trouble/प्रसव समस्या, breathing difficulty/साँस की तकलीफ, bleeding/खून, inability to stand/उठ न पाना, or poisoning/विषाक्तता)
-            7. महत्वपूर्ण अस्वीकरण (Mandatory Disclaimer): स्पष्ट लिखें कि "यह फोटो आधारित विश्लेषण केवल प्रारंभिक सुझाव है, निश्चित बीमारी की घोषणा नहीं है। सटीक निदान व उपचार के लिए योग्य पशु चिकित्सक की जाँच आवश्यक है। AI किसी रिकॉर्ड में स्वतः बदलाव नहीं करता।"
+            7. आपातकालीन चेतावनी व अस्वीकरण (Emergency Warning & Mandatory Disclaimer: स्पष्ट लिखें कि "यह फोटो आधारित विश्लेषण केवल प्रारंभिक सुझाव है, निश्चित बीमारी की घोषणा नहीं है। सटीक निदान व उपचार के लिए योग्य पशु चिकित्सक की जाँच आवश्यक है। AI किसी रिकॉर्ड में स्वतः बदलाव नहीं करता।")
         """.trimIndent()
 
         // Test hook path for deterministic Robolectric tests

@@ -1152,6 +1152,7 @@ private fun GosalaAuthenticatedShell(
                                 compost = compostList,
                                 donations = donationsList,
                                 products = productsList,
+                                staffAccounts = staffAccountsList,
                                 aiViewModel = aiViewModel,
                                 initialMode = initialAiMode,
                                 onSaveCattleDraft = { item -> gosalaViewModel.saveCattle(item, false, language) },

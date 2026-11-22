@@ -133,6 +133,7 @@ class AiGoshalaAssistantRobolectricTest {
     fun setUp() {
         GeminiAiRepository.testStreamHandler = null
         GeminiAiRepository.testPhotoAnalyzer = null
+        GeminiAiRepository.testSymptomHealthAnalyzer = null
         GeminiAiRepository.testWorkPlanGenerator = null
     }
 
@@ -140,6 +141,7 @@ class AiGoshalaAssistantRobolectricTest {
     fun tearDown() {
         GeminiAiRepository.testStreamHandler = null
         GeminiAiRepository.testPhotoAnalyzer = null
+        GeminiAiRepository.testSymptomHealthAnalyzer = null
         GeminiAiRepository.testWorkPlanGenerator = null
     }
 
@@ -241,6 +243,31 @@ class AiGoshalaAssistantRobolectricTest {
         assertTrue(isAppCheckTokenError(Exception("Firebase App Check token is invalid.")))
         assertTrue(isAppCheckTokenError(Exception("HTTP 403 attestation failure")))
         assertFalse(isAppCheckTokenError(Exception("Network socket closed")))
+
+        // 7. Emulator detection recognizes Google Cloud Cuttlefish / AI Studio Streaming Emulators
+        assertTrue(
+            isEmulatorBuildProperties(
+                fingerprint = "google/aosp_cf_x86_64_phone/vsoc_x86_64:14/AP2A/12345:userdebug/test-keys",
+                model = "Cuttlefish x86_64 phone",
+                manufacturer = "Google",
+                brand = "google",
+                device = "vsoc_x86_64",
+                product = "aosp_cf_x86_64_phone",
+                hardware = "cutf_cvm"
+            )
+        )
+        // Physical Android phone MUST NOT be misclassified as an emulator
+        assertFalse(
+            isEmulatorBuildProperties(
+                fingerprint = "samsung/dm1qxxx/dm1q:14/UP1A/S911B:user/release-keys",
+                model = "SM-S911B",
+                manufacturer = "samsung",
+                brand = "samsung",
+                device = "dm1q",
+                product = "dm1qxxx",
+                hardware = "qcom"
+            )
+        )
     }
 
     @Test
@@ -291,10 +318,18 @@ class AiGoshalaAssistantRobolectricTest {
             products = listOf(
                 GoshalaProduct(id = "pr1", nameHi = "गोबर के कंडे", priceInr = 120.0, unitLabel = "पैकेट", stockQuantity = 40L, available = true)
             ),
-            selectedCow = sampleCow
+            selectedCow = sampleCow,
+            staffAccounts = listOf(
+                StaffAccount(id = "st1", name = "महेश सेवक", designation = "चारा प्रभारी", active = true),
+                StaffAccount(id = "st2", name = "सुरेश जी", designation = "पशु देखभाल", active = true)
+            )
         )
 
-        // Verify exact real numbers & selected cow history + missing pregnancy/milk marked explicitly
+        // Verify exact real numbers, organization address, staff roster & selected cow history
+        assertTrue(fullContext.contains("Jay Bhole Gosala Samiti"))
+        assertTrue(fullContext.contains("मेहदोरा, पोरसा, मुरैना, मध्य प्रदेश"))
+        assertTrue(fullContext.contains("Staff Roster (VERIFIED): Total=2, Active=2"))
+        assertTrue(fullContext.contains("महेश सेवक (चारा प्रभारी)"))
         assertTrue(fullContext.contains("Total=3 | गाय (Cows)=1 | बैल (Bulls)=1 | बछड़े (Calves)=1"))
         assertTrue(fullContext.contains("बीमार/देखरेख (Sick/Attention)=1"))
         assertTrue(fullContext.contains("नंदिनी [JBGS-G-001]"))
@@ -340,11 +375,13 @@ class AiGoshalaAssistantRobolectricTest {
             farmerTx = emptyList(),
             compost = emptyList(),
             donations = emptyList(),
-            selectedCow = sampleCow
+            selectedCow = sampleCow,
+            staffAccounts = listOf(StaffAccount(id = "st1", name = "महेश सेवक", designation = "चारा प्रभारी", active = true))
         )
         assertTrue(publicContext.contains("PUBLIC ACCESS ONLY"))
         assertFalse(publicContext.contains("99999.0"))
         assertFalse(publicContext.contains("हल्का बुखार व अपच"))
+        assertFalse(publicContext.contains("महेश सेवक"))
     }
 
     @Test
@@ -371,9 +408,38 @@ class AiGoshalaAssistantRobolectricTest {
         assertTrue(capturedPrompt.contains("नंदिनी"))
         assertTrue(capturedPrompt.contains("FMD खुरपका टीका"))
         assertTrue(capturedPrompt.contains("हल्का बुखार व अपच"))
-        assertTrue(capturedPrompt.contains("कम / मध्यम / आपातकाल"))
+        assertTrue(capturedPrompt.contains("कम / मध्यम / गंभीर / आपातकाल"))
         assertTrue(capturedPrompt.contains("प्रसव समस्या"))
         assertTrue(capturedPrompt.contains("निश्चित बीमारी की घोषणा नहीं है"))
+    }
+
+    @Test
+    fun `text-only symptom health report works without uploading a photo and enforces all 7 mandatory sections`() = runBlocking {
+        val repo = GeminiAiRepository()
+        var capturedPrompt = ""
+        GeminiAiRepository.testSymptomHealthAnalyzer = { prompt ->
+            capturedPrompt = prompt
+            "1. संभावित कारण: अपच या हल्का तनाव\n2. लक्षणों की गंभीरता: मध्यम\n3. तत्काल देखभाल: छाया व आराम दें\n4. पानी और चारे से संबंधित सावधानी: स्वच्छ ताजा पानी दें\n5. क्या नहीं करना चाहिए: बिना डॉक्टर की सलाह कोई दवा न दें\n6. पशु चिकित्सक को कब बुलाना चाहिए: 12 घंटे में सुधार न होने पर\n7. आपातकालीन चेतावनी: पेट फूलने या बुखार पर तुरंत डॉक्टर बुलाएँ।"
+        }
+
+        val result = repo.analyzeHealthGuidance(
+            bitmap = null,
+            notes = "चारा ठीक से नहीं खा रही है",
+            language = AppLanguage.HINDI,
+            selectedCow = sampleCow,
+            cowHealthRecords = sampleHealthRecords,
+            isPublic = false
+        )
+
+        assertTrue(result.isSuccess)
+        assertTrue(capturedPrompt.contains("चारा ठीक से नहीं खा रही है"))
+        assertTrue(capturedPrompt.contains("संभावित कारण"))
+        assertTrue(capturedPrompt.contains("लक्षणों की गंभीरता"))
+        assertTrue(capturedPrompt.contains("तत्काल देखभाल"))
+        assertTrue(capturedPrompt.contains("पानी और चारे से संबंधित सावधानी"))
+        assertTrue(capturedPrompt.contains("क्या नहीं करना चाहिए"))
+        assertTrue(capturedPrompt.contains("पशु चिकित्सक को कब बुलाना चाहिए"))
+        assertTrue(capturedPrompt.contains("आपातकालीन चेतावनी"))
     }
 
     @Test
@@ -558,7 +624,7 @@ class AiGoshalaAssistantRobolectricTest {
 
         // 1. Dedicated Work Plan card is displayed in ACTION_PLAN mode
         composeRule.onNodeWithTag("ai_work_plan_card").assertIsDisplayed()
-        composeRule.onNodeWithTag("ai_generate_work_plan_btn").performClick()
+        composeRule.onNodeWithTag("ai_generate_work_plan_btn").performScrollTo().performClick()
         composeRule.waitForIdle()
 
         // 2. First call fails with clear Hindi network error + Retry button
@@ -573,7 +639,7 @@ class AiGoshalaAssistantRobolectricTest {
         composeRule.onNodeWithTag("ai_work_plan_item_0").assertExists()
         composeRule.onNodeWithTag("ai_work_plan_item_1").assertExists()
 
-        // 4. Copy Work Plan button copies formatted Hindi schedule to clipboard
+        // 4. Copy & Share Work Plan buttons + Weekly/Monthly horizon chips work cleanly
         composeRule.onNodeWithTag("ai_work_plan_copy_btn").performScrollTo().performClick()
         composeRule.waitForIdle()
         val clipboard = ApplicationProvider.getApplicationContext<Context>()
@@ -582,12 +648,36 @@ class AiGoshalaAssistantRobolectricTest {
         assertTrue(copiedText.contains("05:30 - 07:00"))
         assertTrue(copiedText.contains("गौशाला सेवक"))
         assertTrue(copiedText.contains("उच्च"))
+        composeRule.onNodeWithTag("ai_work_plan_share_btn").assertExists()
+
+        // 5. Switch to Weekly & Monthly plan horizons and verify generation
+        composeRule.onNodeWithTag("ai_plan_horizon_weekly").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("ai_generate_work_plan_btn").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertEquals("WEEKLY", (vm.workPlanState.value as AiWorkPlanUiState.Success).plan.planHorizon)
+
+        composeRule.onNodeWithTag("ai_plan_horizon_monthly").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("ai_generate_work_plan_btn").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertEquals("MONTHLY", (vm.workPlanState.value as AiWorkPlanUiState.Success).plan.planHorizon)
     }
 
     @Test
-    fun `photo health check UI shows camera and gallery buttons, displays AI health report with copy, and public users see only permitted modes`() {
-        val reportText = "गंभीरता स्तर: मध्यम\nप्रारंभिक सुझाव: स्वच्छ पानी व छाया दें और पशु चिकित्सक से जाँच कराएँ।"
+    fun `photo and text-only health check UI works with copy and share, preserves chat history across Hinglish Q&A, and handles rate-limit errors`() {
+        val reportText = "1. संभावित कारण: अपच\n2. लक्षणों की गंभीरता: मध्यम\n6. पशु चिकित्सक को कब बुलाना चाहिए: 12 घंटे में सुधार न होने पर।"
+        GeminiAiRepository.testSymptomHealthAnalyzer = { reportText }
         GeminiAiRepository.testPhotoAnalyzer = { _, _ -> reportText }
+        var streamAttempt = 0
+        GeminiAiRepository.testStreamHandler = { prompt, _, _ ->
+            streamAttempt++
+            when (streamAttempt) {
+                1 -> listOf("50 गायों के लिए प्रतिदिन 350 किलो भूसा व 750 किलो हरा चारा चाहिए।")
+                2 -> throw IllegalStateException("HTTP 429 quota resource exhausted")
+                else -> listOf("सरकारी योजना व पंजीकरण के लिए पशुपालन विभाग से सत्यापित दस्तावेज तैयार रखें। ($prompt)")
+            }
+        }
         val vm = AiViewModel()
 
         composeRule.setContent {
@@ -626,29 +716,45 @@ class AiGoshalaAssistantRobolectricTest {
         composeRule.onNodeWithTag("ai_mode_voice_draft").assertDoesNotExist()
         composeRule.onNodeWithTag("ai_mic_button").assertExists()
 
+        // Symptom input & AI Health Report button work even WITHOUT picking a photo!
         composeRule.onNodeWithTag("ai_content_list")
             .performScrollToNode(hasTestTag("ai_photo_health_card"))
         composeRule.onNodeWithTag("camera_cattle_photo_ai_btn").assertIsDisplayed()
         composeRule.onNodeWithTag("pick_cattle_photo_ai_btn").assertIsDisplayed()
-
-        // Trigger photo analysis via ViewModel and verify success report & Copy button work
-        val bmp = Bitmap.createBitmap(24, 24, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
-        vm.analyzeCattlePhoto(
-            bitmap = bmp,
-            notes = "आँख में पानी और सुस्ती",
-            language = AppLanguage.HINDI,
-            selectedCow = sampleCow,
-            cowHealthRecords = sampleHealthRecords,
-            isPublic = true
-        )
+        composeRule.onNodeWithTag("ai_photo_notes_input").performScrollTo().performTextInput("चारा ठीक से नहीं खा रही है")
+        composeRule.onNodeWithTag("analyze_cattle_photo_btn").performScrollTo().assertIsEnabled().performClick()
         composeRule.waitForIdle()
 
         assertTrue(vm.photoAnalysisState.value is AiUiState.Success)
         composeRule.onNodeWithTag("ai_photo_success_report").assertExists()
+        composeRule.onNodeWithTag("ai_photo_share_btn").assertExists()
         composeRule.onNodeWithTag("ai_photo_copy_btn").performScrollTo().performClick()
         composeRule.waitForIdle()
         val clipboard = ApplicationProvider.getApplicationContext<Context>()
             .getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         assertEquals(reportText, clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+
+        // Switch to Q&A tab, send Hinglish question, verify Share button & Rate-Limit (429) handling + Retry preserving history
+        composeRule.onNodeWithTag("ai_mode_management").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("ai_prompt_input").performTextInput("50 gay ke liye kitna bhusa aur hara chara chahiye?")
+        composeRule.onNodeWithTag("ai_send_button").performClick()
+        composeRule.waitForIdle()
+        assertEquals(2, vm.messages.value.size)
+        composeRule.onNodeWithTag("ai_content_list").performScrollToNode(hasTestTag("ai_share_msg_1"))
+        composeRule.onNodeWithTag("ai_share_msg_1").assertExists()
+
+        // Second question hits 429 Rate Limit -> clean Hindi message -> Retry succeeds & keeps previous Q&A preserved!
+        composeRule.onNodeWithTag("ai_prompt_input").performTextInput("गौशाला के लिए सरकारी योजना बताएं")
+        composeRule.onNodeWithTag("ai_send_button").performClick()
+        composeRule.waitForIdle()
+        val rateLimitErr = (vm.uiState.value as AiUiState.Error).message
+        assertTrue(rateLimitErr.contains("Rate Limit") || rateLimitErr.contains("बहुत अधिक अनुरोध"))
+        composeRule.onNodeWithTag("ai_content_list").performScrollToNode(hasTestTag("ai_chat_retry_btn"))
+        composeRule.onNodeWithTag("ai_chat_retry_btn").performClick()
+        composeRule.waitForIdle()
+        assertEquals(4, vm.messages.value.size)
+        assertTrue(vm.messages.value[0].text.contains("50 gay ke liye"))
+        assertTrue(vm.messages.value[3].text.contains("सरकारी योजना"))
     }
 }

@@ -19,6 +19,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -78,14 +79,25 @@ fun AiAssistantScreen(
     onSaveExpenseDraft: (FinancialTransaction) -> Unit,
     onSaveHealthDraft: (HealthRecord) -> Unit,
     onNavigateToCattleSearch: () -> Unit,
-    products: List<GoshalaProduct> = emptyList()
+    products: List<GoshalaProduct> = emptyList(),
+    staffAccounts: List<StaffAccount> = emptyList()
 ) {
     val context = LocalContext.current
+    val listState = rememberLazyListState()
     val uiState by aiViewModel.uiState.collectAsState()
     val messages by aiViewModel.messages.collectAsState()
     val voiceDraft by aiViewModel.voiceDraft.collectAsState()
     val photoState by aiViewModel.photoAnalysisState.collectAsState()
     val workPlanState by aiViewModel.workPlanState.collectAsState()
+
+    LaunchedEffect(messages.size, uiState) {
+        if (messages.isNotEmpty()) {
+            val lastIndex = listState.layoutInfo.totalItemsCount - 1
+            if (lastIndex >= 0) {
+                listState.animateScrollToItem(lastIndex)
+            }
+        }
+    }
 
     val isPublic = session.role == UserRole.PUBLIC
     val availableModes = remember(session) {
@@ -280,7 +292,8 @@ fun AiAssistantScreen(
             donations = donations,
             products = products,
             selectedCow = selectedCow,
-            isRetry = isRetry
+            isRetry = isRetry,
+            staffAccounts = staffAccounts
         )
     }
 
@@ -369,6 +382,7 @@ fun AiAssistantScreen(
         Spacer(Modifier.height(8.dp))
 
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
@@ -414,28 +428,26 @@ fun AiAssistantScreen(
                             aiViewModel.clearPhotoAnalysis()
                         },
                         onAnalyze = {
-                            selectedBitmap?.let { bmp ->
-                                aiViewModel.analyzeCattlePhoto(
-                                    bitmap = bmp,
-                                    notes = photoNotes,
-                                    language = language,
-                                    selectedCow = selectedCow,
-                                    cowHealthRecords = health,
-                                    isPublic = isPublic
-                                )
-                            }
+                            aiViewModel.analyzeHealthReport(
+                                bitmap = selectedBitmap,
+                                notes = photoNotes,
+                                language = language,
+                                selectedCow = selectedCow,
+                                cowHealthRecords = health,
+                                isPublic = isPublic
+                            )
                         }
                     )
                 }
             }
 
-            // 2B. DEDICATED AI WORK PLAN PANEL (Structured Time, Task, Responsible Person & Priority Card)
+            // 2B. DEDICATED AI WORK PLAN PANEL (Daily / Weekly / Monthly Structured Work Plan Card)
             if (selectedMode == AiMode.ACTION_PLAN) {
                 item {
                     WorkPlanPanel(
                         language = language,
                         workPlanState = workPlanState,
-                        onGeneratePlan = { focus ->
+                        onGeneratePlan = { focus, horizon ->
                             aiViewModel.generateDailyWorkPlan(
                                 language = language,
                                 session = session,
@@ -450,7 +462,9 @@ fun AiAssistantScreen(
                                 donations = donations,
                                 products = products,
                                 selectedCow = selectedCow,
-                                focusTopic = focus
+                                focusTopic = focus,
+                                planHorizon = horizon,
+                                staffAccounts = staffAccounts
                             )
                         }
                     )
@@ -565,18 +579,19 @@ fun AiAssistantScreen(
                             )
                         } else {
                             listOf(
-                                str(language, "50 गायों के लिए रोज़ कितना चारा और पानी चाहिए?", "Daily fodder & water needed for 50 cows?"),
-                                str(language, "आज गायों को कितना चारा देना चाहिए?", "How much fodder should be given today?"),
-                                str(language, "गोबर से खाद कैसे बनाएँ और खर्च कम कैसे करें?", "How to make compost & reduce costs?"),
-                                str(language, "गौशाला का दैनिक कार्यक्रम और सफाई प्रबंधन बताएं", "Goshala daily routine & cleaning management"),
-                                str(language, "कुल गाय, बैल, बछड़े और बीमार गायों की वास्तविक स्थिति बताएं", "Real status of cows, bulls, calves & sick cattle")
+                                str(language, "50 गायों के लिए रोज़ कितना भूसा, हरा चारा और पानी चाहिए?", "Daily bhusa, green fodder & water for 50 cows?"),
+                                str(language, "गोशाला की सफाई, टीकाकरण रिकॉर्ड और बीमारी रोकथाम कैसे करें?", "Shed cleaning, vaccination record & disease prevention?"),
+                                str(language, "कर्मचारियों की जिम्मेदारी और गोबर से जैविक खाद बनाने का तरीका बताएं", "Staff responsibilities & organic compost making guide"),
+                                str(language, "गौशाला का खर्च कम करने और उत्पादों से आय बढ़ाने के उपाय बताएं", "How to reduce goshala expenses & increase income?"),
+                                str(language, "गौशाला के लिए सरकारी योजना और जरूरी दस्तावेज मार्गदर्शन दें", "Government schemes & required documents for Goshala"),
+                                str(language, "कुल गाय, बैल, बछड़े, स्टाफ और बीमार गायों की वास्तविक स्थिति बताएं", "Real status of cows, bulls, calves, staff & sick cattle")
                             )
                         }
                         AiMode.ACTION_PLAN -> listOf(
-                            str(language, "गौशाला के लिए आज के जरूरी कार्य की चरणबद्ध कार्य योजना बनाएँ", "Create today's priority action plan"),
-                            str(language, "गाय की देखभाल, चारा प्रबंधन और सफाई की दैनिक कार्य योजना दें", "Daily cow care, fodder & cleaning plan"),
-                            str(language, "गोबर से खाद, कंडे, गोबर की लकड़ी और धूपबत्ती निर्माण कार्य योजना बनाएँ", "Dung compost, kande, gau-kashtha & dhoop plan"),
-                            str(language, "गौशाला के उत्पादों की बिक्री बढ़ाने और खर्च कम करने की कार्य योजना दें", "Plan to grow product sales & cut expenses")
+                            str(language, "गौशाला के लिए दैनिक कार्य योजना बनाएँ", "Create daily goshala work plan"),
+                            str(language, "गौशाला के लिए साप्ताहिक कार्य योजना बनाएँ", "Create weekly goshala work plan"),
+                            str(language, "गौशाला के लिए मासिक कार्य योजना बनाएँ", "Create monthly goshala work plan"),
+                            str(language, "गोबर संग्रह, खाद निर्माण और उत्पाद बिक्री की कार्य योजना दें", "Dung collection, compost & product sales plan")
                         )
                         AiMode.BUSINESS -> listOf(
                             str(language, "गोबर से खाद कैसे बनाएँ?", "How to make organic compost from cow dung?"),
@@ -623,7 +638,8 @@ fun AiAssistantScreen(
                 ChatBubble(
                     message = msg,
                     language = language,
-                    copyTag = if (!msg.isUser) "ai_copy_msg_$idx" else null
+                    copyTag = if (!msg.isUser) "ai_copy_msg_$idx" else null,
+                    shareTag = if (!msg.isUser) "ai_share_msg_$idx" else null
                 )
             }
 
@@ -782,7 +798,7 @@ fun AiAssistantScreen(
                     onValueChange = { promptText = it },
                     placeholder = {
                         Text(
-                            str(language, "गौशाला, चारा, गाय देखभाल या कार्य योजना पूछें...", "Ask about cattle, fodder, care or plan..."),
+                            str(language, "हिंदी या Hinglish में पूछें: चारा, गाय देखभाल, योजना...", "Ask in Hindi or Hinglish: fodder, cow care, work plan..."),
                             style = MaterialTheme.typography.bodySmall
                         )
                     },

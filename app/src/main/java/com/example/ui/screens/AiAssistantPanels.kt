@@ -1,8 +1,10 @@
 package com.example.ui.screens
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
@@ -46,6 +48,23 @@ internal fun copyTextToClipboard(context: Context, label: String, text: String):
     }.getOrDefault(false)
 }
 
+internal fun shareAiText(context: Context, subject: String, text: String): Boolean {
+    return runCatching {
+        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, subject)
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        val chooser = Intent.createChooser(sendIntent, subject).apply {
+            if (context !is Activity) {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        }
+        context.startActivity(chooser)
+        true
+    }.getOrDefault(false)
+}
+
 internal fun formatWorkPlanForClipboard(plan: AiWorkPlan): String = buildString {
     appendLine("${plan.title} (${plan.dateLabel})")
     if (plan.summary.isNotBlank()) {
@@ -62,9 +81,10 @@ internal fun formatWorkPlanForClipboard(plan: AiWorkPlan): String = buildString 
 internal fun WorkPlanPanel(
     language: AppLanguage,
     workPlanState: AiWorkPlanUiState,
-    onGeneratePlan: (focusTopic: String) -> Unit
+    onGeneratePlan: (focusTopic: String, planHorizon: String) -> Unit
 ) {
     val context = LocalContext.current
+    var selectedHorizon by remember { mutableStateOf("DAILY") }
     var selectedFocus by remember { mutableStateOf("") }
     var copied by remember(workPlanState) { mutableStateOf(false) }
 
@@ -75,14 +95,28 @@ internal fun WorkPlanPanel(
         }
     }
 
+    val horizonOptions = remember(language) {
+        listOf(
+            Triple("DAILY", str(language, "दैनिक", "Daily"), "ai_plan_horizon_daily"),
+            Triple("WEEKLY", str(language, "साप्ताहिक", "Weekly"), "ai_plan_horizon_weekly"),
+            Triple("MONTHLY", str(language, "मासिक", "Monthly"), "ai_plan_horizon_monthly")
+        )
+    }
+
     val focusTopics = remember(language) {
         listOf(
-            "" to str(language, "पूर्ण दैनिक योजना", "Full Daily Plan"),
-            "दैनिक चारा, पानी और शेड सफाई" to str(language, "चारा व सफाई", "Fodder & Cleaning"),
-            "बीमार गायों की देखभाल और स्वास्थ्य जांच" to str(language, "स्वास्थ्य देखभाल", "Health Care"),
-            "गोबर से खाद, कंडे, गोबर लकड़ी और बिक्री" to str(language, "खाद व उत्पाद", "Compost & Products"),
-            "गौशाला खर्च नियंत्रण और स्टाफ कार्य वितरण" to str(language, "खर्च व स्टाफ", "Cost & Staff")
+            "" to str(language, "पूर्ण गौशाला योजना", "Full Goshala Plan"),
+            "सुबह के कार्य, चारा, पानी और गोशाला सफाई" to str(language, "चारा व सफाई", "Fodder & Cleaning"),
+            "गायों का निरीक्षण, बीमार गायों की देखभाल और टीकाकरण" to str(language, "गाय निरीक्षण", "Cow Inspection"),
+            "गोबर संग्रह, खाद निर्माण और बिक्री एवं आय के कार्य" to str(language, "खाद व बिक्री", "Compost & Sales"),
+            "कर्मचारियों की जिम्मेदारी, खर्च नियंत्रण और शाम का निरीक्षण" to str(language, "स्टाफ व खर्च", "Staff & Cost")
         )
+    }
+
+    val generateButtonLabel = when (selectedHorizon) {
+        "WEEKLY" -> str(language, "साप्ताहिक AI कार्य योजना बनाएँ", "Generate Weekly AI Work Plan")
+        "MONTHLY" -> str(language, "मासिक AI कार्य योजना बनाएँ", "Generate Monthly AI Work Plan")
+        else -> str(language, "दैनिक AI कार्य योजना बनाएँ", "Generate Daily AI Work Plan")
     }
 
     Card(
@@ -98,18 +132,33 @@ internal fun WorkPlanPanel(
                 Spacer(Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = str(language, "AI दैनिक कार्य योजना (Work Plan)", "AI Daily Work Plan"),
+                        text = str(language, "AI कार्य योजना (दैनिक / साप्ताहिक / मासिक)", "AI Work Plan (Daily / Weekly / Monthly)"),
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = str(
                             language,
-                            "समय, कार्य, जिम्मेदार व्यक्ति और प्राथमिकता सहित व्यवस्थित योजना",
-                            "Structured schedule with time, task, responsible person & priority"
+                            "सुबह कार्य, चारा-पानी, सफाई, गाय निरीक्षण, गोबर-खाद, स्टाफ जिम्मेदारी व बिक्री सहित",
+                            "Covers morning tasks, fodder, cleaning, inspection, dung/compost, staff & sales"
                         ),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Plan Horizon Selector (Daily / Weekly / Monthly)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                horizonOptions.forEach { (horizonKey, label, tag) ->
+                    FilterChip(
+                        selected = selectedHorizon == horizonKey,
+                        onClick = { selectedHorizon = horizonKey },
+                        label = { Text(label, maxLines = 1) },
+                        modifier = Modifier.testTag(tag)
                     )
                 }
             }
@@ -130,7 +179,7 @@ internal fun WorkPlanPanel(
             }
 
             Button(
-                onClick = { onGeneratePlan(selectedFocus) },
+                onClick = { onGeneratePlan(selectedFocus, selectedHorizon) },
                 enabled = workPlanState !is AiWorkPlanUiState.Loading,
                 colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
                 modifier = Modifier
@@ -141,7 +190,7 @@ internal fun WorkPlanPanel(
                 Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = str(language, "आज की AI कार्य योजना बनाएँ", "Generate Today's AI Work Plan"),
+                    text = generateButtonLabel,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -188,7 +237,7 @@ internal fun WorkPlanPanel(
                                 )
                             }
                             OutlinedButton(
-                                onClick = { onGeneratePlan(selectedFocus) },
+                                onClick = { onGeneratePlan(selectedFocus, selectedHorizon) },
                                 modifier = Modifier.testTag("ai_work_plan_retry_btn")
                             ) {
                                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -200,6 +249,7 @@ internal fun WorkPlanPanel(
                 }
                 is AiWorkPlanUiState.Success -> {
                     val plan = workPlanState.plan
+                    val formattedPlanText = remember(plan) { formatWorkPlanForClipboard(plan) }
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = SoftGreenTint,
@@ -225,9 +275,15 @@ internal fun WorkPlanPanel(
                                         color = DarkText
                                     )
                                 }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 TextButton(
                                     onClick = {
-                                        if (copyTextToClipboard(context, "AI Work Plan", formatWorkPlanForClipboard(plan))) {
+                                        if (copyTextToClipboard(context, "AI Work Plan", formattedPlanText)) {
                                             copied = true
                                         }
                                     },
@@ -242,6 +298,25 @@ internal fun WorkPlanPanel(
                                     Spacer(Modifier.width(4.dp))
                                     Text(
                                         text = if (copied) str(language, "कॉपी हो गया", "Copied") else str(language, "कॉपी", "Copy"),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = ForestGreen
+                                    )
+                                }
+                                TextButton(
+                                    onClick = {
+                                        shareAiText(context, plan.title, formattedPlanText)
+                                    },
+                                    modifier = Modifier.testTag("ai_work_plan_share_btn")
+                                ) {
+                                    Icon(
+                                        Icons.Default.Share,
+                                        contentDescription = str(language, "कार्य योजना शेयर करें", "Share work plan"),
+                                        modifier = Modifier.size(16.dp),
+                                        tint = ForestGreen
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        text = str(language, "शेयर", "Share"),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = ForestGreen
                                     )
@@ -307,7 +382,7 @@ internal fun WorkPlanPanel(
                                             }
                                         }
                                         Text(
-                                            text = item.task,
+                                            text = "${idx + 1}. ${item.task}",
                                             style = MaterialTheme.typography.bodySmall,
                                             fontWeight = FontWeight.SemiBold,
                                             color = DarkText
@@ -460,11 +535,11 @@ internal fun PhotoHealthCheckCard(
 
     val quickSymptoms = remember(language) {
         listOf(
+            str(language, "चारा ठीक से नहीं खा रही है", "Not eating fodder properly"),
             str(language, "सुस्त / उदास", "Dull / Lethargic"),
-            str(language, "खाना नहीं खा रही", "Not eating"),
+            str(language, "दस्त / कमजोरी", "Diarrhea / Weak"),
             str(language, "घाव / सूजन", "Wound / Swelling"),
-            str(language, "लंगड़ा रही है", "Limping"),
-            str(language, "दस्त / कमजोरी", "Diarrhea / Weak")
+            str(language, "लंगड़ा रही है", "Limping")
         )
     }
 
@@ -569,60 +644,60 @@ internal fun PhotoHealthCheckCard(
                         )
                     }
                 }
+            }
 
-                // Quick symptom chips
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    quickSymptoms.forEach { symptom ->
-                        AssistChip(
-                            onClick = {
-                                val next = if (notes.isBlank()) symptom else "$notes, $symptom"
-                                onNotesChange(next)
-                            },
-                            label = { Text(symptom, style = MaterialTheme.typography.labelSmall) }
-                        )
-                    }
-                }
-
-                OutlinedTextField(
-                    value = notes,
-                    onValueChange = onNotesChange,
-                    label = {
-                        Text(
-                            str(
-                                language,
-                                "लक्षण लिखें (जैसे: सुस्ती, खाना न खाना, सूजन, घाव)",
-                                "Observed symptoms/notes (e.g., dull, not eating, swelling)"
-                            )
-                        )
-                    },
-                    minLines = 2,
-                    maxLines = 3,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("ai_photo_notes_input")
-                )
-
-                Button(
-                    onClick = onAnalyze,
-                    enabled = photoState !is AiUiState.Loading,
-                    colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp)
-                        .testTag("analyze_cattle_photo_btn")
-                ) {
-                    Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        str(language, "AI स्वास्थ्य रिपोर्ट तैयार करें", "Generate AI Health Report"),
-                        fontWeight = FontWeight.Bold
+            // Quick symptom chips — available WITH OR WITHOUT a photo so caregivers can generate reports anytime
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                quickSymptoms.forEach { symptom ->
+                    AssistChip(
+                        onClick = {
+                            val next = if (notes.isBlank()) symptom else "$notes, $symptom"
+                            onNotesChange(next)
+                        },
+                        label = { Text(symptom, style = MaterialTheme.typography.labelSmall) }
                     )
                 }
+            }
+
+            OutlinedTextField(
+                value = notes,
+                onValueChange = onNotesChange,
+                label = {
+                    Text(
+                        str(
+                            language,
+                            "लक्षण लिखें (फोटो वैकल्पिक — जैसे: चारा ठीक से नहीं खा रही है, सुस्ती, सूजन)",
+                            "Describe symptoms (photo optional — e.g., not eating fodder, dull, swelling)"
+                        )
+                    )
+                },
+                minLines = 2,
+                maxLines = 3,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("ai_photo_notes_input")
+            )
+
+            Button(
+                onClick = onAnalyze,
+                enabled = (selectedBitmap != null || notes.isNotBlank()) && photoState !is AiUiState.Loading,
+                colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .testTag("analyze_cattle_photo_btn")
+            ) {
+                Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    str(language, "AI स्वास्थ्य रिपोर्ट तैयार करें", "Generate AI Health Report"),
+                    fontWeight = FontWeight.Bold
+                )
             }
 
             // Mandatory Vet Disclaimer Strip
@@ -692,6 +767,12 @@ internal fun PhotoHealthCheckCard(
                                     color = ForestGreen,
                                     modifier = Modifier.weight(1f)
                                 )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 TextButton(
                                     onClick = {
                                         if (copyTextToClipboard(context, "AI Health Report", photoState.text)) {
@@ -709,6 +790,29 @@ internal fun PhotoHealthCheckCard(
                                     Spacer(Modifier.width(4.dp))
                                     Text(
                                         text = if (reportCopied) str(language, "कॉपी हो गया", "Copied") else str(language, "कॉपी", "Copy"),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = ForestGreen
+                                    )
+                                }
+                                TextButton(
+                                    onClick = {
+                                        shareAiText(
+                                            context,
+                                            str(language, "AI गाय स्वास्थ्य रिपोर्ट", "AI Cow Health Report"),
+                                            photoState.text
+                                        )
+                                    },
+                                    modifier = Modifier.testTag("ai_photo_share_btn")
+                                ) {
+                                    Icon(
+                                        Icons.Default.Share,
+                                        contentDescription = str(language, "रिपोर्ट शेयर करें", "Share report"),
+                                        modifier = Modifier.size(16.dp),
+                                        tint = ForestGreen
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        text = str(language, "शेयर", "Share"),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = ForestGreen
                                     )
@@ -741,7 +845,7 @@ internal fun PhotoHealthCheckCard(
                                     modifier = Modifier.weight(1f)
                                 )
                             }
-                            if (selectedBitmap != null) {
+                            if (selectedBitmap != null || notes.isNotBlank()) {
                                 OutlinedButton(
                                     onClick = onAnalyze,
                                     modifier = Modifier.testTag("ai_photo_retry_btn")
@@ -936,7 +1040,8 @@ internal fun VoiceDraftPanel(
 internal fun ChatBubble(
     message: AiChatMessage,
     language: AppLanguage = AppLanguage.HINDI,
-    copyTag: String? = null
+    copyTag: String? = null,
+    shareTag: String? = null
 ) {
     val context = LocalContext.current
     var copied by remember(message.text) { mutableStateOf(false) }
@@ -992,35 +1097,65 @@ internal fun ChatBubble(
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (message.isUser) Color.White else MaterialTheme.colorScheme.onSurface
                 )
-                if (!message.isUser && copyTag != null) {
+                if (!message.isUser && (copyTag != null || shareTag != null)) {
                     Spacer(Modifier.height(6.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End
                     ) {
-                        TextButton(
-                            onClick = {
-                                if (copyTextToClipboard(context, "AI Goshala Reply", message.text)) {
-                                    copied = true
-                                }
-                            },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                            modifier = Modifier
-                                .heightIn(min = 36.dp)
-                                .testTag(copyTag)
-                        ) {
-                            Icon(
-                                if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
-                                contentDescription = str(language, "उत्तर कॉपी करें", "Copy response"),
-                                modifier = Modifier.size(15.dp),
-                                tint = ForestGreen
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                text = if (copied) str(language, "कॉपी हो गया", "Copied") else str(language, "कॉपी करें", "Copy"),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = ForestGreen
-                            )
+                        if (copyTag != null) {
+                            TextButton(
+                                onClick = {
+                                    if (copyTextToClipboard(context, "AI Goshala Reply", message.text)) {
+                                        copied = true
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier
+                                    .heightIn(min = 36.dp)
+                                    .testTag(copyTag)
+                            ) {
+                                Icon(
+                                    if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                                    contentDescription = str(language, "उत्तर कॉपी करें", "Copy response"),
+                                    modifier = Modifier.size(15.dp),
+                                    tint = ForestGreen
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    text = if (copied) str(language, "कॉपी हो गया", "Copied") else str(language, "कॉपी करें", "Copy"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = ForestGreen
+                                )
+                            }
+                        }
+                        if (shareTag != null) {
+                            TextButton(
+                                onClick = {
+                                    shareAiText(
+                                        context,
+                                        str(language, "AI गौशाला सहायक उत्तर", "AI Goshala Assistant Reply"),
+                                        message.text
+                                    )
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier
+                                    .heightIn(min = 36.dp)
+                                    .testTag(shareTag)
+                            ) {
+                                Icon(
+                                    Icons.Default.Share,
+                                    contentDescription = str(language, "उत्तर शेयर करें", "Share response"),
+                                    modifier = Modifier.size(15.dp),
+                                    tint = ForestGreen
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    text = str(language, "शेयर", "Share"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = ForestGreen
+                                )
+                            }
                         }
                     }
                 }
