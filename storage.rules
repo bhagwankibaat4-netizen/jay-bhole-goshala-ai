@@ -1,0 +1,56 @@
+rules_version = '2';
+
+// Firebase Storage Security Rules for Jay Bhole Gosala Samiti
+// Deploy in Firebase Console -> Storage -> Rules (or via `firebase deploy --only storage`)
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() &&
+             request.auth.token.email_verified == true &&
+             request.auth.token.email == 'bhagwankibaat4@gmail.com';
+    }
+
+    function isAdminInDb() {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        firestore.exists(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isAuthorizedCattleStaff() {
+      return isSignedIn() &&
+             firestore.exists(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/staffAccounts/$(request.auth.uid)) &&
+             firestore.get(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/staffAccounts/$(request.auth.uid)).data.active == true &&
+             'cattle' in firestore.get(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/staffAccounts/$(request.auth.uid)).data.permissions &&
+             (
+               'ADD' in firestore.get(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/staffAccounts/$(request.auth.uid)).data.permissions.cattle ||
+               'EDIT' in firestore.get(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/staffAccounts/$(request.auth.uid)).data.permissions.cattle
+             );
+    }
+
+    function isValidCowPhotoUpload() {
+      return request.resource != null &&
+             request.resource.size > 0 &&
+             request.resource.size <= 5 * 1024 * 1024 &&
+             request.resource.contentType.matches('image/(jpeg|jpg|png|webp)');
+    }
+
+    // Cow photos: authenticated users (Public, Staff, Admin) can read;
+    // only Admin (or Admin-authorized Cattle Staff) can upload/update; only Admin can delete.
+    match /cattle_photos/{cattleId}/{fileName} {
+      allow read: if isSignedIn();
+      allow create, update: if (isAdminInDb() || isAuthorizedCattleStaff()) && isValidCowPhotoUpload();
+      allow delete: if isAdminInDb();
+    }
+
+    // Default deny for all other paths
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

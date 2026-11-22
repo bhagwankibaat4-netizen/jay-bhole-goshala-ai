@@ -33,6 +33,7 @@ import com.example.core.GosalaBrand
 import com.example.core.QrAndExportUtils
 import com.example.core.str
 import com.example.data.model.*
+import com.example.ui.components.DashboardCowPhotoStrip
 import com.example.ui.components.GosalaAsyncResourceImage
 import com.example.ui.components.GosalaOfficialLogo
 import com.example.ui.components.MetricStatCard
@@ -634,6 +635,18 @@ fun HomeScreen(
                     approvedCowsCount = cattle.size,
                     onOpenCattle = { onNavigate(Routes.CATTLE) }
                 )
+            }
+
+            if (cattle.isNotEmpty()) {
+                item(key = "public_cattle_photo_strip") {
+                    DashboardCowPhotoStrip(
+                        language = language,
+                        cattle = cattle,
+                        sectionTitle = str(language, "गौशाला के गोवंश (फोटो सहित)", "Goshala Cows (With Photos)"),
+                        sectionTag = "public_dashboard_cattle_strip",
+                        onOpenCattleList = { onNavigate(Routes.CATTLE) }
+                    )
+                }
             }
 
             item(key = "public_production_process") {

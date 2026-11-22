@@ -428,6 +428,10 @@ private fun GosalaAuthenticatedShell(
             .sortedBy { it.key }
             .joinToString("|") { (k, v) -> "$k:${v.sorted().joinToString(",")}" }
     }
+    val appContext = LocalContext.current.applicationContext
+    LaunchedEffect(db) {
+        CattlePhotoStorage.registerFirestore(db)
+    }
     val gosalaViewModel: GosalaViewModel = viewModel(
         key = "${session.uid}_${session.role.name}_${session.staffActive}_${permSignature.hashCode()}",
         factory = viewModelFactory {
@@ -800,7 +804,7 @@ private fun GosalaAuthenticatedShell(
                                 cattleState = cattleState,
                                 openAddOnStart = openAddCattleOnStart,
                                 onConsumedOpenAdd = { openAddCattleOnStart = false },
-                                onSaveCattle = { item, isEdit -> gosalaViewModel.saveCattle(item, isEdit, language) },
+                                onSaveCattle = { item, isEdit -> gosalaViewModel.saveCattle(item, isEdit, language, appContext) },
                                 onDeleteCattle = { item -> gosalaViewModel.deleteCattle(item, language) },
                                 onSponsorCattle = { item ->
                                     preselectedCattleForSponsor = item

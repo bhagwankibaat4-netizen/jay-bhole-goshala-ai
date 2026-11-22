@@ -31,6 +31,7 @@ import com.example.core.GosalaBrand
 import com.example.core.str
 import com.example.data.model.*
 import com.example.ui.components.ConfirmActionDialog
+import com.example.ui.components.CowPhotoImage
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.GosalaAsyncResourceImage
 import com.example.ui.theme.*
@@ -649,22 +650,13 @@ private fun SponsorshipTabContent(
                                                     .fillMaxWidth()
                                                     .height(104.dp)
                                             ) {
-                                                if (!cow.photoUri.isNullOrBlank()) {
-                                                    AsyncImage(
-                                                        model = cow.photoUri,
-                                                        contentDescription = cow.name,
-                                                        contentScale = ContentScale.Crop,
-                                                        modifier = Modifier.fillMaxSize()
-                                                    )
-                                                } else {
-                                                    GosalaAsyncResourceImage(
-                                                        resId = R.drawable.img_hero_goshala,
-                                                        contentDescription = cow.name,
-                                                        contentScale = ContentScale.Crop,
-                                                        placeholderColor = SoftGreenTint,
-                                                        modifier = Modifier.fillMaxSize()
-                                                    )
-                                                }
+                                                CowPhotoImage(
+                                                    photoUri = cow.photoUri,
+                                                    contentDescription = cow.name,
+                                                    contentScale = ContentScale.Crop,
+                                                    testTagPrefix = "sponsor_cow_photo_${cow.animalCode}",
+                                                    modifier = Modifier.fillMaxSize()
+                                                )
                                                 Surface(
                                                     shape = RoundedCornerShape(8.dp),
                                                     color = healthColor,

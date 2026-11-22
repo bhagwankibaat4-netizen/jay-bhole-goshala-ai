@@ -48,6 +48,7 @@ import com.example.core.str
 import com.example.data.model.Cattle
 import com.example.data.model.FeedAndOperationLog
 import com.example.data.model.HealthRecord
+import com.example.ui.components.CowPhotoImage
 import com.example.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -559,7 +560,7 @@ fun CattleDetailFullScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                if (canEdit) {
+                if (canEdit && !openedFromQrScan) {
                     IconButton(
                         onClick = onEdit,
                         modifier = Modifier.testTag("cattle_edit_button")
@@ -567,7 +568,7 @@ fun CattleDetailFullScreen(
                         Icon(Icons.Default.Edit, contentDescription = str(language, "संपादित करें", "Edit"), tint = ForestGreen)
                     }
                 }
-                if (canDelete) {
+                if (canDelete && !openedFromQrScan) {
                     IconButton(
                         onClick = onDelete,
                         modifier = Modifier.testTag("cattle_delete_button")
@@ -601,7 +602,11 @@ fun CattleDetailFullScreen(
                             Icon(Icons.Default.Verified, contentDescription = null, tint = ForestGreen, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                text = str(language, "QR कोड सत्यापित — Firebase से गाय का लाइव रिकॉर्ड लोड हुआ।", "QR Code Verified — Live cow profile loaded from Firebase."),
+                                text = str(
+                                    language,
+                                    "QR कोड सत्यापित — सार्वजनिक दृश्य (केवल देखने हेतु) • Firebase से गाय का लाइव रिकॉर्ड लोड हुआ।",
+                                    "QR Code Verified — Public Read-Only View • Live cow profile loaded from Firebase."
+                                ),
                                 style = MaterialTheme.typography.labelMedium,
                                 color = ForestGreen,
                                 fontWeight = FontWeight.SemiBold
@@ -623,37 +628,17 @@ fun CattleDetailFullScreen(
                         modifier = Modifier.padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        if (!cattle.photoUri.isNullOrBlank()) {
-                            AsyncImage(
-                                model = Uri.parse(cattle.photoUri),
+                        key(cattle.id, cattle.photoUri) {
+                            CowPhotoImage(
+                                photoUri = cattle.photoUri,
                                 contentDescription = cattle.name,
                                 contentScale = ContentScale.Crop,
+                                testTagPrefix = "cattle_detail_photo",
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(200.dp)
+                                    .height(210.dp)
                                     .clip(RoundedCornerShape(16.dp))
                             )
-                        } else {
-                            Surface(
-                                color = SoftGreenTint,
-                                shape = RoundedCornerShape(16.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(140.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Icon(Icons.Default.Pets, contentDescription = null, tint = ForestGreen, modifier = Modifier.size(48.dp))
-                                        Spacer(Modifier.height(4.dp))
-                                        Text(
-                                            text = cattle.name,
-                                            style = MaterialTheme.typography.titleMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = ForestGreen
-                                        )
-                                    }
-                                }
-                            }
                         }
 
                         Row(
@@ -769,11 +754,20 @@ fun CattleDetailFullScreen(
                     modifier = Modifier.testTag("cattle_detail_vaccination_section")
                 ) {
                     if (vaccinationRecords.isEmpty()) {
-                        Text(
-                            text = str(language, "इस गाय के लिए अभी कोई टीकाकरण रिकॉर्ड दर्ज नहीं है।", "No vaccination records logged for this cow yet."),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        if (!cattle.vaccinationSummary.isNullOrBlank()) {
+                            Text(
+                                text = cattle.vaccinationSummary,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = ForestGreen
+                            )
+                        } else {
+                            Text(
+                                text = str(language, "इस गाय के लिए अभी कोई टीकाकरण रिकॉर्ड दर्ज नहीं है।", "No vaccination records logged for this cow yet."),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     } else {
                         vaccinationRecords.forEachIndexed { idx, rec ->
                             if (idx > 0) HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))

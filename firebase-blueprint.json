@@ -101,6 +101,8 @@
         "identificationMarks": { "type": "string" },
         "qrPayload": { "type": "string" },
         "photoUri": { "type": "string" },
+        "photoStoragePath": { "type": "string" },
+        "vaccinationSummary": { "type": "string" },
         "notes": { "type": "string" },
         "publicApproved": { "type": "boolean" },
         "sponsorshipAvailable": { "type": "boolean" },
@@ -110,6 +112,22 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["animalCode", "name", "category", "breed", "sex", "ageText", "colour", "weightKg", "healthStatus", "entryDate", "shedNumber", "identificationMarks", "qrPayload", "publicApproved", "sponsorshipAvailable", "monthlySupportInr", "createdBy", "createdAt", "updatedAt"]
+    },
+    "CattlePhoto": {
+      "title": "CattlePhoto",
+      "description": "Cloud fallback compressed cow photo linked 1:1 with cattle/{cattleId} when Firebase Storage bucket is unavailable.",
+      "type": "object",
+      "properties": {
+        "cattleId": { "type": "string" },
+        "contentType": { "type": "string", "enum": ["image/jpeg", "image/png", "image/webp"] },
+        "imageBase64": { "type": "string" },
+        "publicApproved": { "type": "boolean" },
+        "version": { "type": "integer" },
+        "uploadedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["cattleId", "contentType", "imageBase64", "publicApproved", "version", "uploadedBy", "createdAt", "updatedAt"]
     },
     "HealthRecord": {
       "title": "HealthRecord",
@@ -409,6 +427,7 @@
     "/goshalaInfo/{docId}": { "schema": "PublicSummary", "description": "Public summary metrics document" },
     "/products/{productId}": { "schema": "GoshalaProduct", "description": "Admin-managed live Goshala products catalog" },
     "/cattle/{cattleId}": { "schema": "Cattle", "description": "Cattle registry" },
+    "/cattlePhotos/{cattleId}": { "schema": "CattlePhoto", "description": "Cloud-persisted cow photo fallback linked to cattle/{cattleId}" },
     "/healthRecords/{recordId}": { "schema": "HealthRecord", "description": "Health, vaccination, and treatment logs" },
     "/feedAndOperations/{logId}": { "schema": "FeedAndOperationLog", "description": "Daily feed, water, cleaning, and task logs" },
     "/staffOperations/{entryId}": { "schema": "StaffOperation", "description": "Staff attendance, salary, and tasks" },

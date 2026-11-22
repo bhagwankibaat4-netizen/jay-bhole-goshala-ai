@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -23,12 +25,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
+import androidx.core.content.ContextCompat
 import com.example.core.AppLanguage
+import com.example.core.CattlePhotoStorage
 import com.example.core.QrAndExportUtils
 import com.example.core.str
 import com.example.data.model.AppModule
@@ -37,6 +41,7 @@ import com.example.data.model.FeedAndOperationLog
 import com.example.data.model.HealthRecord
 import com.example.data.model.UserSession
 import com.example.ui.components.ConfirmActionDialog
+import com.example.ui.components.CowPhotoImage
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.QrCodeDialog
 import com.example.ui.theme.*
@@ -425,26 +430,15 @@ private fun CattleListCard(
             modifier = Modifier.padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (!cattle.photoUri.isNullOrBlank()) {
-                AsyncImage(
-                    model = Uri.parse(cattle.photoUri),
-                    contentDescription = cattle.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(64.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                )
-            } else {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = SoftGreenTint,
-                    modifier = Modifier.size(64.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Pets, contentDescription = null, tint = ForestGreen, modifier = Modifier.size(30.dp))
-                    }
-                }
-            }
+            CowPhotoImage(
+                photoUri = cattle.photoUri,
+                contentDescription = cattle.name,
+                contentScale = ContentScale.Crop,
+                testTagPrefix = "cattle_list_photo_${cattle.animalCode}",
+                modifier = Modifier
+                    .size(68.dp)
+                    .clip(RoundedCornerShape(14.dp))
+            )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -494,6 +488,7 @@ private fun CattleFormDialog(
     onDismiss: () -> Unit,
     onSave: (Cattle, Boolean) -> Unit
 ) {
+    val context = LocalContext.current
     val isEdit = initial != null
     var name by remember { mutableStateOf(initial?.name ?: "") }
     var category by remember { mutableStateOf(initial?.category ?: "COW") }
@@ -507,8 +502,11 @@ private fun CattleFormDialog(
     var entryDate by remember { mutableStateOf(initial?.entryDate ?: QrAndExportUtils.todayIso()) }
     var shedNumber by remember { mutableStateOf(initial?.shedNumber ?: "Shed-A1") }
     var marks by remember { mutableStateOf(initial?.identificationMarks ?: "") }
+    var vaccinationSummary by remember { mutableStateOf(initial?.vaccinationSummary ?: "") }
     var notes by remember { mutableStateOf(initial?.notes ?: "") }
     var photoUri by remember { mutableStateOf(initial?.photoUri) }
+    var photoStoragePath by remember { mutableStateOf(initial?.photoStoragePath) }
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
     var publicApproved by remember { mutableStateOf(initial?.publicApproved ?: true) }
     var sponsorshipAvailable by remember { mutableStateOf(initial?.sponsorshipAvailable ?: true) }
     var monthlySupport by remember { mutableStateOf((initial?.monthlySupportInr ?: 2100L).toString()) }
@@ -517,7 +515,42 @@ private fun CattleFormDialog(
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
-        if (uri != null) photoUri = uri.toString()
+        if (uri != null) {
+            photoUri = uri.toString()
+            photoStoragePath = null
+            errorMsg = null
+        }
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { captured ->
+        val uri = pendingCameraUri
+        if (captured && uri != null) {
+            photoUri = uri.toString()
+            photoStoragePath = null
+            errorMsg = null
+        }
+    }
+
+    val launchCameraCapture = {
+        runCatching {
+            val captureUri = CattlePhotoStorage.createCameraCaptureUri(context)
+            pendingCameraUri = captureUri
+            cameraLauncher.launch(captureUri)
+        }.onFailure {
+            errorMsg = str(language, "कैमरा खोला नहीं जा सका। कृपया गैलरी से फोटो चुनें।", "Could not launch camera. Please choose from gallery.")
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            launchCameraCapture()
+        } else {
+            errorMsg = str(language, "कैमरे से फोटो लेने के लिए कैमरा अनुमति आवश्यक है।", "Camera permission is required to take a cow photo.")
+        }
     }
 
     AlertDialog(
@@ -533,21 +566,65 @@ private fun CattleFormDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(
-                    onClick = {
-                        photoPickerLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth()
+                CowPhotoImage(
+                    photoUri = photoUri,
+                    contentDescription = name.ifBlank { str(language, "गाय फोटो प्रीव्यू", "Cow photo preview") },
+                    contentScale = ContentScale.Crop,
+                    testTagPrefix = "cattle_form_photo_preview",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(145.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.PhotoCamera, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        if (photoUri != null) str(language, "फोटो चयनित (बदलें)", "Photo Selected (Change)")
-                        else str(language, "गैलरी से फोटो चुनें", "Select Photo (Photo Picker)")
-                    )
+                    OutlinedButton(
+                        onClick = {
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("cattle_form_gallery_photo_btn")
+                    ) {
+                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(str(language, "गैलरी", "Gallery"), maxLines = 1)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val hasPerm = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.CAMERA
+                            ) == PackageManager.PERMISSION_GRANTED
+                            if (hasPerm) {
+                                launchCameraCapture()
+                            } else {
+                                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                            }
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("cattle_form_camera_photo_btn")
+                    ) {
+                        Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(str(language, "कैमरा", "Camera"), maxLines = 1)
+                    }
                 }
+                Text(
+                    text = if (!photoUri.isNullOrBlank()) {
+                        str(language, "फोटो चयनित — सहेजने पर क्लाउड (Firebase) में स्थायी रूप से सेव होगी।", "Photo selected — will be permanently uploaded to Firebase Cloud on Save.")
+                    } else {
+                        str(language, "फोटो न चुनने पर सुंदर डिफ़ॉल्ट गौमाता छवि दिखाई जाएगी।", "Default cow image will be shown if no photo is selected.")
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
 
                 OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text(str(language, "पशु का नाम *", "Animal Name *")) }, singleLine = true)
 
@@ -592,6 +669,7 @@ private fun CattleFormDialog(
                 OutlinedTextField(value = entryDate, onValueChange = { entryDate = it }, label = { Text(str(language, "प्रवेश तिथि *", "Entry Date *")) }, singleLine = true)
                 OutlinedTextField(value = shedNumber, onValueChange = { shedNumber = it }, label = { Text(str(language, "शेड नंबर *", "Shed Number *")) }, singleLine = true)
                 OutlinedTextField(value = marks, onValueChange = { marks = it }, label = { Text(str(language, "पहचान चिह्न", "Identification Marks")) }, singleLine = true)
+                OutlinedTextField(value = vaccinationSummary, onValueChange = { vaccinationSummary = it }, label = { Text(str(language, "टीकाकरण विवरण (जैसे: FMD टीका पूर्ण)", "Vaccination Summary")) }, singleLine = true)
                 OutlinedTextField(value = notes, onValueChange = { notes = it }, label = { Text(str(language, "विशेष टिप्पणी", "Notes")) })
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -636,6 +714,8 @@ private fun CattleFormDialog(
                         shedNumber = shedNumber.trim(),
                         identificationMarks = marks.trim(),
                         photoUri = photoUri,
+                        photoStoragePath = photoStoragePath,
+                        vaccinationSummary = vaccinationSummary.trim().ifBlank { null },
                         notes = notes.trim().ifBlank { null },
                         publicApproved = publicApproved,
                         sponsorshipAvailable = sponsorshipAvailable,

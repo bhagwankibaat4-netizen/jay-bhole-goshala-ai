@@ -30,6 +30,7 @@ import com.example.core.GosalaBrand
 import com.example.core.QrAndExportUtils
 import com.example.core.str
 import com.example.data.model.*
+import com.example.ui.components.DashboardCowPhotoStrip
 import com.example.ui.components.GosalaOfficialLogo
 import com.example.ui.components.MetricStatCard
 import com.example.ui.components.ModuleGridCard
@@ -323,6 +324,18 @@ fun AdminDashboardScreen(
                         )
                     }
                 }
+            }
+        }
+
+        if (cattle.isNotEmpty()) {
+            item(key = "admin_cattle_photo_strip") {
+                DashboardCowPhotoStrip(
+                    language = language,
+                    cattle = cattle,
+                    sectionTitle = str(language, "पंजीकृत गोवंश (फोटो व QR)", "Registered Cattle (Photos & QR)"),
+                    sectionTag = "admin_dashboard_cattle_strip",
+                    onOpenCattleList = { onNavigate(Routes.CATTLE) }
+                )
             }
         }
 
@@ -692,6 +705,18 @@ fun StaffDashboardScreen(
                         }
                     }
                 }
+            }
+        }
+
+        if (session.canView(AppModule.CATTLE) && cattle.isNotEmpty()) {
+            item(key = "staff_cattle_photo_strip") {
+                DashboardCowPhotoStrip(
+                    language = language,
+                    cattle = cattle,
+                    sectionTitle = str(language, "गौशाला के गोवंश (फोटो सहित)", "Goshala Cattle (Photos)"),
+                    sectionTag = "staff_dashboard_cattle_strip",
+                    onOpenCattleList = { onNavigate(Routes.CATTLE) }
+                )
             }
         }
 

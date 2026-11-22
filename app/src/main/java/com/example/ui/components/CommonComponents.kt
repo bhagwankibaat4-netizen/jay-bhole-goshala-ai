@@ -8,6 +8,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -38,12 +40,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import com.example.R
 import com.example.core.AppLanguage
+import com.example.core.CattlePhotoStorage
 import com.example.core.GosalaBrand
 import com.example.core.QrAndExportUtils
 import com.example.core.str
+import com.example.data.model.Cattle
 import com.example.data.model.UserRole
 import com.example.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -76,6 +81,270 @@ fun GosalaAsyncResourceImage(
         error = placeholder,
         modifier = modifier
     )
+}
+
+private sealed interface CloudCowPhotoState {
+    data object Loading : CloudCowPhotoState
+    data class Loaded(val bitmap: Bitmap) : CloudCowPhotoState
+    data object Fallback : CloudCowPhotoState
+}
+
+/**
+ * Crash-safe cow photo loader used across Public Dashboard, Admin/Staff Dashboards, Cattle List,
+ * Cow Details / QR Scan Screen, Sponsorship Cards, and Add/Edit Form preview.
+ * - Supports Firebase Storage HTTPS URLs, Firestore `cattlePhotos/{id}` cloud pointers, and local previews.
+ * - Shows a loading indicator while loading over slow networks.
+ * - Always falls back to the warm Default Cow Image (`img_default_cow_1795363316557`) on missing/broken photos.
+ */
+@Composable
+fun CowPhotoImage(
+    photoUri: String?,
+    contentDescription: String,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+    testTagPrefix: String = "cow_photo"
+) {
+    val trimmed = photoUri?.trim().orEmpty()
+    val context = LocalContext.current
+
+    Box(
+        modifier = modifier
+            .background(SoftGreenTint)
+            .testTag(testTagPrefix),
+        contentAlignment = Alignment.Center
+    ) {
+        when {
+            trimmed.isBlank() -> {
+                DefaultCowFallbackImage(
+                    contentDescription = contentDescription,
+                    contentScale = contentScale,
+                    testTag = "${testTagPrefix}_default"
+                )
+            }
+            trimmed.startsWith(CattlePhotoStorage.FIRESTORE_PHOTO_SCHEME, ignoreCase = true) -> {
+                val loadState by produceState<CloudCowPhotoState>(
+                    initialValue = CloudCowPhotoState.Loading,
+                    key1 = trimmed
+                ) {
+                    value = CloudCowPhotoState.Loading
+                    val bmp = CattlePhotoStorage.loadFirestorePhotoBitmap(trimmed)
+                    value = if (bmp != null) CloudCowPhotoState.Loaded(bmp) else CloudCowPhotoState.Fallback
+                }
+                when (val state = loadState) {
+                    is CloudCowPhotoState.Loading -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(SoftGreenTint)
+                                .testTag("${testTagPrefix}_loading"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.5.dp,
+                                color = ForestGreen
+                            )
+                        }
+                    }
+                    is CloudCowPhotoState.Loaded -> {
+                        Image(
+                            bitmap = state.bitmap.asImageBitmap(),
+                            contentDescription = contentDescription,
+                            contentScale = contentScale,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .testTag("${testTagPrefix}_loaded")
+                        )
+                    }
+                    is CloudCowPhotoState.Fallback -> {
+                        DefaultCowFallbackImage(
+                            contentDescription = contentDescription,
+                            contentScale = contentScale,
+                            testTag = "${testTagPrefix}_default"
+                        )
+                    }
+                }
+            }
+            else -> {
+                val request = remember(context, trimmed) {
+                    ImageRequest.Builder(context)
+                        .data(trimmed)
+                        .allowHardware(false)
+                        .crossfade(true)
+                        .build()
+                }
+                SubcomposeAsyncImage(
+                    model = request,
+                    contentDescription = contentDescription,
+                    contentScale = contentScale,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("${testTagPrefix}_remote"),
+                    loading = {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(SoftGreenTint)
+                                .testTag("${testTagPrefix}_loading"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.5.dp,
+                                color = ForestGreen
+                            )
+                        }
+                    },
+                    error = {
+                        DefaultCowFallbackImage(
+                            contentDescription = contentDescription,
+                            contentScale = contentScale,
+                            testTag = "${testTagPrefix}_default"
+                        )
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DefaultCowFallbackImage(
+    contentDescription: String,
+    contentScale: ContentScale,
+    testTag: String
+) {
+    GosalaAsyncResourceImage(
+        resId = R.drawable.img_default_cow_1795363316557,
+        contentDescription = contentDescription,
+        contentScale = contentScale,
+        placeholderColor = SoftGreenTint,
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag(testTag)
+    )
+}
+
+/**
+ * Horizontal cow photo gallery card shown on Public, Admin, and Staff Dashboards so real saved cow
+ * photos appear immediately on every dashboard with Loading Indicator + Default Cow Image fallback.
+ */
+@Composable
+fun DashboardCowPhotoStrip(
+    language: AppLanguage,
+    cattle: List<Cattle>,
+    sectionTitle: String,
+    sectionTag: String,
+    onOpenCattleList: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (cattle.isEmpty()) return
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag(sectionTag),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = sectionTitle,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = ForestGreen,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onOpenCattleList) {
+                Text(str(language, "सभी देखें (${cattle.size})", "View All (${cattle.size})"))
+            }
+        }
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(end = 4.dp)
+        ) {
+            items(cattle.take(10), key = { it.id.ifBlank { it.animalCode } }) { cow ->
+                val statusColor = when (cow.healthStatus) {
+                    "HEALTHY" -> GoshalaGreen
+                    "SICK" -> AlertRed
+                    else -> Saffron
+                }
+                val statusLabel = when (cow.healthStatus) {
+                    "HEALTHY" -> str(language, "स्वस्थ", "Healthy")
+                    "SICK" -> str(language, "बीमार", "Sick")
+                    else -> str(language, "उपचार", "Care")
+                }
+                Card(
+                    onClick = onOpenCattleList,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                    modifier = Modifier
+                        .width(168.dp)
+                        .testTag("${sectionTag}_cow_${cow.animalCode}")
+                ) {
+                    Column {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(106.dp)
+                        ) {
+                            CowPhotoImage(
+                                photoUri = cow.photoUri,
+                                contentDescription = cow.name,
+                                contentScale = ContentScale.Crop,
+                                testTagPrefix = "${sectionTag}_photo_${cow.animalCode}",
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = statusColor,
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(6.dp)
+                            ) {
+                                Text(
+                                    text = statusLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = cow.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${cow.animalCode} • ${cow.breed}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${cow.ageText} • ${cow.shedNumber}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = ForestGreen,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable

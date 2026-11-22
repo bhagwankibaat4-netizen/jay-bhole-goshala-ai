@@ -3,6 +3,7 @@ package com.example.data.repository
 import android.content.Context
 import android.util.Log
 import com.example.R
+import com.example.core.CattlePhotoStorage
 import com.example.core.OfflineQueuedException
 import com.example.core.OperationType
 import com.example.core.QrAndExportUtils
@@ -86,7 +87,12 @@ class GosalaRepository(
         }.flowOn(Dispatchers.Default)
     }
 
-    suspend fun saveCattle(session: UserSession, cattle: Cattle, isEdit: Boolean): Result<String> {
+    suspend fun saveCattle(
+        session: UserSession,
+        cattle: Cattle,
+        isEdit: Boolean,
+        appContext: Context? = null
+    ): Result<String> {
         val uid = requireUid()
         val allowed = if (isEdit) session.canEdit(AppModule.CATTLE) else session.canAdd(AppModule.CATTLE)
         if (!allowed) {
@@ -107,9 +113,37 @@ class GosalaRepository(
         }.take(40)
         val qr = cattle.qrPayload.ifBlank { QrAndExportUtils.buildCattleQrPayload(docRef.id, code) }.take(300)
 
+        // Ensure cow photo is ALWAYS uploaded to permanent cloud storage — NEVER save an ephemeral local URI.
+        val rawPhoto = cattle.photoUri?.trim()?.takeIf { it.isNotBlank() }
+        var resolvedPhotoUrl: String? = null
+        var resolvedStoragePath: String? = cattle.photoStoragePath?.trim()?.takeIf { it.isNotBlank() }
+
+        if (rawPhoto != null) {
+            if (CattlePhotoStorage.isLocalDeviceUri(rawPhoto)) {
+                val uploadRes = CattlePhotoStorage.uploadCattlePhoto(
+                    context = appContext,
+                    db = db,
+                    uid = uid,
+                    cattleId = docRef.id,
+                    sourceUriString = rawPhoto,
+                    publicApproved = cattle.publicApproved
+                )
+                val uploaded = uploadRes.getOrElse { err ->
+                    return Result.failure(err)
+                }
+                resolvedPhotoUrl = uploaded.photoUrl.take(2000)
+                resolvedStoragePath = uploaded.storagePath.takeIf { it.isNotBlank() }?.take(300)
+            } else if (CattlePhotoStorage.isCloudPhotoUri(rawPhoto)) {
+                resolvedPhotoUrl = rawPhoto.take(2000)
+                if (isEdit && rawPhoto.startsWith(CattlePhotoStorage.FIRESTORE_PHOTO_SCHEME, ignoreCase = true)) {
+                    CattlePhotoStorage.syncPhotoVisibility(db, docRef.id, cattle.publicApproved)
+                }
+            }
+        }
+
         return safeWrite(docRef.path, if (isEdit) OperationType.UPDATE else OperationType.CREATE) {
             if (isEdit) {
-                val updates = mapOf(
+                val updates = mutableMapOf<String, Any>(
                     "name" to cattle.name.trim().take(80),
                     "category" to cattle.category,
                     "breed" to cattle.breed.trim().take(80),
@@ -122,13 +156,23 @@ class GosalaRepository(
                     "entryDate" to cattle.entryDate.trim().take(30),
                     "shedNumber" to cattle.shedNumber.trim().take(30),
                     "identificationMarks" to cattle.identificationMarks.trim().take(200),
-                    "photoUri" to cattle.photoUri?.take(500),
-                    "notes" to cattle.notes?.take(500),
                     "publicApproved" to cattle.publicApproved,
                     "sponsorshipAvailable" to cattle.sponsorshipAvailable,
                     "monthlySupportInr" to cattle.monthlySupportInr.coerceIn(0L, 500000L),
                     "updatedAt" to FieldValue.serverTimestamp()
-                ).filterValues { it != null }
+                )
+                if (resolvedPhotoUrl != null) {
+                    updates["photoUri"] = resolvedPhotoUrl
+                }
+                if (resolvedStoragePath != null) {
+                    updates["photoStoragePath"] = resolvedStoragePath
+                }
+                cattle.vaccinationSummary?.trim()?.takeIf { it.isNotBlank() }?.let {
+                    updates["vaccinationSummary"] = it.take(500)
+                }
+                cattle.notes?.trim()?.takeIf { it.isNotBlank() }?.let {
+                    updates["notes"] = it.take(500)
+                }
                 docRef.update(updates).await()
             } else {
                 val payload = cattle.copy(
@@ -143,8 +187,10 @@ class GosalaRepository(
                     shedNumber = cattle.shedNumber.trim().take(30),
                     identificationMarks = cattle.identificationMarks.trim().take(200),
                     qrPayload = qr,
-                    photoUri = cattle.photoUri?.take(500),
-                    notes = cattle.notes?.take(500),
+                    photoUri = resolvedPhotoUrl,
+                    photoStoragePath = resolvedStoragePath,
+                    vaccinationSummary = cattle.vaccinationSummary?.trim()?.takeIf { it.isNotBlank() }?.take(500),
+                    notes = cattle.notes?.trim()?.takeIf { it.isNotBlank() }?.take(500),
                     monthlySupportInr = cattle.monthlySupportInr.coerceIn(0L, 500000L),
                     createdBy = uid
                 ).toCreateMap()
@@ -170,6 +216,7 @@ class GosalaRepository(
         return safeWrite("cattle/${cattle.id}", OperationType.DELETE) {
             require(cattle.id.isNotBlank())
             db.collection("cattle").document(cattle.id).delete().await()
+            CattlePhotoStorage.deleteCattlePhoto(db, cattle.id, cattle.photoStoragePath)
             logAudit(session, "DELETE", "cattle", cattle.id, "Removed ${cattle.name} (${cattle.animalCode})")
         }
     }
@@ -252,6 +299,22 @@ class GosalaRepository(
         val docRef = db.collection("healthRecords").document()
         return safeWrite(docRef.path, OperationType.CREATE) {
             docRef.set(record.copy(recordedBy = uid).toCreateMap()).await()
+            if (record.recordType.equals("VACCINATION", ignoreCase = true) && record.cattleId.isNotBlank()) {
+                val summary = buildString {
+                    append(record.title.trim())
+                    if (record.nextFollowUpDate.isNotBlank()) {
+                        append(" (आगामी: ${record.nextFollowUpDate.trim()})")
+                    }
+                }.take(500)
+                runCatching {
+                    db.collection("cattle").document(record.cattleId).update(
+                        mapOf(
+                            "vaccinationSummary" to summary,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
+            }
             if (record.reminderActive && record.nextFollowUpDate.isNotBlank()) {
                 createNotificationInternal(
                     targetRole = "STAFF",

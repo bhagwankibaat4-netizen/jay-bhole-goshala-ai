@@ -1509,6 +1509,111 @@ test("Phase 3 Admin Full Management: /products Admin-only CRUD + Public read + S
   await assertSucceeds(adminDb.collection("compostProduction").doc("prod_batch_kande").delete());
 });
 
+test("Cow Cloud Photos & QR Read-Only Security: Admin writes permanent photo URL & cattlePhotos; Public read-only for approved cows only; Unauth denied", async () => {
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID, {
+    email: ADMIN_EMAIL,
+    email_verified: true,
+  }).firestore();
+  const publicDb = testEnv.authenticatedContext(PUBLIC_UID, {
+    email: PUBLIC_EMAIL,
+    email_verified: true,
+  }).firestore();
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+
+  const longStorageUrl =
+    "https://firebasestorage.googleapis.com/v0/b/gen-lang-client-0821187064.firebasestorage.app/o/cattle_photos%2Fcow_photo_1%2Fphoto_1795363316557.jpg?alt=media&token=9f8e7d6c-5b4a-3210-abcd-ef0123456789";
+
+  // 1. Admin creates approved cow with Firebase Storage HTTPS URL, photoStoragePath, and vaccinationSummary
+  await assertSucceeds(
+    adminDb.collection("cattle").doc("cow_photo_1").set({
+      animalCode: "JBGS-G-701",
+      name: "सुरभि गौमाता",
+      category: "COW",
+      breed: "गिर",
+      sex: "FEMALE",
+      ageText: "4 वर्ष",
+      birthDate: "2022-04-10",
+      colour: "सफेद व भूरा",
+      weightKg: 420.5,
+      healthStatus: "HEALTHY",
+      entryDate: "2024-02-15",
+      shedNumber: "Shed-A2",
+      identificationMarks: "माथे पर चाँद जैसा तिलक",
+      qrPayload: "JBGS:CATTLE:cow_photo_1:JBGS-G-701",
+      photoUri: longStorageUrl,
+      photoStoragePath: "cattle_photos/cow_photo_1/photo_1795363316557.jpg",
+      vaccinationSummary: "FMD खुरपका-मुंहपका टीका पूर्ण (आगामी: 2027-05-01)",
+      notes: "अत्यंत शांत एवं दुधारू गौमाता",
+      publicApproved: true,
+      sponsorshipAvailable: true,
+      monthlySupportInr: 2500,
+      createdBy: ADMIN_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+
+  // 2. Admin writes cloud fallback photo in cattlePhotos for approved & private cows
+  await assertSucceeds(
+    adminDb.collection("cattlePhotos").doc("cow_photo_1").set({
+      cattleId: "cow_photo_1",
+      contentType: "image/jpeg",
+      imageBase64: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+      publicApproved: true,
+      version: 1795363316557,
+      uploadedBy: ADMIN_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("cattlePhotos").doc("cow_photo_private").set({
+      cattleId: "cow_photo_private",
+      contentType: "image/jpeg",
+      imageBase64: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+      publicApproved: false,
+      version: 1795363316558,
+      uploadedBy: ADMIN_UID,
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    })
+  );
+
+  // 3. Public User CAN read approved cow + approved cow photo, CANNOT read private cow photo or list all photos
+  await assertSucceeds(publicDb.collection("cattle").doc("cow_photo_1").get());
+  await assertSucceeds(publicDb.collection("cattlePhotos").doc("cow_photo_1").get());
+  await assertFails(publicDb.collection("cattlePhotos").doc("cow_photo_private").get());
+  await assertFails(publicDb.collection("cattlePhotos").get());
+
+  // 4. Public User CANNOT create, update, or delete cattle or cattlePhotos
+  await assertFails(
+    publicDb.collection("cattle").doc("cow_photo_1").update({
+      photoUri: "https://evil.example.com/hack.jpg",
+      updatedAt: pastDate(400),
+    })
+  );
+  await assertFails(
+    publicDb.collection("cattlePhotos").doc("cow_photo_1").update({
+      imageBase64: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+      updatedAt: pastDate(400),
+    })
+  );
+  await assertFails(publicDb.collection("cattlePhotos").doc("cow_photo_1").delete());
+
+  // 5. Unauthenticated user CANNOT read or write cattlePhotos
+  await assertFails(unauthDb.collection("cattlePhotos").doc("cow_photo_1").get());
+
+  // 6. Admin updates photo version and deletes cleanly
+  await assertSucceeds(
+    adminDb.collection("cattlePhotos").doc("cow_photo_1").update({
+      version: 1795363399999,
+      updatedAt: pastDate(200),
+    })
+  );
+  await assertSucceeds(adminDb.collection("cattlePhotos").doc("cow_photo_1").delete());
+  await assertSucceeds(adminDb.collection("cattlePhotos").doc("cow_photo_private").delete());
+});
+
 
 
 

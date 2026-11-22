@@ -152,12 +152,25 @@ service cloud.firestore {
              data.shedNumber is string && data.shedNumber.size() >= 1 && data.shedNumber.size() <= 30 &&
              data.identificationMarks is string && data.identificationMarks.size() <= 200 &&
              data.qrPayload is string && data.qrPayload.size() >= 2 && data.qrPayload.size() <= 300 &&
-             isOptString(data, 'photoUri', 500) &&
+             isOptString(data, 'photoUri', 2000) &&
+             isOptString(data, 'photoStoragePath', 300) &&
+             isOptString(data, 'vaccinationSummary', 500) &&
              isOptString(data, 'notes', 500) &&
              data.publicApproved is bool &&
              data.sponsorshipAvailable is bool &&
              data.monthlySupportInr is int && data.monthlySupportInr >= 0 && data.monthlySupportInr <= 500000 &&
              data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidCattlePhoto(data) {
+      return data.cattleId is string && data.cattleId.size() >= 1 && data.cattleId.size() <= 128 &&
+             data.contentType in ['image/jpeg', 'image/png', 'image/webp'] &&
+             data.imageBase64 is string && data.imageBase64.size() >= 16 && data.imageBase64.size() <= 240000 &&
+             data.publicApproved is bool &&
+             data.version is int && data.version >= 0 &&
+             data.uploadedBy is string && data.uploadedBy.size() >= 1 && data.uploadedBy.size() <= 128 &&
              isValidTimestamp(data.createdAt) &&
              isValidTimestamp(data.updatedAt);
     }
@@ -528,6 +541,27 @@ service cloud.firestore {
                        incoming().createdBy == existing().createdBy &&
                        incoming().createdAt == existing().createdAt &&
                        (isAdmin() || hasStaffPermission('cattle', 'EDIT'));
+      allow delete: if isSignedIn() && isValidId(cattleId) && (isAdmin() || hasStaffPermission('cattle', 'DELETE'));
+    }
+
+    match /cattlePhotos/{cattleId} {
+      allow get: if isSignedIn() && isValidId(cattleId) && (
+        isAdmin() ||
+        hasStaffPermission('cattle', 'VIEW') ||
+        (!hasStaffDoc() && existing().publicApproved == true)
+      );
+      allow list: if false;
+      allow create: if isSignedIn() &&
+                       isValidId(cattleId) &&
+                       isValidCattlePhoto(incoming()) &&
+                       incoming().cattleId == cattleId &&
+                       incoming().uploadedBy == request.auth.uid &&
+                       (isAdmin() || hasStaffPermission('cattle', 'ADD') || hasStaffPermission('cattle', 'EDIT'));
+      allow update: if isSignedIn() &&
+                       isValidId(cattleId) &&
+                       isValidCattlePhoto(incoming()) &&
+                       incoming().cattleId == cattleId &&
+                       (isAdmin() || hasStaffPermission('cattle', 'EDIT') || hasStaffPermission('cattle', 'ADD'));
       allow delete: if isSignedIn() && isValidId(cattleId) && (isAdmin() || hasStaffPermission('cattle', 'DELETE'));
     }
 

@@ -1,5 +1,6 @@
 package com.example.ui.viewmodel
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -162,9 +163,9 @@ class GosalaViewModel(
         )
     }
 
-    fun saveCattle(cattle: Cattle, isEdit: Boolean, language: AppLanguage) {
-        runMutation(language, "गौवंश रिकॉर्ड सहेजा गया।", "Cattle record saved.") {
-            repository.saveCattle(session, cattle, isEdit)
+    fun saveCattle(cattle: Cattle, isEdit: Boolean, language: AppLanguage, appContext: Context? = null) {
+        runMutation(language, "गौवंश रिकॉर्ड व फोटो सहेजी गई।", "Cattle record & photo saved.") {
+            repository.saveCattle(session, cattle, isEdit, appContext)
         }
     }
 
