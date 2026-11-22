@@ -464,13 +464,18 @@ class GosalaViewModel(
         }
     }
 
-    fun saveProduct(product: GoshalaProduct, isEdit: Boolean, language: AppLanguage) {
+    fun saveProduct(
+        product: GoshalaProduct,
+        isEdit: Boolean,
+        language: AppLanguage,
+        appContext: Context? = null
+    ) {
         runMutation(
             language,
             if (isEdit) "उत्पाद विवरण अपडेट हुआ।" else "नया उत्पाद सफलतापूर्वक जोड़ा गया।",
             if (isEdit) "Product updated." else "New product added."
         ) {
-            repository.saveProduct(session, product, isEdit)
+            repository.saveProduct(session, product, isEdit, appContext)
         }
     }
 

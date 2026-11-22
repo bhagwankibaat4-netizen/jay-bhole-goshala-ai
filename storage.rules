@@ -15,40 +15,97 @@ service firebase.storage {
              request.auth.token.email == 'bhagwankibaat4@gmail.com';
     }
 
-    function isAdminInDb() {
-      return isSignedIn() && (
-        isBootstrappedAdmin() ||
-        firestore.exists(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/admins/$(request.auth.uid))
-      );
-    }
-
-    function isAuthorizedCattleStaff() {
-      return isSignedIn() &&
-             firestore.exists(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/staffAccounts/$(request.auth.uid)) &&
-             firestore.get(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/staffAccounts/$(request.auth.uid)).data.active == true &&
-             'cattle' in firestore.get(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/staffAccounts/$(request.auth.uid)).data.permissions &&
+    function isActiveAdminDoc() {
+      return firestore.exists(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/admins/$(request.auth.uid)) &&
              (
-               'ADD' in firestore.get(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/staffAccounts/$(request.auth.uid)).data.permissions.cattle ||
-               'EDIT' in firestore.get(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/staffAccounts/$(request.auth.uid)).data.permissions.cattle
+               !('active' in firestore.get(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/admins/$(request.auth.uid)).data) ||
+               firestore.get(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/admins/$(request.auth.uid)).data.active == true
              );
     }
 
-    function isValidCowPhotoUpload() {
+    function isAdminInDb() {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        isActiveAdminDoc()
+      );
+    }
+
+    function hasStaffDoc() {
+      return isSignedIn() &&
+             firestore.exists(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/staffAccounts/$(request.auth.uid));
+    }
+
+    function staffData() {
+      return firestore.get(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/staffAccounts/$(request.auth.uid)).data;
+    }
+
+    function isActiveStaff() {
+      return hasStaffDoc() && staffData().active == true;
+    }
+
+    function isAuthorizedCattleViewer() {
+      return isActiveStaff() &&
+             'cattle' in staffData().permissions &&
+             'VIEW' in staffData().permissions.cattle;
+    }
+
+    function isAuthorizedCattleStaff() {
+      return isActiveStaff() &&
+             'cattle' in staffData().permissions &&
+             (
+               'ADD' in staffData().permissions.cattle ||
+               'EDIT' in staffData().permissions.cattle
+             );
+    }
+
+    function isPublicApprovedCattle(cattleId) {
+      return !hasStaffDoc() &&
+             firestore.exists(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/cattle/$(cattleId)) &&
+             firestore.get(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/cattle/$(cattleId)).data.publicApproved == true;
+    }
+
+    function isValidImageUpload() {
       return request.resource != null &&
              request.resource.size > 0 &&
              request.resource.size <= 5 * 1024 * 1024 &&
+             request.resource.contentType != null &&
              request.resource.contentType.matches('image/(jpeg|jpg|png|webp)');
     }
 
-    // Cow photos: authenticated users (Public, Staff, Admin) can read;
-    // only Admin (or Admin-authorized Cattle Staff) can upload/update; only Admin can delete.
+    // 1. Cow photos:
+    // - Read: Admin, Cattle-authorized Staff (VIEW/ADD/EDIT), or Public users ONLY for publicApproved cows.
+    // - Create/Update: Admin or Admin-authorized Cattle Staff (ADD/EDIT) with valid <=5MB image.
+    // - Delete: Admin only.
     match /cattle_photos/{cattleId}/{fileName} {
-      allow read: if isSignedIn();
-      allow create, update: if (isAdminInDb() || isAuthorizedCattleStaff()) && isValidCowPhotoUpload();
+      allow read: if isSignedIn() && (
+        isAdminInDb() ||
+        isAuthorizedCattleViewer() ||
+        isAuthorizedCattleStaff() ||
+        isPublicApprovedCattle(cattleId)
+      );
+      allow create, update: if (isAdminInDb() || isAuthorizedCattleStaff()) && isValidImageUpload();
       allow delete: if isAdminInDb();
     }
 
-    // Default deny for all other paths
+    // 2. Goshala Product photos:
+    // - Read: Signed-in Admin, active Staff, and Public users (inactive Staff blocked).
+    // - Create/Update/Delete: Admin only with valid <=5MB image.
+    match /product_photos/{productId}/{fileName} {
+      allow read: if isSignedIn() && (isAdminInDb() || isActiveStaff() || !hasStaffDoc());
+      allow create, update: if isAdminInDb() && isValidImageUpload();
+      allow delete: if isAdminInDb();
+    }
+
+    // 3. Notification & Reminder photos:
+    // - Read: Signed-in Admin, active Staff, and Public users (inactive Staff blocked).
+    // - Create/Update/Delete: Admin only with valid <=5MB image.
+    match /notification_photos/{notifId}/{fileName} {
+      allow read: if isSignedIn() && (isAdminInDb() || isActiveStaff() || !hasStaffDoc());
+      allow create, update: if isAdminInDb() && isValidImageUpload();
+      allow delete: if isAdminInDb();
+    }
+
+    // Strict default deny for all other paths
     match /{allPaths=**} {
       allow read, write: if false;
     }

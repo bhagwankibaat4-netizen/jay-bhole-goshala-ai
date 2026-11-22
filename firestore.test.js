@@ -1404,12 +1404,15 @@ test("Phase 3 Admin Full Management: /products Admin-only CRUD + Public read + S
   );
   await assertFails(staffDb.collection("products").doc("prod_1").delete());
 
-  // 5. Admin edits price, stock, and photoUri, then deletes
+  // 5. Admin edits price, stock, and long permanent Firebase Storage HTTPS photoUri (>500 chars), then deletes
+  const longProductStorageUrl =
+    "https://firebasestorage.googleapis.com/v0/b/gen-lang-client-0821187064.firebasestorage.app/o/product_photos%2Fprod_1%2Fphoto_1795400000000.jpg?alt=media&token=" +
+    "a1b2c3d4e5f6".repeat(45);
   await assertSucceeds(
     adminDb.collection("products").doc("prod_1").update({
       priceInr: 210,
       stockQuantity: 55,
-      photoUri: "content://media/picker/0/item/42",
+      photoUri: longProductStorageUrl,
       updatedAt: pastDate(400),
     })
   );

@@ -56,6 +56,10 @@ object CattlePhotoStorage {
     @Volatile
     var testPhotoUploader: (suspend (cattleId: String, localUri: String, publicApproved: Boolean) -> Result<UploadedCowPhoto>)? = null
 
+    /** Optional test hook to intercept product photo uploads in unit tests without live network. */
+    @Volatile
+    var testProductPhotoUploader: (suspend (productId: String, localUri: String) -> Result<UploadedCowPhoto>)? = null
+
     fun registerFirestore(db: FirebaseFirestore) {
         registeredDb = db
     }
@@ -288,6 +292,79 @@ object CattlePhotoStorage {
             runCatching {
                 FirebaseStorage.getInstance().reference.child(storagePath).delete().await()
             }
+        }
+    }
+
+    /**
+     * Uploads a locally picked Admin product photo to Firebase Storage (`product_photos/{productId}/photo_{ts}.jpg`)
+     * and returns its permanent HTTPS download URL. Never returns an ephemeral local `content://` or `file://` URI.
+     */
+    suspend fun uploadProductPhoto(
+        context: Context?,
+        productId: String,
+        sourceUriString: String
+    ): Result<UploadedCowPhoto> {
+        val trimmed = sourceUriString.trim()
+        if (trimmed.isBlank() || isCloudPhotoUri(trimmed) || trimmed.startsWith("preset:", ignoreCase = true)) {
+            return Result.success(UploadedCowPhoto(photoUrl = trimmed, storagePath = ""))
+        }
+
+        testProductPhotoUploader?.let { hook ->
+            return hook(productId, trimmed)
+        }
+
+        if (context == null) {
+            return Result.failure(IllegalStateException("उत्पाद की फोटो पढ़ने के लिए ऐप कॉन्टेक्स्ट उपलब्ध नहीं है।"))
+        }
+
+        val sourceUri = runCatching { Uri.parse(trimmed) }.getOrNull()
+            ?: return Result.failure(IllegalArgumentException("अमान्य उत्पाद फोटो पथ।"))
+
+        val storageJpeg = withContext(Dispatchers.IO) {
+            compressUriToJpeg(context, sourceUri, MAX_STORAGE_DIM, STORAGE_JPEG_QUALITY)
+        } ?: return Result.failure(IllegalStateException("चुनी गई उत्पाद फोटो पढ़ी नहीं जा सकी। कृपया दूसरी फोटो चुनें।"))
+
+        val version = System.currentTimeMillis()
+        val safeProductId = productId.trim().ifBlank { "prod_$version" }
+        val storagePath = "product_photos/$safeProductId/photo_$version.jpg"
+
+        return try {
+            val downloadUrl = withTimeout(15_000L) {
+                val ref = FirebaseStorage.getInstance().reference.child(storagePath)
+                val metadata = StorageMetadata.Builder()
+                    .setContentType("image/jpeg")
+                    .setCustomMetadata("productId", safeProductId)
+                    .build()
+                ref.putBytes(storageJpeg, metadata).await()
+                ref.downloadUrl.await().toString()
+            }
+            Result.success(
+                UploadedCowPhoto(
+                    photoUrl = downloadUrl,
+                    storagePath = storagePath
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Product photo upload to Firebase Storage failed for productId=$safeProductId: ${e.message}")
+            Result.failure(
+                IllegalStateException(
+                    "उत्पाद की फोटो क्लाउड पर अपलोड नहीं हो सकी। कृपया इंटरनेट और Firebase Storage नियम जांचकर पुनः प्रयास करें।",
+                    e
+                )
+            )
+        }
+    }
+
+    /**
+     * Best-effort cleanup of a Firebase Storage product photo when Admin deletes a product.
+     */
+    suspend fun deleteProductPhoto(photoUrl: String?) {
+        val trimmed = photoUrl?.trim().orEmpty()
+        if (trimmed.isBlank() || !trimmed.contains("product_photos", ignoreCase = true)) return
+        runCatching {
+            FirebaseStorage.getInstance().getReferenceFromUrl(trimmed).delete().await()
         }
     }
 

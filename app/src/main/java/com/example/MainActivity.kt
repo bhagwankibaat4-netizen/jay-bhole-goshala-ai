@@ -1122,7 +1122,9 @@ private fun GosalaAuthenticatedShell(
                                 language = language,
                                 session = session,
                                 productsState = productsState,
-                                onSaveProduct = { prod, isEdit -> gosalaViewModel.saveProduct(prod, isEdit, language) },
+                                onSaveProduct = { prod, isEdit ->
+                                    gosalaViewModel.saveProduct(prod, isEdit, language, appContext)
+                                },
                                 onDeleteProduct = { prod -> gosalaViewModel.deleteProduct(prod, language) },
                                 onSeedDefaultProducts = { gosalaViewModel.seedDefaultProducts(language) }
                             )

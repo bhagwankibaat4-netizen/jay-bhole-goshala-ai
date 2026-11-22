@@ -1510,7 +1510,12 @@ class GosalaRepository(
         }.flowOn(Dispatchers.Default)
     }
 
-    suspend fun saveProduct(session: UserSession, product: GoshalaProduct, isEdit: Boolean): Result<String> {
+    suspend fun saveProduct(
+        session: UserSession,
+        product: GoshalaProduct,
+        isEdit: Boolean,
+        appContext: Context? = null
+    ): Result<String> {
         if (session.role != UserRole.ADMIN) {
             return Result.failure(SecurityException("केवल प्रशासक (Admin) उत्पाद जोड़ या संपादित कर सकते हैं।"))
         }
@@ -1524,7 +1529,7 @@ class GosalaRepository(
         val cleanStock = product.stockQuantity.coerceIn(0L, 1000000L)
         val cleanUnit = product.unitLabel.trim().ifBlank { "इकाई" }.take(60)
         val cleanPhotoKey = product.photoKey.trim().ifBlank { "compost" }.take(60)
-        val cleanPhotoUri = product.photoUri.trim().take(500)
+        val rawPhotoUri = product.photoUri.trim()
 
         val docRef = if (isEdit && product.id.isNotBlank()) {
             db.collection("products").document(product.id)
@@ -1535,6 +1540,22 @@ class GosalaRepository(
             require(cleanNameHi.isNotBlank()) { "उत्पाद का नाम आवश्यक है।" }
             require(cleanDescHi.isNotBlank()) { "उत्पाद का विवरण आवश्यक है।" }
             require(product.priceInr > 0.0) { "बिक्री मूल्य 0 से अधिक होना चाहिए।" }
+
+            val cleanPhotoUri = if (CattlePhotoStorage.isLocalDeviceUri(rawPhotoUri)) {
+                val uploaded = CattlePhotoStorage.uploadProductPhoto(
+                    context = appContext,
+                    productId = docRef.id,
+                    sourceUriString = rawPhotoUri
+                ).getOrElse { err ->
+                    throw IllegalStateException(
+                        err.message ?: "उत्पाद की फोटो क्लाउड पर अपलोड नहीं हो सकी। कृपया इंटरनेट जांचकर पुनः प्रयास करें।",
+                        err
+                    )
+                }
+                uploaded.photoUrl.trim().take(2000)
+            } else {
+                rawPhotoUri.take(2000)
+            }
 
             if (isEdit) {
                 docRef.update(
@@ -1584,6 +1605,7 @@ class GosalaRepository(
         }
         return safeWrite("products/${product.id}", OperationType.DELETE) {
             db.collection("products").document(product.id).delete().await()
+            CattlePhotoStorage.deleteProductPhoto(product.photoUri)
             logAudit(session, "DELETE", "products", product.id, "Deleted product ${product.nameHi}")
         }
     }

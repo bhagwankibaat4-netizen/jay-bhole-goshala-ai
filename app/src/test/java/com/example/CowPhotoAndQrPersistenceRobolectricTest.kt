@@ -87,6 +87,7 @@ class CowPhotoAndQrPersistenceRobolectricTest {
         CattlePhotoStorage.clearMemoryCache()
         CattlePhotoStorage.testCloudPhotoResolver = null
         CattlePhotoStorage.testPhotoUploader = null
+        CattlePhotoStorage.testProductPhotoUploader = null
     }
 
     @After
@@ -94,6 +95,7 @@ class CowPhotoAndQrPersistenceRobolectricTest {
         CattlePhotoStorage.clearMemoryCache()
         CattlePhotoStorage.testCloudPhotoResolver = null
         CattlePhotoStorage.testPhotoUploader = null
+        CattlePhotoStorage.testProductPhotoUploader = null
     }
 
     @Test
@@ -444,5 +446,57 @@ class CowPhotoAndQrPersistenceRobolectricTest {
         currentUri = null
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("test_cow_img_default").assertIsDisplayed()
+    }
+
+    @Test
+    fun `scenario 8 - product local gallery URI uploads to permanent cloud URL and never persists raw content URI`() = runBlocking {
+        val expectedUrl = "https://firebasestorage.googleapis.com/v0/b/gen-lang-client-0821187064.firebasestorage.app/o/product_photos%2Fprod_kande%2Fphoto_1.jpg?alt=media"
+        CattlePhotoStorage.testProductPhotoUploader = { productId, localUri ->
+            assertEquals("prod_kande", productId)
+            assertTrue(CattlePhotoStorage.isLocalDeviceUri(localUri))
+            Result.success(
+                UploadedCowPhoto(
+                    photoUrl = expectedUrl,
+                    storagePath = "product_photos/$productId/photo_1.jpg"
+                )
+            )
+        }
+
+        // 1. Local content:// gallery URI converts to permanent cloud HTTPS URL
+        val uploaded = CattlePhotoStorage.uploadProductPhoto(
+            context = null,
+            productId = "prod_kande",
+            sourceUriString = "content://media/picker/0/item/kande_photo"
+        )
+        assertTrue(uploaded.isSuccess)
+        assertEquals(expectedUrl, uploaded.getOrThrow().photoUrl)
+        assertTrue(CattlePhotoStorage.isCloudPhotoUri(uploaded.getOrThrow().photoUrl))
+        assertFalse(CattlePhotoStorage.isLocalDeviceUri(uploaded.getOrThrow().photoUrl))
+
+        // 2. Existing HTTPS URL and built-in preset keys pass through unchanged
+        val existingHttps = CattlePhotoStorage.uploadProductPhoto(
+            context = null,
+            productId = "prod_kande",
+            sourceUriString = expectedUrl
+        )
+        assertTrue(existingHttps.isSuccess)
+        assertEquals(expectedUrl, existingHttps.getOrThrow().photoUrl)
+
+        val presetRes = CattlePhotoStorage.uploadProductPhoto(
+            context = null,
+            productId = "prod_kande",
+            sourceUriString = "preset:kande"
+        )
+        assertTrue(presetRes.isSuccess)
+        assertEquals("preset:kande", presetRes.getOrThrow().photoUrl)
+
+        // 3. Without uploader/context, local content:// URI fails cleanly instead of leaking local URI to Firestore
+        CattlePhotoStorage.testProductPhotoUploader = null
+        val failedLocal = CattlePhotoStorage.uploadProductPhoto(
+            context = null,
+            productId = "prod_kande",
+            sourceUriString = "content://media/picker/0/item/unsaved"
+        )
+        assertTrue(failedLocal.isFailure)
     }
 }
