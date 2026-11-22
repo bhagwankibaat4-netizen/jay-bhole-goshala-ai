@@ -409,7 +409,9 @@ fun QrCodeDialog(
     codeLabel: String,
     payload: String,
     language: AppLanguage,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    primaryActionLabel: String? = null,
+    onPrimaryAction: (() -> Unit)? = null
 ) {
     val qrBitmap by produceState<Bitmap?>(initialValue = null, payload) {
         value = withContext(Dispatchers.Default) {
@@ -418,6 +420,7 @@ fun QrCodeDialog(
     }
     AlertDialog(
         onDismissRequest = onDismiss,
+        modifier = Modifier.testTag("qr_code_dialog"),
         title = {
             Text(
                 text = "$title ($codeLabel)",
@@ -460,8 +463,19 @@ fun QrCodeDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text(str(language, "बंद करें", "Close"))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (primaryActionLabel != null && onPrimaryAction != null) {
+                    Button(
+                        onClick = onPrimaryAction,
+                        colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                        modifier = Modifier.testTag("qr_dialog_open_details_button")
+                    ) {
+                        Text(primaryActionLabel)
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(str(language, "बंद करें", "Close"))
+                }
             }
         }
     )

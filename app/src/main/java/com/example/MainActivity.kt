@@ -805,7 +805,10 @@ private fun GosalaAuthenticatedShell(
                                 onSponsorCattle = { item ->
                                     preselectedCattleForSponsor = item
                                     navigateTopTab(Routes.DONATIONS)
-                                }
+                                },
+                                healthRecords = healthList,
+                                feedLogs = feedLogsList,
+                                onLookupCattleByQr = { rawQr -> gosalaViewModel.findCattleByQr(rawQr) }
                             )
                         }
                     }

@@ -105,7 +105,7 @@ class GosalaRepository(
             }
             "JBGS-$prefix-${(100..999).random()}"
         }.take(40)
-        val qr = cattle.qrPayload.ifBlank { "JBGS:CATTLE:${docRef.id}:$code" }.take(300)
+        val qr = cattle.qrPayload.ifBlank { QrAndExportUtils.buildCattleQrPayload(docRef.id, code) }.take(300)
 
         return safeWrite(docRef.path, if (isEdit) OperationType.UPDATE else OperationType.CREATE) {
             if (isEdit) {
@@ -171,6 +171,67 @@ class GosalaRepository(
             require(cattle.id.isNotBlank())
             db.collection("cattle").document(cattle.id).delete().await()
             logAudit(session, "DELETE", "cattle", cattle.id, "Removed ${cattle.name} (${cattle.animalCode})")
+        }
+    }
+
+    /**
+     * Looks up a single cow record directly from Firebase Firestore using a scanned QR payload
+     * or Cow Unique ID / animalCode. Respects role access (publicApproved == true for PUBLIC).
+     */
+    suspend fun findCattleByQrOrId(session: UserSession, rawQrOrId: String): Result<Cattle?> {
+        if (!session.canView(AppModule.CATTLE)) {
+            return Result.failure(SecurityException("गौवंश रिकॉर्ड देखने की अनुमति नहीं है।"))
+        }
+        val parsed = QrAndExportUtils.parseCattleQrPayload(rawQrOrId)
+            ?: return Result.failure(IllegalArgumentException("INVALID_QR"))
+
+        return try {
+            val isPublic = session.role == UserRole.PUBLIC
+
+            // 1. Direct lookup by Firebase document Unique ID
+            val docId = parsed.cowDocId
+            if (!docId.isNullOrBlank()) {
+                val docMatch = try {
+                    val snap = withTimeout(10_000L) {
+                        db.collection("cattle").document(docId).get().await()
+                    }
+                    if (snap.exists()) {
+                        snap.toObject(Cattle::class.java, ServerTimestampBehavior.ESTIMATE)
+                            ?.takeIf { !isPublic || it.publicApproved }
+                    } else null
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Direct cattle doc lookup fallback for id=$docId", e)
+                    null
+                }
+                if (docMatch != null) return Result.success(docMatch)
+            }
+
+            // 2. Fallback lookup by human-readable animalCode (e.g. JBGS-G-101)
+            val code = parsed.animalCode
+            if (!code.isNullOrBlank()) {
+                val query = if (isPublic) {
+                    db.collection("cattle")
+                        .whereEqualTo("publicApproved", true)
+                        .whereEqualTo("animalCode", code)
+                        .limit(1)
+                } else {
+                    db.collection("cattle")
+                        .whereEqualTo("animalCode", code)
+                        .limit(1)
+                }
+                val snap = withTimeout(10_000L) { query.get().await() }
+                val match = snap.documents.firstOrNull()
+                    ?.toObject(Cattle::class.java, ServerTimestampBehavior.ESTIMATE)
+                if (match != null) return Result.success(match)
+            }
+
+            Result.success(null)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 

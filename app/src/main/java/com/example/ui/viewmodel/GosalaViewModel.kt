@@ -174,6 +174,25 @@ class GosalaViewModel(
         }
     }
 
+    suspend fun findCattleByQr(rawQrOrId: String): Result<Cattle?> {
+        val parsed = QrAndExportUtils.parseCattleQrPayload(rawQrOrId)
+            ?: return Result.failure(IllegalArgumentException("INVALID_QR"))
+
+        val remote = repository.findCattleByQrOrId(session, rawQrOrId)
+        if (remote.isSuccess && remote.getOrNull() != null) {
+            return remote
+        }
+
+        // Local live-synced cache fallback (instant offline support & exact match by ID / code / payload)
+        val cached = (cattleState.value as? DataUiState.Success)?.data.orEmpty()
+        val localMatch = cached.firstOrNull { cow ->
+            (!parsed.cowDocId.isNullOrBlank() && cow.id.equals(parsed.cowDocId, ignoreCase = false)) ||
+                (!parsed.animalCode.isNullOrBlank() && cow.animalCode.equals(parsed.animalCode, ignoreCase = true)) ||
+                cow.qrPayload.equals(parsed.rawValue, ignoreCase = true)
+        }
+        return if (localMatch != null) Result.success(localMatch) else remote
+    }
+
     fun addHealthRecord(record: HealthRecord, language: AppLanguage) {
         runMutation(language, "स्वास्थ्य रिकॉर्ड सहेजा गया।", "Health record saved.") {
             repository.addHealthRecord(session, record)

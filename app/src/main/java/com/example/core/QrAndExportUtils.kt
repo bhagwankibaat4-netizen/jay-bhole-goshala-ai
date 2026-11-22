@@ -10,7 +10,12 @@ import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import androidx.core.content.FileProvider
 import com.google.zxing.BarcodeFormat
+import com.google.zxing.BinaryBitmap
+import com.google.zxing.DecodeHintType
 import com.google.zxing.EncodeHintType
+import com.google.zxing.MultiFormatReader
+import com.google.zxing.PlanarYUVLuminanceSource
+import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeWriter
 import java.io.File
 import java.io.FileOutputStream
@@ -18,7 +23,119 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+data class ParsedCattleQr(
+    val cowDocId: String?,
+    val animalCode: String?,
+    val rawValue: String
+)
+
 object QrAndExportUtils {
+
+    private val SAFE_ID_REGEX = Regex("^[A-Za-z0-9_\\-]{4,128}$")
+    private val ANIMAL_CODE_REGEX = Regex("^JBGS-[A-Z0-9\\-]{2,40}$", RegexOption.IGNORE_CASE)
+
+    /**
+     * Canonical permanent QR payload linked to the cow's Firebase document Unique ID
+     * (and human-readable animalCode as secondary fallback).
+     */
+    fun buildCattleQrPayload(cowDocId: String, animalCode: String): String {
+        val cleanId = cowDocId.trim()
+        val cleanCode = animalCode.trim()
+        return when {
+            cleanId.isNotBlank() && cleanCode.isNotBlank() -> "JBGS:CATTLE:$cleanId:$cleanCode"
+            cleanId.isNotBlank() -> "JBGS:CATTLE:$cleanId"
+            cleanCode.isNotBlank() -> "JBGS:CATTLE::$cleanCode"
+            else -> ""
+        }
+    }
+
+    /**
+     * Parses scanned QR text or manual Cow ID input into structured Firebase Cow ID / Animal Code.
+     * Supports:
+     * - JBGS:CATTLE:<firebaseDocId>:<animalCode>
+     * - JBGS:CATTLE:<firebaseDocId>
+     * - jbgs://cattle/<firebaseDocId> or URLs containing cattle/<id> or cowId=<id>
+     * - Direct animalCode (e.g. JBGS-G-101)
+     * - Direct Firebase document ID
+     */
+    fun parseCattleQrPayload(raw: String): ParsedCattleQr? {
+        val trimmed = raw.trim()
+        if (trimmed.isBlank()) return null
+
+        // 1. Canonical format: JBGS:CATTLE:<docId>:<animalCode> or JBGS:CATTLE:<docId>
+        if (trimmed.startsWith("JBGS:CATTLE:", ignoreCase = true)) {
+            val rest = trimmed.substringAfter("JBGS:CATTLE:", "")
+            if (rest.isBlank()) return null
+            val parts = rest.split(":")
+            val docId = parts.getOrNull(0)?.trim()?.takeIf { SAFE_ID_REGEX.matches(it) }
+            val code = parts.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() && it.length <= 60 }
+            if (docId == null && code == null) return null
+            return ParsedCattleQr(cowDocId = docId, animalCode = code, rawValue = trimmed)
+        }
+
+        // 2. Deep-link or URL format (jbgs://cattle/<id> or ?cowId=<id>)
+        if (trimmed.contains("://")) {
+            val queryCowId = Regex("[?&](?:cowId|cattleId|id)=([A-Za-z0-9_\\-]{4,128})", RegexOption.IGNORE_CASE)
+                .find(trimmed)?.groupValues?.getOrNull(1)
+            val pathCowId = Regex("/cattle/([A-Za-z0-9_\\-]{4,128})", RegexOption.IGNORE_CASE)
+                .find(trimmed)?.groupValues?.getOrNull(1)
+            val extracted = queryCowId ?: pathCowId ?: return null
+            return if (ANIMAL_CODE_REGEX.matches(extracted)) {
+                ParsedCattleQr(cowDocId = null, animalCode = extracted.uppercase(Locale.US), rawValue = trimmed)
+            } else {
+                ParsedCattleQr(cowDocId = extracted, animalCode = null, rawValue = trimmed)
+            }
+        }
+
+        // 3. Direct Animal Code (e.g. JBGS-G-101)
+        if (ANIMAL_CODE_REGEX.matches(trimmed)) {
+            return ParsedCattleQr(cowDocId = null, animalCode = trimmed.uppercase(Locale.US), rawValue = trimmed)
+        }
+
+        // 4. Direct Firebase Unique Cow ID (no spaces or special URI/invalid chars)
+        if (SAFE_ID_REGEX.matches(trimmed)) {
+            return ParsedCattleQr(cowDocId = trimmed, animalCode = trimmed, rawValue = trimmed)
+        }
+
+        return null
+    }
+
+    /**
+     * Decodes a QR code from a CameraX Y-plane grayscale byte array using ZXing.
+     */
+    fun decodeQrFromYuvByteArray(yBytes: ByteArray, width: Int, height: Int): String? {
+        if (width <= 0 || height <= 0 || yBytes.size < width * height) return null
+        val reader = MultiFormatReader().apply {
+            setHints(
+                mapOf(
+                    DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+                    DecodeHintType.TRY_HARDER to true,
+                    DecodeHintType.CHARACTER_SET to "UTF-8"
+                )
+            )
+        }
+        val source = PlanarYUVLuminanceSource(
+            yBytes,
+            width,
+            height,
+            0,
+            0,
+            width,
+            height,
+            false
+        )
+        return try {
+            reader.decodeWithState(BinaryBitmap(HybridBinarizer(source)))?.text?.trim()
+        } catch (_: Exception) {
+            try {
+                reader.decodeWithState(BinaryBitmap(HybridBinarizer(source.invert())))?.text?.trim()
+            } catch (_: Exception) {
+                null
+            }
+        } finally {
+            reader.reset()
+        }
+    }
 
     fun generateQrBitmap(payload: String, sizePx: Int = 512): Bitmap? {
         return try {
