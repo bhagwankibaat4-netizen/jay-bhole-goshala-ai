@@ -184,14 +184,31 @@ class GosalaViewModel(
             return remote
         }
 
-        // Local live-synced cache fallback (instant offline support & exact match by ID / code / payload)
+        // Local live-synced cache fallback: strictly prioritize cowDocId -> animalCode -> qrPayload
+        // so a wrong cow is never returned.
         val cached = (cattleState.value as? DataUiState.Success)?.data.orEmpty()
         val localMatch = cached.firstOrNull { cow ->
-            (!parsed.cowDocId.isNullOrBlank() && cow.id.equals(parsed.cowDocId, ignoreCase = false)) ||
-                (!parsed.animalCode.isNullOrBlank() && cow.animalCode.equals(parsed.animalCode, ignoreCase = true)) ||
-                cow.qrPayload.equals(parsed.rawValue, ignoreCase = true)
+            !parsed.cowDocId.isNullOrBlank() && cow.id == parsed.cowDocId
+        } ?: cached.firstOrNull { cow ->
+            !parsed.animalCode.isNullOrBlank() && cow.animalCode.equals(parsed.animalCode, ignoreCase = true)
+        } ?: cached.firstOrNull { cow ->
+            cow.qrPayload.equals(parsed.rawValue, ignoreCase = true)
         }
-        return if (localMatch != null) Result.success(localMatch) else remote
+
+        if (localMatch != null) {
+            val enriched = if (com.example.core.CattlePhotoStorage.isCloudPhotoUri(localMatch.photoUri)) {
+                localMatch
+            } else {
+                val resolved = com.example.core.CattlePhotoStorage.resolveCowPhotoUrl(
+                    cattleId = localMatch.id,
+                    photoUri = localMatch.photoUri,
+                    photoStoragePath = localMatch.photoStoragePath
+                )
+                if (!resolved.isNullOrBlank()) localMatch.copy(photoUri = resolved) else localMatch
+            }
+            return Result.success(enriched)
+        }
+        return remote
     }
 
     fun addHealthRecord(record: HealthRecord, language: AppLanguage) {

@@ -349,9 +349,15 @@ private fun CameraXQrPreview(
     val onQrDecodedState by rememberUpdatedState(onQrDecoded)
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     val isDecoding = remember { AtomicBoolean(false) }
+    var cameraProviderRef by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    var boundCameraRef by remember { mutableStateOf<Camera?>(null) }
 
     DisposableEffect(Unit) {
         onDispose {
+            runCatching { boundCameraRef?.cameraControl?.enableTorch(false) }
+            runCatching { cameraProviderRef?.unbindAll() }
+            boundCameraRef = null
+            cameraProviderRef = null
             onCameraBound(null)
             analysisExecutor.shutdown()
         }
@@ -368,6 +374,7 @@ private fun CameraXQrPreview(
                 {
                     try {
                         val cameraProvider = cameraProviderFuture.get()
+                        cameraProviderRef = cameraProvider
                         val preview = Preview.Builder().build().also {
                             it.surfaceProvider = previewView.surfaceProvider
                         }
@@ -395,6 +402,7 @@ private fun CameraXQrPreview(
                             preview,
                             imageAnalysis
                         )
+                        boundCameraRef = camera
                         onCameraBound(camera)
                     } catch (e: Exception) {
                         Log.w("CattleQrScanner", "CameraX initialization failed", e)
@@ -423,6 +431,7 @@ private fun analyzeFrameForQr(
         if (plane != null) {
             val width = imageProxy.width
             val height = imageProxy.height
+            val rotationDegrees = imageProxy.imageInfo.rotationDegrees
             val buffer = plane.buffer
             val rowStride = plane.rowStride
             val pixelStride = plane.pixelStride
@@ -447,7 +456,12 @@ private fun analyzeFrameForQr(
                     }
                 }
             }
-            val decoded = QrAndExportUtils.decodeQrFromYuvByteArray(yBytes, width, height)
+            val decoded = QrAndExportUtils.decodeQrFromYuvByteArray(
+                yBytes = yBytes,
+                width = width,
+                height = height,
+                rotationDegrees = rotationDegrees
+            )
             if (!decoded.isNullOrBlank()) {
                 onDecoded(decoded)
             }
@@ -628,9 +642,13 @@ fun CattleDetailFullScreen(
                         modifier = Modifier.padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        key(cattle.id, cattle.photoUri) {
+                        key(cattle.id, cattle.photoUri, cattle.photoStoragePath) {
                             CowPhotoImage(
                                 photoUri = cattle.photoUri,
+                                photoStoragePath = cattle.photoStoragePath,
+                                cattleId = cattle.id,
+                                showRetryOnError = true,
+                                language = language,
                                 contentDescription = cattle.name,
                                 contentScale = ContentScale.Crop,
                                 testTagPrefix = "cattle_detail_photo",
@@ -742,6 +760,51 @@ fun CattleDetailFullScreen(
                     CowDetailRow(
                         str(language, "खरीद / अन्य जानकारी", "Arrival / Other Notes"),
                         cattle.notes?.takeIf { it.isNotBlank() } ?: str(language, "कोई अतिरिक्त टिप्पणी दर्ज नहीं", "No additional notes recorded")
+                    )
+                }
+            }
+
+            // 2B. Cow History Summary Card
+            item {
+                DetailSectionCard(
+                    title = str(language, "गाय का इतिहास (Cow History)", "Cow History Summary"),
+                    icon = Icons.Default.History,
+                    modifier = Modifier.testTag("cattle_detail_history_section")
+                ) {
+                    CowDetailRow(
+                        str(language, "गौशाला पंजीकरण", "Goshala Registration"),
+                        str(
+                            language,
+                            "सक्रिय रिकॉर्ड • शेड ${cattle.shedNumber.ifBlank { "-" }}",
+                            "Active record • Shed ${cattle.shedNumber.ifBlank { "-" }}"
+                        )
+                    )
+                    CowDetailRow(
+                        str(language, "कुल टीकाकरण इतिहास", "Total Vaccinations"),
+                        when {
+                            vaccinationRecords.isNotEmpty() ->
+                                str(language, "${vaccinationRecords.size} टीकाकरण दर्ज", "${vaccinationRecords.size} recorded")
+                            !cattle.vaccinationSummary.isNullOrBlank() ->
+                                str(language, "टीकाकरण विवरण दर्ज (नीचे देखें)", "Vaccination summary recorded (see below)")
+                            else ->
+                                str(language, "कोई रिकॉर्ड नहीं", "None recorded")
+                        }
+                    )
+                    CowDetailRow(
+                        str(language, "उपचार / चिकित्सा इतिहास", "Treatment History"),
+                        if (illnessTreatmentRecords.isNotEmpty()) {
+                            str(language, "${illnessTreatmentRecords.size} चिकित्सा रिकॉर्ड दर्ज", "${illnessTreatmentRecords.size} treatment records")
+                        } else {
+                            str(language, "कोई बीमारी/उपचार दर्ज नहीं (स्वस्थ)", "No illness/treatment logged")
+                        }
+                    )
+                    CowDetailRow(
+                        str(language, "चारा व देखभाल लॉग", "Feed & Care Logs"),
+                        if (recentFeedLogs.isNotEmpty()) {
+                            str(language, "${recentFeedLogs.size} हालिया देखभाल लॉग उपलब्ध", "${recentFeedLogs.size} recent care logs available")
+                        } else {
+                            str(language, "नियमित गौशाला देखभाल सक्रिय", "Regular Goshala care active")
+                        }
                     )
                 }
             }

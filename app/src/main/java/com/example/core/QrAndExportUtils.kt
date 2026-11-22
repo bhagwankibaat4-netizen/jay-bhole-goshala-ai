@@ -15,8 +15,10 @@ import com.google.zxing.DecodeHintType
 import com.google.zxing.EncodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
+import com.google.zxing.common.GlobalHistogramBinarizer
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeWriter
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -32,7 +34,7 @@ data class ParsedCattleQr(
 object QrAndExportUtils {
 
     private val SAFE_ID_REGEX = Regex("^[A-Za-z0-9_\\-]{4,128}$")
-    private val ANIMAL_CODE_REGEX = Regex("^JBGS-[A-Z0-9\\-]{2,40}$", RegexOption.IGNORE_CASE)
+    private val ANIMAL_CODE_REGEX = Regex("^(?:JBGS|JBG|COW|GAU|CATTLE|G|B|C)-[A-Z0-9\\-]{1,40}$", RegexOption.IGNORE_CASE)
 
     /**
      * Canonical permanent QR payload linked to the cow's Firebase document Unique ID
@@ -52,47 +54,128 @@ object QrAndExportUtils {
     /**
      * Parses scanned QR text or manual Cow ID input into structured Firebase Cow ID / Animal Code.
      * Supports:
-     * - JBGS:CATTLE:<firebaseDocId>:<animalCode>
-     * - JBGS:CATTLE:<firebaseDocId>
-     * - jbgs://cattle/<firebaseDocId> or URLs containing cattle/<id> or cowId=<id>
-     * - Direct animalCode (e.g. JBGS-G-101)
+     * - Canonical: JBGS:CATTLE:<firebaseDocId>:<animalCode>
+     * - Legacy 1-part canonical: JBGS:CATTLE:<firebaseDocId> or JBGS:CATTLE:<animalCode>
+     * - Legacy prefixes: JBGS-CATTLE:<id>, CATTLE:<id>, COW:<id>, JBGS|CATTLE|<id>|<code>
+     * - Legacy JSON: {"id":"...","animalCode":"..."} / {"cowId":"...","code":"..."}
+     * - Deep-link / URL: jbgs://cattle/<id>, https://.../cattle/<id>, ?cowId=<id>&animalCode=<code>
+     * - Direct Animal Code (e.g. JBGS-G-101, JBG-1234, COW-101)
      * - Direct Firebase document ID
      */
     fun parseCattleQrPayload(raw: String): ParsedCattleQr? {
-        val trimmed = raw.trim()
+        val trimmed = raw.replace("\uFEFF", "").trim()
         if (trimmed.isBlank()) return null
 
-        // 1. Canonical format: JBGS:CATTLE:<docId>:<animalCode> or JBGS:CATTLE:<docId>
+        // 1. Canonical format: JBGS:CATTLE:<docId>:<animalCode> or JBGS:CATTLE:<docIdOrCode>
         if (trimmed.startsWith("JBGS:CATTLE:", ignoreCase = true)) {
-            val rest = trimmed.substringAfter("JBGS:CATTLE:", "")
+            val rest = trimmed.substring(12).trim()
             if (rest.isBlank()) return null
             val parts = rest.split(":")
-            val docId = parts.getOrNull(0)?.trim()?.takeIf { SAFE_ID_REGEX.matches(it) }
-            val code = parts.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() && it.length <= 60 }
-            if (docId == null && code == null) return null
-            return ParsedCattleQr(cowDocId = docId, animalCode = code, rawValue = trimmed)
-        }
-
-        // 2. Deep-link or URL format (jbgs://cattle/<id> or ?cowId=<id>)
-        if (trimmed.contains("://")) {
-            val queryCowId = Regex("[?&](?:cowId|cattleId|id)=([A-Za-z0-9_\\-]{4,128})", RegexOption.IGNORE_CASE)
-                .find(trimmed)?.groupValues?.getOrNull(1)
-            val pathCowId = Regex("/cattle/([A-Za-z0-9_\\-]{4,128})", RegexOption.IGNORE_CASE)
-                .find(trimmed)?.groupValues?.getOrNull(1)
-            val extracted = queryCowId ?: pathCowId ?: return null
-            return if (ANIMAL_CODE_REGEX.matches(extracted)) {
-                ParsedCattleQr(cowDocId = null, animalCode = extracted.uppercase(Locale.US), rawValue = trimmed)
+            if (parts.size >= 2) {
+                val rawDoc = parts[0].trim()
+                val rawCode = parts[1].trim()
+                val docId = rawDoc.takeIf { SAFE_ID_REGEX.matches(it) }
+                val code = rawCode.takeIf { it.isNotBlank() && it.length <= 60 && !it.contains(" ") }
+                if (docId == null && code == null) return null
+                return ParsedCattleQr(cowDocId = docId, animalCode = code, rawValue = trimmed)
             } else {
-                ParsedCattleQr(cowDocId = extracted, animalCode = null, rawValue = trimmed)
+                val single = parts[0].trim()
+                if (!SAFE_ID_REGEX.matches(single)) return null
+                val normalizedCode = if (ANIMAL_CODE_REGEX.matches(single)) {
+                    single.uppercase(Locale.US)
+                } else {
+                    single
+                }
+                // Populate both cowDocId and animalCode so legacy single-token QR codes
+                // resolve cleanly whether the token was a Firestore docId OR an animalCode.
+                return ParsedCattleQr(cowDocId = single, animalCode = normalizedCode, rawValue = trimmed)
             }
         }
 
-        // 3. Direct Animal Code (e.g. JBGS-G-101)
+        // 2. Legacy pipe-delimited format: JBGS|CATTLE|<docId>|<animalCode>
+        if (trimmed.startsWith("JBGS|CATTLE|", ignoreCase = true)) {
+            val rest = trimmed.substring(12).trim()
+            if (rest.isBlank()) return null
+            val parts = rest.split("|")
+            val docId = parts.getOrNull(0)?.trim()?.takeIf { SAFE_ID_REGEX.matches(it) }
+            val code = parts.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() && it.length <= 60 && !it.contains(" ") }
+            if (docId == null && code == null) return null
+            return ParsedCattleQr(
+                cowDocId = docId,
+                animalCode = code ?: docId,
+                rawValue = trimmed
+            )
+        }
+
+        // 3. Legacy prefixed formats: JBGS-CATTLE:<id>, CATTLE:<id>, COW:<id>, ANIMAL_ID:<id>
+        val legacyPrefixRegex = Regex("^(?:JBGS[\\-_]CATTLE|CATTLE_ID|CATTLE|COW_ID|COW|ANIMAL_ID)[:=/](.+)$", RegexOption.IGNORE_CASE)
+        legacyPrefixRegex.matchEntire(trimmed)?.let { match ->
+            val rest = match.groupValues[1].trim()
+            if (rest.isBlank()) return null
+            val parts = rest.split(":", "|", ",")
+            if (parts.size >= 2) {
+                val docId = parts[0].trim().takeIf { SAFE_ID_REGEX.matches(it) }
+                val code = parts[1].trim().takeIf { it.isNotBlank() && it.length <= 60 && !it.contains(" ") }
+                if (docId != null || code != null) {
+                    return ParsedCattleQr(cowDocId = docId, animalCode = code, rawValue = trimmed)
+                }
+            } else if (SAFE_ID_REGEX.matches(rest)) {
+                val code = if (ANIMAL_CODE_REGEX.matches(rest)) rest.uppercase(Locale.US) else rest
+                return ParsedCattleQr(cowDocId = rest, animalCode = code, rawValue = trimmed)
+            }
+            return null
+        }
+
+        // 4. Legacy JSON QR format: {"id":"...","animalCode":"..."}
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            val parsedJson = runCatching { JSONObject(trimmed) }.getOrNull()
+            if (parsedJson != null) {
+                val docId = listOf("docId", "documentId", "cattleId", "cowId", "id")
+                    .firstNotNullOfOrNull { key ->
+                        parsedJson.optString(key, "").trim().takeIf { SAFE_ID_REGEX.matches(it) }
+                    }
+                val code = listOf("animalCode", "animalId", "cowCode", "code")
+                    .firstNotNullOfOrNull { key ->
+                        parsedJson.optString(key, "").trim().takeIf { it.isNotBlank() && it.length <= 60 && !it.contains(" ") }
+                    }
+                if (docId != null || code != null) {
+                    return ParsedCattleQr(cowDocId = docId, animalCode = code, rawValue = trimmed)
+                }
+            }
+            return null
+        }
+
+        // 5. Deep-link or URL format (jbgs://cattle/<id> or ?cowId=<id>&animalCode=<code>)
+        if (trimmed.contains("://")) {
+            val queryCowId = Regex("[?&](?:cowId|cattleId|docId|documentId|id)=([A-Za-z0-9_\\-]{4,128})", RegexOption.IGNORE_CASE)
+                .find(trimmed)?.groupValues?.getOrNull(1)
+            val queryCode = Regex("[?&](?:animalCode|animalId|code)=([A-Za-z0-9_\\-]{2,60})", RegexOption.IGNORE_CASE)
+                .find(trimmed)?.groupValues?.getOrNull(1)
+            val pathCowId = Regex("/(?:cattle|cow)/([A-Za-z0-9_\\-]{4,128})", RegexOption.IGNORE_CASE)
+                .find(trimmed)?.groupValues?.getOrNull(1)
+            val extractedId = queryCowId ?: pathCowId
+            if (extractedId == null && queryCode == null) return null
+            if (extractedId != null && queryCode != null) {
+                return ParsedCattleQr(
+                    cowDocId = extractedId,
+                    animalCode = queryCode.uppercase(Locale.US),
+                    rawValue = trimmed
+                )
+            }
+            val single = extractedId ?: queryCode!!
+            return if (ANIMAL_CODE_REGEX.matches(single)) {
+                ParsedCattleQr(cowDocId = null, animalCode = single.uppercase(Locale.US), rawValue = trimmed)
+            } else {
+                ParsedCattleQr(cowDocId = single, animalCode = single, rawValue = trimmed)
+            }
+        }
+
+        // 6. Direct Animal Code (e.g. JBGS-G-101, JBG-1234, COW-101)
         if (ANIMAL_CODE_REGEX.matches(trimmed)) {
             return ParsedCattleQr(cowDocId = null, animalCode = trimmed.uppercase(Locale.US), rawValue = trimmed)
         }
 
-        // 4. Direct Firebase Unique Cow ID (no spaces or special URI/invalid chars)
+        // 7. Direct Firebase Unique Cow ID (no spaces or special URI/invalid chars)
         if (SAFE_ID_REGEX.matches(trimmed)) {
             return ParsedCattleQr(cowDocId = trimmed, animalCode = trimmed, rawValue = trimmed)
         }
@@ -102,8 +185,15 @@ object QrAndExportUtils {
 
     /**
      * Decodes a QR code from a CameraX Y-plane grayscale byte array using ZXing.
+     * Uses multiple binarizers (Hybrid, GlobalHistogram, Inverted) and handles 90°/270° rotated
+     * Android camera frames for reliable decoding on physical devices.
      */
-    fun decodeQrFromYuvByteArray(yBytes: ByteArray, width: Int, height: Int): String? {
+    fun decodeQrFromYuvByteArray(
+        yBytes: ByteArray,
+        width: Int,
+        height: Int,
+        rotationDegrees: Int = 0
+    ): String? {
         if (width <= 0 || height <= 0 || yBytes.size < width * height) return null
         val reader = MultiFormatReader().apply {
             setHints(
@@ -114,27 +204,59 @@ object QrAndExportUtils {
                 )
             )
         }
-        val source = PlanarYUVLuminanceSource(
-            yBytes,
-            width,
-            height,
-            0,
-            0,
-            width,
-            height,
-            false
-        )
         return try {
-            reader.decodeWithState(BinaryBitmap(HybridBinarizer(source)))?.text?.trim()
-        } catch (_: Exception) {
-            try {
-                reader.decodeWithState(BinaryBitmap(HybridBinarizer(source.invert())))?.text?.trim()
-            } catch (_: Exception) {
-                null
+            val directSource = PlanarYUVLuminanceSource(
+                yBytes, width, height, 0, 0, width, height, false
+            )
+            decodeFromLuminanceSource(reader, directSource)?.let { return it }
+
+            // Retry on 90-degree clockwise rotated Y-plane for portrait Android CameraX frames
+            val normalizedRot = ((rotationDegrees % 360) + 360) % 360
+            if (normalizedRot == 90 || normalizedRot == 270 || width != height) {
+                val rotatedBytes = rotateYPlane90Cw(yBytes, width, height)
+                val rotatedSource = PlanarYUVLuminanceSource(
+                    rotatedBytes, height, width, 0, 0, height, width, false
+                )
+                decodeFromLuminanceSource(reader, rotatedSource)?.let { return it }
             }
+            null
         } finally {
             reader.reset()
         }
+    }
+
+    private fun decodeFromLuminanceSource(
+        reader: MultiFormatReader,
+        source: PlanarYUVLuminanceSource
+    ): String? {
+        val attempts = listOf(
+            { BinaryBitmap(HybridBinarizer(source)) },
+            { BinaryBitmap(GlobalHistogramBinarizer(source)) },
+            { BinaryBitmap(HybridBinarizer(source.invert())) }
+        )
+        for (bitmapProvider in attempts) {
+            try {
+                val text = reader.decodeWithState(bitmapProvider())?.text?.trim()
+                if (!text.isNullOrBlank()) return text
+            } catch (_: Exception) {
+                // Try next binarizer
+            } finally {
+                reader.reset()
+            }
+        }
+        return null
+    }
+
+    private fun rotateYPlane90Cw(src: ByteArray, width: Int, height: Int): ByteArray {
+        val dst = ByteArray(width * height)
+        for (y in 0 until height) {
+            val rowOffset = y * width
+            val dstCol = height - 1 - y
+            for (x in 0 until width) {
+                dst[x * height + dstCol] = src[rowOffset + x]
+            }
+        }
+        return dst
     }
 
     fun generateQrBitmap(payload: String, sizePx: Int = 512): Bitmap? {

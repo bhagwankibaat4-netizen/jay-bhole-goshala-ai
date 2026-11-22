@@ -86,6 +86,7 @@ class CowPhotoAndQrPersistenceRobolectricTest {
     fun setUp() {
         CattlePhotoStorage.clearMemoryCache()
         CattlePhotoStorage.testCloudPhotoResolver = null
+        CattlePhotoStorage.testStorageUrlResolver = null
         CattlePhotoStorage.testPhotoUploader = null
         CattlePhotoStorage.testProductPhotoUploader = null
     }
@@ -94,6 +95,7 @@ class CowPhotoAndQrPersistenceRobolectricTest {
     fun tearDown() {
         CattlePhotoStorage.clearMemoryCache()
         CattlePhotoStorage.testCloudPhotoResolver = null
+        CattlePhotoStorage.testStorageUrlResolver = null
         CattlePhotoStorage.testPhotoUploader = null
         CattlePhotoStorage.testProductPhotoUploader = null
     }

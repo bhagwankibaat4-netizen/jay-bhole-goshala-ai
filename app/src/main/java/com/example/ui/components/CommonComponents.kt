@@ -18,8 +18,10 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -89,12 +91,21 @@ private sealed interface CloudCowPhotoState {
     data object Fallback : CloudCowPhotoState
 }
 
+private sealed interface ResolvedPhotoSourceState {
+    data object Resolving : ResolvedPhotoSourceState
+    data class Ready(val uri: String) : ResolvedPhotoSourceState
+    data object Empty : ResolvedPhotoSourceState
+    data object Failed : ResolvedPhotoSourceState
+}
+
 /**
  * Crash-safe cow photo loader used across Public Dashboard, Admin/Staff Dashboards, Cattle List,
  * Cow Details / QR Scan Screen, Sponsorship Cards, and Add/Edit Form preview.
- * - Supports Firebase Storage HTTPS URLs, Firestore `cattlePhotos/{id}` cloud pointers, and local previews.
+ * - Supports Firebase Storage HTTPS URLs, `cattle_photos/<cattleId>/...` / `gs://` storage paths,
+ *   Firestore `cattlePhotos/{id}` cloud pointers, and local form previews.
  * - Shows a loading indicator while loading over slow networks.
  * - Always falls back to the warm Default Cow Image (`img_default_cow_1795363316557`) on missing/broken photos.
+ * - Optionally displays an error badge + Retry button (`showRetryOnError = true`) on Cow Details.
  */
 @Composable
 fun CowPhotoImage(
@@ -102,10 +113,53 @@ fun CowPhotoImage(
     contentDescription: String,
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
-    testTagPrefix: String = "cow_photo"
+    testTagPrefix: String = "cow_photo",
+    photoStoragePath: String? = null,
+    cattleId: String? = null,
+    showRetryOnError: Boolean = false,
+    language: AppLanguage = AppLanguage.HINDI
 ) {
-    val trimmed = photoUri?.trim().orEmpty()
+    val trimmedUri = photoUri?.trim().orEmpty()
+    val trimmedPath = photoStoragePath?.trim().orEmpty()
+    val cleanId = cattleId?.trim().orEmpty()
     val context = LocalContext.current
+    var retryAttempt by remember(trimmedUri, trimmedPath, cleanId) { mutableIntStateOf(0) }
+
+    val needsStorageResolve = remember(trimmedUri, trimmedPath) {
+        CattlePhotoStorage.isStoragePathUri(trimmedUri) ||
+            (trimmedUri.isBlank() && CattlePhotoStorage.isStoragePathUri(trimmedPath))
+    }
+
+    val resolvedState by produceState<ResolvedPhotoSourceState>(
+        initialValue = when {
+            needsStorageResolve -> ResolvedPhotoSourceState.Resolving
+            trimmedUri.isBlank() -> ResolvedPhotoSourceState.Empty
+            else -> ResolvedPhotoSourceState.Ready(trimmedUri)
+        },
+        key1 = trimmedUri,
+        key2 = trimmedPath,
+        key3 = retryAttempt
+    ) {
+        if (!needsStorageResolve) {
+            value = if (trimmedUri.isBlank()) {
+                ResolvedPhotoSourceState.Empty
+            } else {
+                ResolvedPhotoSourceState.Ready(trimmedUri)
+            }
+            return@produceState
+        }
+        value = ResolvedPhotoSourceState.Resolving
+        val url = CattlePhotoStorage.resolveCowPhotoUrl(
+            cattleId = cleanId,
+            photoUri = trimmedUri,
+            photoStoragePath = trimmedPath
+        )
+        value = if (!url.isNullOrBlank()) {
+            ResolvedPhotoSourceState.Ready(url)
+        } else {
+            ResolvedPhotoSourceState.Failed
+        }
+    }
 
     Box(
         modifier = modifier
@@ -113,96 +167,192 @@ fun CowPhotoImage(
             .testTag(testTagPrefix),
         contentAlignment = Alignment.Center
     ) {
-        when {
-            trimmed.isBlank() -> {
+        when (val source = resolvedState) {
+            is ResolvedPhotoSourceState.Resolving -> {
+                CowPhotoLoadingIndicator(testTag = "${testTagPrefix}_loading")
+            }
+            is ResolvedPhotoSourceState.Empty -> {
                 DefaultCowFallbackImage(
                     contentDescription = contentDescription,
                     contentScale = contentScale,
                     testTag = "${testTagPrefix}_default"
                 )
             }
-            trimmed.startsWith(CattlePhotoStorage.FIRESTORE_PHOTO_SCHEME, ignoreCase = true) -> {
-                val loadState by produceState<CloudCowPhotoState>(
-                    initialValue = CloudCowPhotoState.Loading,
-                    key1 = trimmed
-                ) {
-                    value = CloudCowPhotoState.Loading
-                    val bmp = CattlePhotoStorage.loadFirestorePhotoBitmap(trimmed)
-                    value = if (bmp != null) CloudCowPhotoState.Loaded(bmp) else CloudCowPhotoState.Fallback
-                }
-                when (val state = loadState) {
-                    is CloudCowPhotoState.Loading -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(SoftGreenTint)
-                                .testTag("${testTagPrefix}_loading"),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(24.dp),
-                                strokeWidth = 2.5.dp,
-                                color = ForestGreen
-                            )
-                        }
-                    }
-                    is CloudCowPhotoState.Loaded -> {
-                        Image(
-                            bitmap = state.bitmap.asImageBitmap(),
-                            contentDescription = contentDescription,
-                            contentScale = contentScale,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .testTag("${testTagPrefix}_loaded")
-                        )
-                    }
-                    is CloudCowPhotoState.Fallback -> {
-                        DefaultCowFallbackImage(
-                            contentDescription = contentDescription,
-                            contentScale = contentScale,
-                            testTag = "${testTagPrefix}_default"
-                        )
-                    }
-                }
-            }
-            else -> {
-                val request = remember(context, trimmed) {
-                    ImageRequest.Builder(context)
-                        .data(trimmed)
-                        .allowHardware(false)
-                        .crossfade(true)
-                        .build()
-                }
-                SubcomposeAsyncImage(
-                    model = request,
+            is ResolvedPhotoSourceState.Failed -> {
+                DefaultCowFallbackImage(
                     contentDescription = contentDescription,
                     contentScale = contentScale,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .testTag("${testTagPrefix}_remote"),
-                    loading = {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(SoftGreenTint)
-                                .testTag("${testTagPrefix}_loading"),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(24.dp),
-                                strokeWidth = 2.5.dp,
-                                color = ForestGreen
+                    testTag = "${testTagPrefix}_default"
+                )
+                if (showRetryOnError) {
+                    CowPhotoRetryOverlay(
+                        language = language,
+                        testTagPrefix = testTagPrefix,
+                        onRetry = {
+                            CattlePhotoStorage.evictCachedPhoto(trimmedUri, cleanId, trimmedPath)
+                            retryAttempt++
+                        },
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
+            }
+            is ResolvedPhotoSourceState.Ready -> {
+                val effectiveUri = source.uri
+                if (effectiveUri.startsWith(CattlePhotoStorage.FIRESTORE_PHOTO_SCHEME, ignoreCase = true)) {
+                    val loadState by produceState<CloudCowPhotoState>(
+                        initialValue = CloudCowPhotoState.Loading,
+                        key1 = effectiveUri,
+                        key2 = retryAttempt
+                    ) {
+                        value = CloudCowPhotoState.Loading
+                        val bmp = CattlePhotoStorage.loadFirestorePhotoBitmap(effectiveUri)
+                        value = if (bmp != null) CloudCowPhotoState.Loaded(bmp) else CloudCowPhotoState.Fallback
+                    }
+                    when (val state = loadState) {
+                        is CloudCowPhotoState.Loading -> {
+                            CowPhotoLoadingIndicator(testTag = "${testTagPrefix}_loading")
+                        }
+                        is CloudCowPhotoState.Loaded -> {
+                            Image(
+                                bitmap = state.bitmap.asImageBitmap(),
+                                contentDescription = contentDescription,
+                                contentScale = contentScale,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .testTag("${testTagPrefix}_loaded")
                             )
                         }
-                    },
-                    error = {
-                        DefaultCowFallbackImage(
-                            contentDescription = contentDescription,
-                            contentScale = contentScale,
-                            testTag = "${testTagPrefix}_default"
-                        )
+                        is CloudCowPhotoState.Fallback -> {
+                            DefaultCowFallbackImage(
+                                contentDescription = contentDescription,
+                                contentScale = contentScale,
+                                testTag = "${testTagPrefix}_default"
+                            )
+                            if (showRetryOnError) {
+                                CowPhotoRetryOverlay(
+                                    language = language,
+                                    testTagPrefix = testTagPrefix,
+                                    onRetry = {
+                                        CattlePhotoStorage.evictCachedPhoto(effectiveUri, cleanId, trimmedPath)
+                                        retryAttempt++
+                                    },
+                                    modifier = Modifier.align(Alignment.BottomCenter)
+                                )
+                            }
+                        }
                     }
-                )
+                } else {
+                    val request = remember(context, effectiveUri, retryAttempt) {
+                        ImageRequest.Builder(context)
+                            .data(effectiveUri)
+                            .setParameter("retry", retryAttempt, memoryCacheKey = null)
+                            .allowHardware(false)
+                            .crossfade(true)
+                            .build()
+                    }
+                    SubcomposeAsyncImage(
+                        model = request,
+                        contentDescription = contentDescription,
+                        contentScale = contentScale,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("${testTagPrefix}_remote"),
+                        loading = {
+                            CowPhotoLoadingIndicator(testTag = "${testTagPrefix}_loading")
+                        },
+                        error = {
+                            Box(modifier = Modifier.fillMaxSize()) {
+                                DefaultCowFallbackImage(
+                                    contentDescription = contentDescription,
+                                    contentScale = contentScale,
+                                    testTag = "${testTagPrefix}_default"
+                                )
+                                if (showRetryOnError) {
+                                    CowPhotoRetryOverlay(
+                                        language = language,
+                                        testTagPrefix = testTagPrefix,
+                                        onRetry = {
+                                            CattlePhotoStorage.evictCachedPhoto(effectiveUri, cleanId, trimmedPath)
+                                            retryAttempt++
+                                        },
+                                        modifier = Modifier.align(Alignment.BottomCenter)
+                                    )
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CowPhotoLoadingIndicator(testTag: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(SoftGreenTint)
+            .testTag(testTag),
+        contentAlignment = Alignment.Center
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(24.dp),
+            strokeWidth = 2.5.dp,
+            color = ForestGreen
+        )
+    }
+}
+
+@Composable
+private fun CowPhotoRetryOverlay(
+    language: AppLanguage,
+    testTagPrefix: String,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = Color.Black.copy(alpha = 0.68f),
+        shape = RoundedCornerShape(50),
+        modifier = modifier
+            .padding(8.dp)
+            .testTag("${testTagPrefix}_error_overlay")
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = str(language, "फोटो लोड नहीं हुई", "Photo failed to load"),
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall
+            )
+            Surface(
+                color = Golden,
+                shape = RoundedCornerShape(50),
+                modifier = Modifier
+                    .clickable(onClick = onRetry)
+                    .testTag("${testTagPrefix}_retry_btn")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = str(language, "पुनः प्रयास", "Retry"),
+                        tint = Color.Black,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = str(language, "पुनः प्रयास", "Retry"),
+                        color = Color.Black,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
     }
@@ -293,6 +443,8 @@ fun DashboardCowPhotoStrip(
                         ) {
                             CowPhotoImage(
                                 photoUri = cow.photoUri,
+                                photoStoragePath = cow.photoStoragePath,
+                                cattleId = cow.id,
                                 contentDescription = cow.name,
                                 contentScale = ContentScale.Crop,
                                 testTagPrefix = "${sectionTag}_photo_${cow.animalCode}",

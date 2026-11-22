@@ -81,10 +81,16 @@ fun CattleManagementScreen(
     val latestCattleList = (cattleState as? DataUiState.Success)?.data.orEmpty()
     val activeSelectedCattle = remember(selectedCattle, latestCattleList) {
         val current = selectedCattle ?: return@remember null
-        if (current.id.isNotBlank()) {
-            latestCattleList.firstOrNull { it.id == current.id } ?: current
+        val liveMatch = if (current.id.isNotBlank()) {
+            latestCattleList.firstOrNull { it.id == current.id }
         } else {
-            latestCattleList.firstOrNull { it.animalCode.equals(current.animalCode, ignoreCase = true) } ?: current
+            latestCattleList.firstOrNull { it.animalCode.equals(current.animalCode, ignoreCase = true) }
+        }
+        when {
+            liveMatch == null -> current
+            liveMatch.photoUri.isNullOrBlank() && !current.photoUri.isNullOrBlank() ->
+                liveMatch.copy(photoUri = current.photoUri)
+            else -> liveMatch
         }
     }
 
@@ -321,9 +327,11 @@ fun CattleManagementScreen(
                         onLookupCattleByQr(rawPayload)
                     } else {
                         val match = latestCattleList.firstOrNull { cow ->
-                            (!parsed.cowDocId.isNullOrBlank() && cow.id == parsed.cowDocId) ||
-                                (!parsed.animalCode.isNullOrBlank() && cow.animalCode.equals(parsed.animalCode, ignoreCase = true)) ||
-                                cow.qrPayload.equals(parsed.rawValue, ignoreCase = true)
+                            !parsed.cowDocId.isNullOrBlank() && cow.id == parsed.cowDocId
+                        } ?: latestCattleList.firstOrNull { cow ->
+                            !parsed.animalCode.isNullOrBlank() && cow.animalCode.equals(parsed.animalCode, ignoreCase = true)
+                        } ?: latestCattleList.firstOrNull { cow ->
+                            cow.qrPayload.equals(parsed.rawValue, ignoreCase = true)
                         }
                         Result.success(match)
                     }
@@ -432,6 +440,8 @@ private fun CattleListCard(
         ) {
             CowPhotoImage(
                 photoUri = cattle.photoUri,
+                photoStoragePath = cattle.photoStoragePath,
+                cattleId = cattle.id,
                 contentDescription = cattle.name,
                 contentScale = ContentScale.Crop,
                 testTagPrefix = "cattle_list_photo_${cattle.animalCode}",
@@ -568,6 +578,8 @@ private fun CattleFormDialog(
             ) {
                 CowPhotoImage(
                     photoUri = photoUri,
+                    photoStoragePath = photoStoragePath,
+                    cattleId = initial?.id,
                     contentDescription = name.ifBlank { str(language, "गाय फोटो प्रीव्यू", "Cow photo preview") },
                     contentScale = ContentScale.Crop,
                     testTagPrefix = "cattle_form_photo_preview",
@@ -694,12 +706,16 @@ private fun CattleFormDialog(
             }
         },
         confirmButton = {
+            var isSubmitting by remember { mutableStateOf(false) }
             Button(
+                enabled = !isSubmitting,
                 onClick = {
+                    if (isSubmitting) return@Button
                     if (name.isBlank() || breed.isBlank() || ageText.isBlank() || colour.isBlank() || entryDate.isBlank() || shedNumber.isBlank()) {
                         errorMsg = str(language, "कृपया सभी आवश्यक (*) विवरण भरें।", "Please fill all required (*) fields.")
                         return@Button
                     }
+                    isSubmitting = true
                     val updated = (initial ?: Cattle()).copy(
                         name = name.trim(),
                         category = category,

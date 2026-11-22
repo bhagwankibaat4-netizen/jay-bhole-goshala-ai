@@ -44,6 +44,7 @@ object CattlePhotoStorage {
     private const val FALLBACK_MAX_BASE64_LEN = 220_000
 
     private val memoryCache = object : LruCache<String, Bitmap>(24) {}
+    private val resolvedUrlCache = object : LruCache<String, String>(64) {}
 
     @Volatile
     private var registeredDb: FirebaseFirestore? = null
@@ -51,6 +52,10 @@ object CattlePhotoStorage {
     /** Optional test hook to intercept Firestore cloud photo resolution in Robolectric unit tests. */
     @Volatile
     var testCloudPhotoResolver: (suspend (String) -> Bitmap?)? = null
+
+    /** Optional test hook to intercept Storage path -> download URL resolution in Robolectric unit tests. */
+    @Volatile
+    var testStorageUrlResolver: (suspend (cattleId: String, photoStoragePath: String?) -> String?)? = null
 
     /** Optional test hook to intercept photo uploads in unit tests without live network. */
     @Volatile
@@ -66,6 +71,16 @@ object CattlePhotoStorage {
 
     fun clearMemoryCache() {
         memoryCache.evictAll()
+        resolvedUrlCache.evictAll()
+    }
+
+    fun evictCachedPhoto(photoUri: String?, cattleId: String? = null, photoStoragePath: String? = null) {
+        photoUri?.trim()?.takeIf { it.isNotBlank() }?.let { memoryCache.remove(it) }
+        val key = "${cattleId?.trim().orEmpty()}|${photoStoragePath?.trim().orEmpty()}"
+        resolvedUrlCache.remove(key)
+        if (!photoUri.isNullOrBlank()) {
+            resolvedUrlCache.remove("${cattleId?.trim().orEmpty()}|${photoUri.trim()}")
+        }
     }
 
     fun isCloudPhotoUri(uri: String?): Boolean {
@@ -74,6 +89,14 @@ object CattlePhotoStorage {
         return trimmed.startsWith("https://", ignoreCase = true) ||
             trimmed.startsWith("http://", ignoreCase = true) ||
             trimmed.startsWith(FIRESTORE_PHOTO_SCHEME, ignoreCase = true)
+    }
+
+    fun isStoragePathUri(uri: String?): Boolean {
+        val trimmed = uri?.trim().orEmpty()
+        if (trimmed.isBlank()) return false
+        return trimmed.startsWith("cattle_photos/", ignoreCase = true) ||
+            trimmed.startsWith("cattlePhotos/", ignoreCase = true) ||
+            trimmed.startsWith("gs://", ignoreCase = true)
     }
 
     fun isLocalDeviceUri(uri: String?): Boolean {
@@ -93,6 +116,135 @@ object CattlePhotoStorage {
 
     fun buildFirestorePhotoUri(cattleId: String, version: Long): String =
         "$FIRESTORE_PHOTO_SCHEME$cattleId?v=$version"
+
+    /**
+     * Resolves a cow's displayable cloud photo URL from `photoUri`, `photoStoragePath`
+     * (`cattle_photos/<cattleId>/...` or `gs://...` or `cattlePhotos/<cattleId>`),
+     * or by looking up the cow's Firebase Storage folder / Firestore fallback doc by `cattleId`.
+     * Never returns a dead local `content://` or `file://` URI.
+     */
+    suspend fun resolveCowPhotoUrl(
+        cattleId: String,
+        photoUri: String?,
+        photoStoragePath: String?
+    ): String? {
+        val cleanId = cattleId.trim()
+        val rawUri = photoUri?.trim().orEmpty()
+        val rawPath = photoStoragePath?.trim().orEmpty()
+
+        if (isCloudPhotoUri(rawUri)) return rawUri
+
+        val candidatePath = when {
+            isStoragePathUri(rawUri) -> rawUri
+            isStoragePathUri(rawPath) -> rawPath
+            else -> ""
+        }
+        val cacheKey = "$cleanId|$candidatePath"
+        if (cleanId.isNotBlank() || candidatePath.isNotBlank()) {
+            resolvedUrlCache.get(cacheKey)?.let { return it }
+        }
+
+        // Test hook for deterministic Robolectric unit testing
+        testStorageUrlResolver?.let { hook ->
+            val resolved = hook(cleanId, candidatePath.ifBlank { rawPath.ifBlank { null } })
+                ?.trim()
+                ?.takeIf { isCloudPhotoUri(it) }
+            if (resolved != null) {
+                resolvedUrlCache.put(cacheKey, resolved)
+            }
+            return resolved
+        }
+
+        // 1. Firestore fallback pointer stored as path (`cattlePhotos/<cattleId>`)
+        if (candidatePath.startsWith("cattlePhotos/", ignoreCase = true)) {
+            val docId = candidatePath.substringAfter("/").substringBefore("/").trim().ifBlank { cleanId }
+            if (docId.isNotBlank()) {
+                val pointer = buildFirestorePhotoUri(docId, 0L)
+                resolvedUrlCache.put(cacheKey, pointer)
+                return pointer
+            }
+        }
+
+        // 2. Firebase Storage `gs://` or `cattle_photos/<cattleId>/...` path -> fresh HTTPS download URL
+        if (candidatePath.startsWith("gs://", ignoreCase = true)) {
+            val url = try {
+                withTimeout(10_000L) {
+                    FirebaseStorage.getInstance().getReferenceFromUrl(candidatePath).downloadUrl.await().toString()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to resolve gs:// photo path=$candidatePath: ${e.message}")
+                null
+            }
+            if (!url.isNullOrBlank()) {
+                resolvedUrlCache.put(cacheKey, url)
+                return url
+            }
+        } else if (candidatePath.startsWith("cattle_photos/", ignoreCase = true)) {
+            val url = try {
+                withTimeout(10_000L) {
+                    FirebaseStorage.getInstance().reference.child(candidatePath).downloadUrl.await().toString()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to resolve storage photo path=$candidatePath: ${e.message}")
+                null
+            }
+            if (!url.isNullOrBlank()) {
+                resolvedUrlCache.put(cacheKey, url)
+                return url
+            }
+        }
+
+        // 3. Folder lookup under `cattle_photos/<cattleId>/` if cow has no explicit photoUri saved
+        if (cleanId.isNotBlank()) {
+            val folderUrl = try {
+                withTimeout(8_000L) {
+                    val listResult = FirebaseStorage.getInstance().reference
+                        .child("cattle_photos/$cleanId")
+                        .list(5)
+                        .await()
+                    val latestItem = listResult.items.maxByOrNull { it.name }
+                    latestItem?.downloadUrl?.await()?.toString()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.d(TAG, "No Storage folder photo for cattleId=$cleanId: ${e.message}")
+                null
+            }
+            if (!folderUrl.isNullOrBlank()) {
+                resolvedUrlCache.put(cacheKey, folderUrl)
+                return folderUrl
+            }
+
+            // 4. Fallback check in Firestore `cattlePhotos/<cattleId>`
+            val db = registeredDb
+            if (db != null) {
+                val firestorePointer = try {
+                    withTimeout(8_000L) {
+                        val snap = db.collection("cattlePhotos").document(cleanId).get().await()
+                        if (snap.exists() && !snap.getString("imageBase64").isNullOrBlank()) {
+                            buildFirestorePhotoUri(cleanId, snap.getLong("version") ?: 0L)
+                        } else null
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.d(TAG, "No Firestore fallback photo for cattleId=$cleanId: ${e.message}")
+                    null
+                }
+                if (!firestorePointer.isNullOrBlank()) {
+                    resolvedUrlCache.put(cacheKey, firestorePointer)
+                    return firestorePointer
+                }
+            }
+        }
+
+        return null
+    }
 
     /**
      * Creates a FileProvider-backed temporary URI inside `cacheDir/camera_photos` for `TakePicture()`.

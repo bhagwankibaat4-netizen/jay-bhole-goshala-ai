@@ -111,14 +111,61 @@ class GosalaRepository(
         } else {
             db.collection("cattle").document()
         }
-        val code = cattle.animalCode.ifBlank {
+        val requestedCode = cattle.animalCode.trim()
+        val code: String = if (requestedCode.isNotBlank()) {
+            if (!isEdit) {
+                val duplicateExists = try {
+                    withTimeout(6_000L) {
+                        db.collection("cattle")
+                            .whereEqualTo("animalCode", requestedCode)
+                            .limit(1)
+                            .get()
+                            .await()
+                            .documents
+                            .isNotEmpty()
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    false
+                }
+                if (duplicateExists) {
+                    return Result.failure(
+                        IllegalStateException("इस Cow ID ($requestedCode) से गाय का रिकॉर्ड पहले से मौजूद है। डुप्लीकेट रिकॉर्ड से बचने के लिए अलग ID उपयोग करें।")
+                    )
+                }
+            }
+            requestedCode.take(40)
+        } else {
             val prefix = when (cattle.category) {
                 "BULL" -> "B"
                 "CALF" -> "C"
                 else -> "G"
             }
-            "JBGS-$prefix-${(100..999).random()}"
-        }.take(40)
+            var generated = "JBGS-$prefix-${(100..999).random()}"
+            if (!isEdit) {
+                for (attempt in 0 until 5) {
+                    val exists = try {
+                        withTimeout(4_000L) {
+                            db.collection("cattle")
+                                .whereEqualTo("animalCode", generated)
+                                .limit(1)
+                                .get()
+                                .await()
+                                .documents
+                                .isNotEmpty()
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        false
+                    }
+                    if (!exists) break
+                    generated = "JBGS-$prefix-${(1000..9999).random()}"
+                }
+            }
+            generated.take(40)
+        }
         val qr = cattle.qrPayload.ifBlank { QrAndExportUtils.buildCattleQrPayload(docRef.id, code) }.take(300)
 
         // Ensure cow photo is ALWAYS uploaded to permanent cloud storage — NEVER save an ephemeral local URI.
@@ -146,6 +193,9 @@ class GosalaRepository(
                 if (isEdit && rawPhoto.startsWith(CattlePhotoStorage.FIRESTORE_PHOTO_SCHEME, ignoreCase = true)) {
                     CattlePhotoStorage.syncPhotoVisibility(db, docRef.id, cattle.publicApproved)
                 }
+            } else if (CattlePhotoStorage.isStoragePathUri(rawPhoto)) {
+                resolvedStoragePath = rawPhoto.take(300)
+                resolvedPhotoUrl = CattlePhotoStorage.resolveCowPhotoUrl(docRef.id, rawPhoto, rawPhoto)?.take(2000)
             }
         }
 
@@ -169,6 +219,9 @@ class GosalaRepository(
                     "monthlySupportInr" to cattle.monthlySupportInr.coerceIn(0L, 500000L),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
+                if (cattle.qrPayload.isBlank()) {
+                    updates["qrPayload"] = qr
+                }
                 if (resolvedPhotoUrl != null) {
                     updates["photoUri"] = resolvedPhotoUrl
                 }
@@ -231,7 +284,9 @@ class GosalaRepository(
 
     /**
      * Looks up a single cow record directly from Firebase Firestore using a scanned QR payload
-     * or Cow Unique ID / animalCode. Respects role access (publicApproved == true for PUBLIC).
+     * or Cow Unique ID / animalCode. Respects role access (`publicApproved == true` for PUBLIC),
+     * resolves cloud photo URLs from `photoStoragePath` / `cattle_photos/<cattleId>/...` if needed,
+     * and guarantees exact matching so a wrong cow is never opened.
      */
     suspend fun findCattleByQrOrId(session: UserSession, rawQrOrId: String): Result<Cattle?> {
         if (!session.canView(AppModule.CATTLE)) {
@@ -243,7 +298,7 @@ class GosalaRepository(
         return try {
             val isPublic = session.role == UserRole.PUBLIC
 
-            // 1. Direct lookup by Firebase document Unique ID
+            // 1. Strict direct lookup by Firebase document Unique ID
             val docId = parsed.cowDocId
             if (!docId.isNullOrBlank()) {
                 val docMatch = try {
@@ -260,33 +315,107 @@ class GosalaRepository(
                     Log.w(TAG, "Direct cattle doc lookup fallback for id=$docId", e)
                     null
                 }
-                if (docMatch != null) return Result.success(docMatch)
+                if (docMatch != null) {
+                    return Result.success(enrichCattlePhoto(docMatch))
+                }
             }
 
-            // 2. Fallback lookup by human-readable animalCode (e.g. JBGS-G-101)
+            // 2. Exact lookup by human-readable animalCode (e.g. JBGS-G-101, JBG-1234, COW-101)
             val code = parsed.animalCode
             if (!code.isNullOrBlank()) {
-                val query = if (isPublic) {
-                    db.collection("cattle")
-                        .whereEqualTo("publicApproved", true)
-                        .whereEqualTo("animalCode", code)
-                        .limit(1)
-                } else {
-                    db.collection("cattle")
-                        .whereEqualTo("animalCode", code)
-                        .limit(1)
+                val candidates = listOf(code.trim(), code.trim().uppercase()).distinct()
+                for (candidate in candidates) {
+                    val codeMatch = querySingleCattleByField(
+                        field = "animalCode",
+                        value = candidate,
+                        isPublic = isPublic
+                    )
+                    if (codeMatch != null) {
+                        return Result.success(enrichCattlePhoto(codeMatch))
+                    }
                 }
-                val snap = withTimeout(10_000L) { query.get().await() }
-                val match = snap.documents.firstOrNull()
-                    ?.toObject(Cattle::class.java, ServerTimestampBehavior.ESTIMATE)
-                if (match != null) return Result.success(match)
             }
 
-            Result.success(null)
+            // 3. Fallback lookup by stored qrPayload (supports legacy custom payloads saved in Firestore)
+            val payloadMatch = querySingleCattleByField(
+                field = "qrPayload",
+                value = parsed.rawValue,
+                isPublic = isPublic
+            )
+            if (payloadMatch != null) {
+                return Result.success(enrichCattlePhoto(payloadMatch))
+            }
+
+            // 4. Case-insensitive fallback scan over approved/visible cattle if composite index was absent
+            val fallbackList = try {
+                val baseQuery = if (isPublic) {
+                    db.collection("cattle").whereEqualTo("publicApproved", true).limit(200)
+                } else {
+                    db.collection("cattle").limit(200)
+                }
+                withTimeout(10_000L) { baseQuery.get().await() }
+                    .toObjects(Cattle::class.java, ServerTimestampBehavior.ESTIMATE)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                emptyList()
+            }
+
+            val exactFallback = fallbackList.firstOrNull { cow ->
+                !parsed.cowDocId.isNullOrBlank() && cow.id == parsed.cowDocId
+            } ?: fallbackList.firstOrNull { cow ->
+                !parsed.animalCode.isNullOrBlank() && cow.animalCode.equals(parsed.animalCode, ignoreCase = true)
+            } ?: fallbackList.firstOrNull { cow ->
+                cow.qrPayload.equals(parsed.rawValue, ignoreCase = true)
+            }
+
+            Result.success(exactFallback?.let { enrichCattlePhoto(it) })
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    private suspend fun querySingleCattleByField(
+        field: String,
+        value: String,
+        isPublic: Boolean
+    ): Cattle? {
+        return try {
+            val query = if (isPublic) {
+                db.collection("cattle")
+                    .whereEqualTo("publicApproved", true)
+                    .whereEqualTo(field, value)
+                    .limit(1)
+            } else {
+                db.collection("cattle")
+                    .whereEqualTo(field, value)
+                    .limit(1)
+            }
+            val snap = withTimeout(10_000L) { query.get().await() }
+            snap.documents.firstOrNull()
+                ?.toObject(Cattle::class.java, ServerTimestampBehavior.ESTIMATE)
+                ?.takeIf { !isPublic || it.publicApproved }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Firestore query failed for $field=$value (isPublic=$isPublic): ${e.message}")
+            null
+        }
+    }
+
+    private suspend fun enrichCattlePhoto(cow: Cattle): Cattle {
+        if (CattlePhotoStorage.isCloudPhotoUri(cow.photoUri)) return cow
+        val resolved = CattlePhotoStorage.resolveCowPhotoUrl(
+            cattleId = cow.id,
+            photoUri = cow.photoUri,
+            photoStoragePath = cow.photoStoragePath
+        )
+        return when {
+            !resolved.isNullOrBlank() -> cow.copy(photoUri = resolved)
+            CattlePhotoStorage.isLocalDeviceUri(cow.photoUri) -> cow.copy(photoUri = null)
+            else -> cow
         }
     }
 
