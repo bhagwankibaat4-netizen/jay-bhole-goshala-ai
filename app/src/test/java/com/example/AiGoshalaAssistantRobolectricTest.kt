@@ -124,20 +124,83 @@ class AiGoshalaAssistantRobolectricTest {
     }
 
     @Test
-    fun `app check debug token persists synchronously via commit and token errors are detected`() {
+    fun `app check debug token persists synchronously via commit, standalone debug APK uses provisioned reCAPTCHA, and dummy tokens are rejected`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val persistenceKey = "test_goshala_app"
         val testToken = "12345678-ABCD-EF01-2345-6789ABCDEF01"
 
+        // 1. Provisioned reCAPTCHA Enterprise site key must resolve cleanly from resources
+        val siteKey = resolveRecaptchaSiteKey(context)
+        assertFalse(siteKey.isNullOrBlank())
+
+        // 2. Debug token commits synchronously to both Firebase debug store and explicit meta store
         val committed = persistDebugAppCheckToken(context, persistenceKey, testToken)
         assertTrue(committed)
-
         val stored = context.getSharedPreferences(
             "$DEBUG_STORE_PREFIX$persistenceKey",
             Context.MODE_PRIVATE
         ).getString(DEBUG_SECRET_KEY, null)
         assertEquals(testToken, stored)
 
+        // 3. Provider selection matrix prevents unregistered random UUIDs on standalone phones
+        assertEquals(
+            AppCheckProviderKind.DEBUG,
+            decideAppCheckProviderKind(
+                isDebugBuild = true,
+                intentDebugToken = testToken,
+                storedExplicitDebugToken = null,
+                storedSdkDebugSecret = null,
+                recaptchaSiteKey = siteKey
+            )
+        )
+        // Standalone Debug APK installed on user's phone (no intent token, stale random UUID) -> RECAPTCHA!
+        assertEquals(
+            AppCheckProviderKind.RECAPTCHA,
+            decideAppCheckProviderKind(
+                isDebugBuild = true,
+                intentDebugToken = null,
+                storedExplicitDebugToken = null,
+                storedSdkDebugSecret = "unregistered-random-uuid",
+                recaptchaSiteKey = siteKey
+            )
+        )
+        // AI Studio emulator relaunched with matching explicit harness token -> DEBUG!
+        assertEquals(
+            AppCheckProviderKind.DEBUG,
+            decideAppCheckProviderKind(
+                isDebugBuild = true,
+                intentDebugToken = null,
+                storedExplicitDebugToken = testToken,
+                storedSdkDebugSecret = testToken,
+                recaptchaSiteKey = siteKey
+            )
+        )
+        // Release build -> ALWAYS RECAPTCHA!
+        assertEquals(
+            AppCheckProviderKind.RECAPTCHA,
+            decideAppCheckProviderKind(
+                isDebugBuild = false,
+                intentDebugToken = testToken,
+                storedExplicitDebugToken = testToken,
+                storedSdkDebugSecret = testToken,
+                recaptchaSiteKey = siteKey
+            )
+        )
+
+        // 4. Stale token cleanup works synchronously
+        clearStoredDebugAppCheckToken(context, persistenceKey)
+        assertNull(
+            context.getSharedPreferences("$DEBUG_STORE_PREFIX$persistenceKey", Context.MODE_PRIVATE)
+                .getString(DEBUG_SECRET_KEY, null)
+        )
+
+        // 5. JWT validator rejects Firebase dummy error token and accepts real JWTs
+        assertFalse(isValidAppCheckJwt(null))
+        assertFalse(isValidAppCheckJwt(""))
+        assertFalse(isValidAppCheckJwt("eyJlcnJvciI6IlVOS05PV05fRVJST1IifQ=="))
+        assertTrue(isValidAppCheckJwt("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhcHAifQ.c2lnbmF0dXJl"))
+
+        // 6. Error classifier accurately detects App Check token failures
         assertTrue(isAppCheckTokenError(Exception("Firebase App Check token is invalid.")))
         assertTrue(isAppCheckTokenError(Exception("HTTP 403 attestation failure")))
         assertFalse(isAppCheckTokenError(Exception("Network socket closed")))
@@ -336,7 +399,11 @@ class AiGoshalaAssistantRobolectricTest {
         assertTrue(capturedContext.contains("SELECTED COW RECORD"))
         assertTrue(capturedContext.contains("JBGS-G-001"))
 
-        // 5. Verify AI never auto-mutated any record
+        // 5. Verify Retry did NOT create duplicate user messages (exactly 1 user msg + 1 AI reply)
+        assertEquals(1, vm.messages.value.count { it.isUser })
+        assertEquals(1, vm.messages.value.count { !it.isUser })
+
+        // 6. Verify AI never auto-mutated any record
         assertFalse(mutatedAnyRecord)
     }
 

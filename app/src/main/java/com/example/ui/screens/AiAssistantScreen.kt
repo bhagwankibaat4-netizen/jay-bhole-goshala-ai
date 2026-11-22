@@ -242,11 +242,11 @@ fun AiAssistantScreen(
 
     val isBusy = uiState is AiUiState.Loading || uiState is AiUiState.Streaming
 
-    fun sendPrompt(text: String = promptText) {
+    fun sendPrompt(text: String = promptText, isRetry: Boolean = false) {
         val trimmed = text.trim()
         if (trimmed.isBlank() || isBusy) return
         lastSentPrompt = trimmed
-        promptText = ""
+        if (!isRetry) promptText = ""
         aiViewModel.askAssistant(
             prompt = trimmed,
             modeLabel = str(language, selectedMode.labelHi, selectedMode.labelEn),
@@ -262,7 +262,8 @@ fun AiAssistantScreen(
             compost = compost,
             donations = donations,
             products = products,
-            selectedCow = selectedCow
+            selectedCow = selectedCow,
+            isRetry = isRetry
         )
     }
 
@@ -648,7 +649,7 @@ fun AiAssistantScreen(
                                 }
                                 if (lastSentPrompt.isNotBlank()) {
                                     OutlinedButton(
-                                        onClick = { sendPrompt(lastSentPrompt) },
+                                        onClick = { sendPrompt(lastSentPrompt, isRetry = true) },
                                         modifier = Modifier.testTag("ai_chat_retry_btn")
                                     ) {
                                         Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))

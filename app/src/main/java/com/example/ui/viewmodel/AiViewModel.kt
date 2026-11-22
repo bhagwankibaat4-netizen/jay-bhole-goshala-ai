@@ -62,10 +62,14 @@ class AiViewModel(
         compost: List<CompostBatch>,
         donations: List<Donation>,
         products: List<GoshalaProduct> = emptyList(),
-        selectedCow: Cattle? = null
+        selectedCow: Cattle? = null,
+        isRetry: Boolean = false
     ) {
         val trimmed = prompt.trim()
         if (trimmed.isBlank()) return
+        // Prevent overlapping duplicate requests while a response is already in flight
+        if (_uiState.value is AiUiState.Loading || _uiState.value is AiUiState.Streaming) return
+
         val roleContext = aiRepository.buildRoleScopedContext(
             session = session,
             summary = summary,
@@ -81,15 +85,19 @@ class AiViewModel(
             selectedCow = selectedCow
         )
         val cowTag = selectedCow?.let { "${it.name} (${it.animalCode})" }.orEmpty()
-        _messages.value = _messages.value + AiChatMessage(
-            isUser = true,
-            text = trimmed,
-            modeLabel = modeLabel,
-            cowContextLabel = cowTag
-        )
+        val lastMsg = _messages.value.lastOrNull()
+        val isDuplicateRetryOfLastUserMsg = isRetry && lastMsg?.isUser == true && lastMsg.text == trimmed
+        if (!isDuplicateRetryOfLastUserMsg) {
+            _messages.value = _messages.value + AiChatMessage(
+                isUser = true,
+                text = trimmed,
+                modeLabel = modeLabel,
+                cowContextLabel = cowTag
+            )
+        }
 
+        _uiState.value = AiUiState.Loading
         viewModelScope.launch {
-            _uiState.value = AiUiState.Loading
             var finalText = ""
             try {
                 aiRepository.streamAssistantResponse(trimmed, roleContext, modeLabel, language).collect { partial ->
@@ -129,8 +137,9 @@ class AiViewModel(
         cowHealthRecords: List<HealthRecord> = emptyList(),
         isPublic: Boolean = false
     ) {
+        if (_photoAnalysisState.value is AiUiState.Loading) return
+        _photoAnalysisState.value = AiUiState.Loading
         viewModelScope.launch {
-            _photoAnalysisState.value = AiUiState.Loading
             val res = aiRepository.analyzeCattlePhoto(
                 bitmap = bitmap,
                 notes = notes,
