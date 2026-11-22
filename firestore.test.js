@@ -1614,6 +1614,314 @@ test("Cow Cloud Photos & QR Read-Only Security: Admin writes permanent photo URL
   await assertSucceeds(adminDb.collection("cattlePhotos").doc("cow_photo_private").delete());
 });
 
+test("13. Notifications & Reminders RBAC: Admin full control, Public published-only read, Staff scoped read, self-only Read/Unread", async () => {
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID, {
+    email: ADMIN_EMAIL,
+    email_verified: true,
+  }).firestore();
+  const publicDb = testEnv.authenticatedContext(PUBLIC_UID, {
+    email: PUBLIC_EMAIL,
+    email_verified: true,
+  }).firestore();
+  const staffUid = "staff_notif_uid";
+  const staffFinanceUid = "staff_notif_finance";
+  const staffDb = testEnv.authenticatedContext(staffUid, {
+    email: "sevak_notif@gosala.org",
+    email_verified: true,
+  }).firestore();
+  const staffFinanceDb = testEnv.authenticatedContext(staffFinanceUid, {
+    email: "sevak_fin@gosala.org",
+    email_verified: true,
+  }).firestore();
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("staffAccounts").doc(staffUid).set({
+      uid: staffUid,
+      email: "sevak_notif@gosala.org",
+      name: "सेवक चारा",
+      designation: "गौ सेवक",
+      monthlySalary: 10000,
+      active: true,
+      permissions: { feed: ["VIEW", "ADD"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    await db.collection("staffAccounts").doc(staffFinanceUid).set({
+      uid: staffFinanceUid,
+      email: "sevak_fin@gosala.org",
+      name: "सेवक वित्त",
+      designation: "लेखाकार",
+      monthlySalary: 15000,
+      active: true,
+      permissions: { finance: ["VIEW"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+  });
+
+  // 1. Admin creates published Public notice, unpublished Draft, Staff Feed Reminder, Specific Staff private notice, unpublished Targeted Draft, and Admin-only notice
+  await assertSucceeds(
+    adminDb.collection("notifications").doc("notif_pub_1").set({
+      targetRole: "PUBLIC",
+      targetUid: "",
+      category: "PRODUCTS",
+      title: "नए जैविक खाद व कंडे उपलब्ध",
+      message: "गौशाला में ताज़ा वर्मी कम्पोस्ट खाद और धूपबत्ती उपलब्ध है।",
+      photoUrl: "preset:compost",
+      published: true,
+      publishDate: "2026-11-22",
+      expiryDate: "2026-12-22",
+      itemKind: "NOTICE",
+      priority: "HIGH",
+      assigneeName: "",
+      reminderTime: "",
+      recurrence: "ONCE",
+      targetModule: "",
+      createdBy: ADMIN_UID,
+      dedupKey: "public_products_1",
+      readByUids: [],
+      completedByUids: [],
+      createdAt: pastDate(2000),
+      updatedAt: pastDate(2000),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("notifications").doc("notif_draft_1").set({
+      targetRole: "PUBLIC",
+      targetUid: "",
+      category: "ANNOUNCEMENTS",
+      title: "अप्रकाशित ड्राफ्ट सूचना",
+      message: "यह अभी प्रकाशित नहीं है।",
+      published: false,
+      publishDate: "2026-11-25",
+      itemKind: "NOTICE",
+      priority: "NORMAL",
+      recurrence: "ONCE",
+      targetModule: "",
+      createdBy: ADMIN_UID,
+      readByUids: [],
+      completedByUids: [],
+      createdAt: pastDate(2000),
+      updatedAt: pastDate(2000),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("notifications").doc("notif_staff_rem_1").set({
+      targetRole: "STAFF",
+      targetUid: "",
+      category: "REMINDERS",
+      title: "सुबह चारा वितरण रिमाइंडर",
+      message: "सुबह 7 बजे सभी शेड में हरा चारा दें।",
+      published: true,
+      publishDate: "2026-11-22",
+      itemKind: "REMINDER",
+      priority: "URGENT",
+      assigneeName: "चारा विभाग",
+      reminderTime: "07:00",
+      recurrence: "DAILY",
+      targetModule: "feed",
+      createdBy: ADMIN_UID,
+      readByUids: [],
+      completedByUids: [],
+      createdAt: pastDate(2000),
+      updatedAt: pastDate(2000),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("notifications").doc("notif_staff_private_feed").set({
+      targetRole: "STAFF",
+      targetUid: staffUid,
+      category: "REMINDERS",
+      title: "निजी स्टाफ ड्यूटी निर्देश",
+      message: "केवल सेवक चारा के लिए शेड-3 का निरीक्षण कार्य।",
+      published: true,
+      publishDate: "2026-11-22",
+      itemKind: "REMINDER",
+      priority: "HIGH",
+      assigneeName: "सेवक चारा",
+      reminderTime: "08:30",
+      recurrence: "ONCE",
+      targetModule: "",
+      createdBy: ADMIN_UID,
+      readByUids: [],
+      completedByUids: [],
+      createdAt: pastDate(2000),
+      updatedAt: pastDate(2000),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("notifications").doc("notif_staff_draft_private").set({
+      targetRole: "STAFF",
+      targetUid: staffUid,
+      category: "ANNOUNCEMENTS",
+      title: "अप्रकाशित व्यक्तिगत ड्राफ्ट",
+      message: "प्रकाशन से पहले लक्षित स्टाफ को भी नहीं दिखना चाहिए।",
+      published: false,
+      publishDate: "2026-11-22",
+      itemKind: "NOTICE",
+      priority: "NORMAL",
+      recurrence: "ONCE",
+      targetModule: "",
+      createdBy: ADMIN_UID,
+      readByUids: [],
+      completedByUids: [],
+      createdAt: pastDate(2000),
+      updatedAt: pastDate(2000),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("notifications").doc("notif_admin_only").set({
+      targetRole: "ADMIN",
+      targetUid: "",
+      category: "ANNOUNCEMENTS",
+      title: "केवल प्रशासक ऑडिट नोट",
+      message: "आंतरिक ऑडिट बैठक।",
+      published: true,
+      publishDate: "2026-11-22",
+      itemKind: "NOTICE",
+      priority: "NORMAL",
+      recurrence: "ONCE",
+      targetModule: "",
+      createdBy: ADMIN_UID,
+      readByUids: [],
+      completedByUids: [],
+      createdAt: pastDate(2000),
+      updatedAt: pastDate(2000),
+    })
+  );
+
+  // 2. Public user CAN read & list published broadcast PUBLIC notices; CANNOT read Drafts, STAFF reminders, Specific Staff private notices, or ADMIN notices
+  await assertSucceeds(publicDb.collection("notifications").doc("notif_pub_1").get());
+  await assertSucceeds(
+    publicDb.collection("notifications")
+      .where("targetRole", "==", "PUBLIC")
+      .where("targetUid", "==", "")
+      .where("published", "==", true)
+      .get()
+  );
+  await assertFails(publicDb.collection("notifications").doc("notif_draft_1").get());
+  await assertFails(publicDb.collection("notifications").doc("notif_staff_rem_1").get());
+  await assertFails(publicDb.collection("notifications").doc("notif_staff_private_feed").get());
+  await assertFails(publicDb.collection("notifications").doc("notif_admin_only").get());
+  await assertFails(
+    publicDb.collection("notifications")
+      .where("targetRole", "==", "STAFF")
+      .where("targetUid", "==", "")
+      .where("published", "==", true)
+      .get()
+  );
+
+  // 3. Correct Staff (feed) CAN read published feed reminder, own private notice, and published PUBLIC notice; CANNOT read Drafts (even own draft!) or ADMIN notice
+  await assertSucceeds(staffDb.collection("notifications").doc("notif_staff_rem_1").get());
+  await assertSucceeds(staffDb.collection("notifications").doc("notif_staff_private_feed").get());
+  await assertSucceeds(
+    staffDb.collection("notifications")
+      .where("targetRole", "==", "STAFF")
+      .where("targetUid", "==", "")
+      .where("targetModule", "==", "feed")
+      .where("published", "==", true)
+      .get()
+  );
+  await assertSucceeds(
+    staffDb.collection("notifications")
+      .where("targetUid", "==", staffUid)
+      .where("published", "==", true)
+      .get()
+  );
+  await assertFails(staffDb.collection("notifications").doc("notif_draft_1").get());
+  await assertFails(staffDb.collection("notifications").doc("notif_staff_draft_private").get());
+  await assertFails(staffDb.collection("notifications").doc("notif_admin_only").get());
+
+  // 4. Wrong Staff (finance-only) CANNOT read feed-module reminder or feed-staff's private notice!
+  await assertFails(staffFinanceDb.collection("notifications").doc("notif_staff_rem_1").get());
+  await assertFails(staffFinanceDb.collection("notifications").doc("notif_staff_private_feed").get());
+  await assertFails(
+    staffFinanceDb.collection("notifications")
+      .where("targetRole", "==", "STAFF")
+      .where("targetUid", "==", "")
+      .where("targetModule", "==", "feed")
+      .where("published", "==", true)
+      .get()
+  );
+
+  // Staff CANNOT create PUBLIC notices
+  await assertFails(
+    staffDb.collection("notifications").doc("staff_illegal_pub").set({
+      targetRole: "PUBLIC",
+      targetUid: "",
+      category: "ANNOUNCEMENTS",
+      title: "अनधिकृत सार्वजनिक सूचना",
+      message: "स्टाफ सार्वजनिक सूचना नहीं बना सकता",
+      published: true,
+      readByUids: [],
+      createdAt: pastDate(1000),
+    })
+  );
+
+  // 5. Read/Unread & Staff Action Status: self-only toggle allowed; tampering/editing/deleting denied
+  await assertSucceeds(
+    publicDb.collection("notifications").doc("notif_pub_1").update({
+      readByUids: [PUBLIC_UID],
+    })
+  );
+  await assertSucceeds(
+    staffDb.collection("notifications").doc("notif_staff_rem_1").update({
+      readByUids: [staffUid],
+    })
+  );
+  await assertSucceeds(
+    staffDb.collection("notifications").doc("notif_staff_rem_1").update({
+      completedByUids: [staffUid],
+    })
+  );
+  // Staff cannot tamper with another user's completedByUids and public cannot update completedByUids
+  await assertFails(
+    staffDb.collection("notifications").doc("notif_staff_rem_1").update({
+      completedByUids: [staffUid, "other_uid"],
+    })
+  );
+  await assertFails(
+    publicDb.collection("notifications").doc("notif_pub_1").update({
+      completedByUids: [PUBLIC_UID],
+    })
+  );
+  await assertFails(
+    publicDb.collection("notifications").doc("notif_pub_1").update({
+      readByUids: [PUBLIC_UID, "some_other_uid"],
+    })
+  );
+  await assertFails(
+    publicDb.collection("notifications").doc("notif_pub_1").update({
+      title: "हैक किया गया शीर्षक",
+    })
+  );
+  await assertFails(publicDb.collection("notifications").doc("notif_pub_1").delete());
+
+  // 6. Unauthenticated user CANNOT read or write notifications
+  await assertFails(unauthDb.collection("notifications").doc("notif_pub_1").get());
+
+  // 7. Admin Publish flow: publishing draft makes it immediately readable by Public User
+  await assertSucceeds(
+    adminDb.collection("notifications").doc("notif_draft_1").update({
+      published: true,
+      title: "प्रकाशित घोषणा",
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertSucceeds(publicDb.collection("notifications").doc("notif_draft_1").get());
+
+  // Admin cleanup delete
+  await assertSucceeds(adminDb.collection("notifications").doc("notif_draft_1").delete());
+  await assertSucceeds(adminDb.collection("notifications").doc("notif_pub_1").delete());
+  await assertSucceeds(adminDb.collection("notifications").doc("notif_staff_rem_1").delete());
+  await assertSucceeds(adminDb.collection("notifications").doc("notif_staff_private_feed").delete());
+  await assertSucceeds(adminDb.collection("notifications").doc("notif_staff_draft_private").delete());
+  await assertSucceeds(adminDb.collection("notifications").doc("notif_admin_only").delete());
+});
+
+
 
 
 

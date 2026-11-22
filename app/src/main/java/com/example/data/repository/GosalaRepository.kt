@@ -1,6 +1,9 @@
 package com.example.data.repository
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.util.Log
 import com.example.R
 import com.example.core.CattlePhotoStorage
@@ -17,15 +20,20 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.snapshots
+import com.google.firebase.storage.FirebaseStorage
+import com.google.firebase.storage.StorageMetadata
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.io.ByteArrayOutputStream
 
 class GosalaRepository(
     private val db: FirebaseFirestore,
@@ -1598,15 +1606,278 @@ class GosalaRepository(
 
     // --- NOTIFICATIONS & AUDIT LOGS ---
     fun observeNotifications(session: UserSession): Flow<List<NotificationItem>> {
-        val query = if (session.role == UserRole.ADMIN || session.hasPermission(AppModule.REPORTS, CrudAction.VIEW)) {
-            db.collection("notifications").limit(50)
-        } else {
-            db.collection("notifications").whereEqualTo("targetUid", session.uid).limit(50)
+        if (session.role == UserRole.ADMIN) {
+            return db.collection("notifications")
+                .limit(120)
+                .snapshots()
+                .map { snap ->
+                    snap.toObjects(NotificationItem::class.java, ServerTimestampBehavior.ESTIMATE)
+                        .distinctBy { it.id }
+                        .sortedWith(
+                            compareByDescending<NotificationItem> { it.createdAt?.seconds ?: 0L }
+                                .thenByDescending { it.publishDate }
+                        )
+                }.flowOn(Dispatchers.Default)
         }
-        return query.snapshots().map { snap ->
-            snap.toObjects(NotificationItem::class.java, ServerTimestampBehavior.ESTIMATE)
-                .sortedByDescending { it.createdAt?.seconds ?: 0L }
+
+        val flows = mutableListOf<Flow<List<NotificationItem>>>()
+
+        // 1. Broadcast PUBLIC & ALL published notices (targetUid == "")
+        flows += db.collection("notifications")
+            .whereEqualTo("targetRole", "PUBLIC")
+            .whereEqualTo("targetUid", "")
+            .whereEqualTo("published", true)
+            .limit(60)
+            .snapshots()
+            .map { it.toObjects(NotificationItem::class.java, ServerTimestampBehavior.ESTIMATE) }
+
+        flows += db.collection("notifications")
+            .whereEqualTo("targetRole", "ALL")
+            .whereEqualTo("targetUid", "")
+            .whereEqualTo("published", true)
+            .limit(40)
+            .snapshots()
+            .map { it.toObjects(NotificationItem::class.java, ServerTimestampBehavior.ESTIMATE) }
+
+        // 2. Personal / Specific-Staff published notices targeted strictly to this UID
+        flows += db.collection("notifications")
+            .whereEqualTo("targetUid", session.uid)
+            .whereEqualTo("published", true)
+            .limit(30)
+            .snapshots()
+            .map { it.toObjects(NotificationItem::class.java, ServerTimestampBehavior.ESTIMATE) }
+
+        // 3. Active Staff module-scoped & general broadcast notices (1:1 aligned with Firestore Rules)
+        if (session.role == UserRole.STAFF && session.staffActive) {
+            // General staff notices (no module restriction)
+            flows += db.collection("notifications")
+                .whereEqualTo("targetRole", "STAFF")
+                .whereEqualTo("targetUid", "")
+                .whereEqualTo("targetModule", "")
+                .whereEqualTo("published", true)
+                .limit(40)
+                .snapshots()
+                .map { it.toObjects(NotificationItem::class.java, ServerTimestampBehavior.ESTIMATE) }
+
+            // Strictly one query per VIEW-permitted module (equality-only -> zero composite index!)
+            AppModule.entries
+                .filter { session.hasPermission(it, CrudAction.VIEW) }
+                .forEach { mod ->
+                    flows += db.collection("notifications")
+                        .whereEqualTo("targetRole", "STAFF")
+                        .whereEqualTo("targetUid", "")
+                        .whereEqualTo("targetModule", mod.key)
+                        .whereEqualTo("published", true)
+                        .limit(25)
+                        .snapshots()
+                        .map { it.toObjects(NotificationItem::class.java, ServerTimestampBehavior.ESTIMATE) }
+                }
+        }
+
+        val combinedFlow: Flow<List<NotificationItem>> = combine(flows) { arrays ->
+            arrays.flatMap { it }
+        }
+
+        return combinedFlow.map { rawItems ->
+            val todayIso = todayIsoDateString()
+            val byId = rawItems
+                .filter { it.isVisibleToSession(session, todayIso) }
+                .distinctBy { it.id }
+                .sortedWith(
+                    compareByDescending<NotificationItem> { it.createdAt?.seconds ?: 0L }
+                        .thenByDescending { it.publishDate }
+                )
+            // Deduplicate identical notifications by dedupKey (keeping the newest)
+            val seenDedup = HashSet<String>()
+            byId.filter { item ->
+                val key = item.dedupKey.trim()
+                if (key.isEmpty()) true else seenDedup.add(key)
+            }
         }.flowOn(Dispatchers.Default)
+    }
+
+    private suspend fun uploadNotificationPhotoIfLocal(
+        context: Context,
+        notifId: String,
+        rawPhotoUri: String
+    ): String {
+        val trimmed = rawPhotoUri.trim()
+        if (trimmed.isBlank()) return ""
+        if (trimmed.startsWith("https://", ignoreCase = true) ||
+            trimmed.startsWith("http://", ignoreCase = true) ||
+            trimmed.startsWith("preset:", ignoreCase = true)
+        ) {
+            return trimmed.take(2000)
+        }
+        val jpegBytes = withContext(Dispatchers.IO) {
+            val uri = Uri.parse(trimmed)
+            val bitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream)
+            } ?: throw IllegalArgumentException("चयनित फोटो पढ़ी नहीं जा सकी। कृपया दूसरी फोटो चुनें।")
+            try {
+                val maxDim = 1080
+                val scaled = if (bitmap.width > maxDim || bitmap.height > maxDim) {
+                    val ratio = maxDim.toFloat() / maxOf(bitmap.width, bitmap.height).toFloat()
+                    Bitmap.createScaledBitmap(
+                        bitmap,
+                        (bitmap.width * ratio).toInt().coerceAtLeast(1),
+                        (bitmap.height * ratio).toInt().coerceAtLeast(1),
+                        true
+                    )
+                } else {
+                    bitmap
+                }
+                val out = ByteArrayOutputStream()
+                scaled.compress(Bitmap.CompressFormat.JPEG, 82, out)
+                if (scaled !== bitmap) scaled.recycle()
+                out.toByteArray()
+            } finally {
+                bitmap.recycle()
+            }
+        }
+        val storageRef = FirebaseStorage.getInstance()
+            .reference
+            .child("notification_photos/$notifId/photo_${System.currentTimeMillis()}.jpg")
+        val metadata = StorageMetadata.Builder().setContentType("image/jpeg").build()
+        return withTimeout(15_000L) {
+            storageRef.putBytes(jpegBytes, metadata).await()
+            storageRef.downloadUrl.await().toString().take(2000)
+        }
+    }
+
+    suspend fun saveNotification(
+        session: UserSession,
+        item: NotificationItem,
+        isEdit: Boolean,
+        context: Context? = null
+    ): Result<String> = safeWrite("notifications", if (isEdit) OperationType.UPDATE else OperationType.CREATE) {
+        if (session.role != UserRole.ADMIN) {
+            throw SecurityException("केवल प्रशासक (Admin) सूचना या रिमाइंडर बना व संपादित कर सकते हैं।")
+        }
+        val uid = requireUid()
+        val cleanTitle = item.title.trim()
+        val cleanMessage = item.message.trim()
+        if (cleanTitle.isBlank() || cleanMessage.isBlank()) {
+            throw IllegalArgumentException("शीर्षक और विवरण भरना आवश्यक है।")
+        }
+        val cleanPublishDate = item.publishDate.trim().ifBlank { todayIsoDateString() }
+        val cleanExpiryDate = item.expiryDate.trim()
+        if (cleanExpiryDate.isNotBlank() && cleanExpiryDate < cleanPublishDate) {
+            throw IllegalArgumentException("समाप्ति तिथि प्रकाशन तिथि से पहले नहीं हो सकती।")
+        }
+
+        val safeRole = item.targetRole.trim().uppercase().takeIf { it in setOf("ALL", "PUBLIC", "STAFF", "ADMIN") } ?: "PUBLIC"
+        val safeKind = if (item.itemKind.equals("REMINDER", ignoreCase = true)) "REMINDER" else "NOTICE"
+        val safeModule = if (safeRole == "STAFF" && item.targetUid.isBlank()) normalizeNotifModuleKey(item.targetModule) else ""
+        val cleanTargetUid = if (safeRole == "STAFF") item.targetUid.trim() else ""
+        val computedDedup = computeNotificationDedupKey(
+            title = cleanTitle,
+            category = item.category,
+            targetRole = safeRole,
+            publishDate = cleanPublishDate,
+            itemKind = safeKind,
+            reminderTime = item.reminderTime,
+            targetUid = cleanTargetUid
+        )
+
+        val ref = if (isEdit && item.id.isNotBlank()) {
+            // Prevent accidental duplicate collision with a DIFFERENT existing document on edit
+            val conflicting = db.collection("notifications")
+                .whereEqualTo("dedupKey", computedDedup)
+                .limit(2)
+                .get()
+                .await()
+                .documents
+                .any { it.id != item.id }
+            if (conflicting) {
+                throw IllegalStateException("इसी विवरण की एक अन्य सूचना पहले से मौजूद है।")
+            }
+            db.collection("notifications").document(item.id)
+        } else {
+            // Prevent duplicate notifications with the same dedupKey on create
+            val existing = db.collection("notifications")
+                .whereEqualTo("dedupKey", computedDedup)
+                .limit(1)
+                .get()
+                .await()
+            if (!existing.isEmpty) {
+                throw IllegalStateException("यह सूचना पहले से मौजूद है (डुप्लिकेट सूचना रोकी गई)।")
+            }
+            db.collection("notifications").document()
+        }
+
+        val resolvedPhotoUrl = if (item.photoUrl.startsWith("content://", ignoreCase = true) ||
+            item.photoUrl.startsWith("file://", ignoreCase = true)
+        ) {
+            val ctx = context ?: throw IllegalStateException("फोटो अपलोड के लिए संदर्भ उपलब्ध नहीं है।")
+            uploadNotificationPhotoIfLocal(ctx, ref.id, item.photoUrl)
+        } else {
+            item.photoUrl.trim().take(2000)
+        }
+
+        val enriched = item.copy(
+            id = ref.id,
+            targetRole = safeRole,
+            targetUid = cleanTargetUid,
+            targetModule = safeModule,
+            title = cleanTitle,
+            message = cleanMessage,
+            photoUrl = resolvedPhotoUrl,
+            publishDate = cleanPublishDate,
+            expiryDate = cleanExpiryDate,
+            itemKind = safeKind,
+            priority = item.resolvedPriority().name,
+            assigneeName = item.assigneeName.trim().take(120),
+            createdBy = item.createdBy.ifBlank { uid },
+            dedupKey = computedDedup
+        )
+
+        if (isEdit && item.id.isNotBlank()) {
+            ref.update(enriched.toUpdateMap()).await()
+            logAudit(session, "UPDATE", "notifications", ref.id, "Updated notification: ${cleanTitle.take(80)}")
+        } else {
+            ref.set(enriched.toCreateMap()).await()
+            logAudit(session, "CREATE", "notifications", ref.id, "Created notification: ${cleanTitle.take(80)}")
+        }
+        ref.id
+    }
+
+    suspend fun setNotificationPublished(
+        session: UserSession,
+        notifId: String,
+        published: Boolean
+    ): Result<Unit> = safeWrite("notifications/$notifId", OperationType.UPDATE) {
+        if (session.role != UserRole.ADMIN) {
+            throw SecurityException("केवल प्रशासक (Admin) सूचना प्रकाशित या अप्रकाशित कर सकते हैं।")
+        }
+        requireUid()
+        db.collection("notifications").document(notifId)
+            .update(
+                mapOf(
+                    "published" to published,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        logAudit(
+            session,
+            "UPDATE",
+            "notifications",
+            notifId,
+            if (published) "Published notification $notifId" else "Unpublished notification $notifId"
+        )
+    }
+
+    suspend fun deleteNotification(
+        session: UserSession,
+        notifId: String,
+        title: String = ""
+    ): Result<Unit> = safeWrite("notifications/$notifId", OperationType.DELETE) {
+        if (session.role != UserRole.ADMIN) {
+            throw SecurityException("केवल प्रशासक (Admin) सूचना हटा सकते हैं।")
+        }
+        requireUid()
+        db.collection("notifications").document(notifId).delete().await()
+        logAudit(session, "DELETE", "notifications", notifId, "Deleted notification: ${title.take(80)}")
     }
 
     suspend fun markNotificationRead(notifId: String): Result<Unit> =
@@ -1614,6 +1885,34 @@ class GosalaRepository(
             val uid = requireUid()
             db.collection("notifications").document(notifId)
                 .update("readByUids", FieldValue.arrayUnion(uid)).await()
+        }
+
+    suspend fun markNotificationUnread(notifId: String): Result<Unit> =
+        safeWrite("notifications/$notifId", OperationType.UPDATE) {
+            val uid = requireUid()
+            db.collection("notifications").document(notifId)
+                .update("readByUids", FieldValue.arrayRemove(uid)).await()
+        }
+
+    suspend fun toggleNotificationActionDone(notifId: String, done: Boolean): Result<Unit> =
+        safeWrite("notifications/$notifId", OperationType.UPDATE) {
+            val uid = requireUid()
+            val op = if (done) FieldValue.arrayUnion(uid) else FieldValue.arrayRemove(uid)
+            db.collection("notifications").document(notifId)
+                .update("completedByUids", op).await()
+        }
+
+    suspend fun markAllNotificationsRead(notifIds: List<String>): Result<Unit> =
+        safeWrite("notifications/batch_read", OperationType.UPDATE) {
+            val uid = requireUid()
+            notifIds.distinct().take(50).forEach { id ->
+                try {
+                    db.collection("notifications").document(id)
+                        .update("readByUids", FieldValue.arrayUnion(uid)).await()
+                } catch (_: Exception) {
+                    // Continue marking remaining items even if one document was removed concurrently
+                }
+            }
         }
 
     fun observeAuditLogs(session: UserSession): Flow<List<AuditLog>> {
@@ -1632,14 +1931,20 @@ class GosalaRepository(
         message: String
     ) {
         try {
+            val todayIso = todayIsoDateString()
+            val mappedCategory = NotificationCategory.fromRaw(category).name
             val ref = db.collection("notifications").document()
             ref.set(
                 NotificationItem(
                     targetRole = targetRole,
                     targetUid = targetUid,
-                    category = category,
-                    title = title.take(120),
-                    message = message.take(500)
+                    category = mappedCategory,
+                    title = title.take(140),
+                    message = message.take(1500),
+                    published = true,
+                    publishDate = todayIso,
+                    itemKind = "NOTICE",
+                    createdBy = auth.currentUser?.uid.orEmpty()
                 ).toCreateMap()
             ).await()
         } catch (_: Exception) {

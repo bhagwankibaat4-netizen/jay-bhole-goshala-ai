@@ -389,7 +389,7 @@
     },
     "NotificationItem": {
       "title": "NotificationItem",
-      "description": "Alerts and reminders for vaccination, feed stock, tasks, payments, and adoptions.",
+      "description": "Goshala announcements, product/activity updates, and scheduled reminders for Admin, Staff, and Public Users.",
       "type": "object",
       "properties": {
         "targetRole": { "type": "string", "enum": ["ADMIN", "STAFF", "PUBLIC", "ALL"] },
@@ -397,8 +397,22 @@
         "category": { "type": "string" },
         "title": { "type": "string" },
         "message": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "published": { "type": "boolean" },
+        "publishDate": { "type": "string" },
+        "expiryDate": { "type": "string" },
+        "itemKind": { "type": "string", "enum": ["NOTICE", "REMINDER"] },
+        "reminderTime": { "type": "string" },
+        "recurrence": { "type": "string", "enum": ["ONCE", "DAILY", "WEEKLY", "MONTHLY"] },
+        "priority": { "type": "string", "enum": ["NORMAL", "HIGH", "URGENT"] },
+        "assigneeName": { "type": "string" },
+        "targetModule": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "dedupKey": { "type": "string" },
         "readByUids": { "type": "array" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "completedByUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["targetRole", "category", "title", "message", "readByUids", "createdAt"]
     },

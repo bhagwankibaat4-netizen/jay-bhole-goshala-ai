@@ -486,9 +486,74 @@ class GosalaViewModel(
         }
     }
 
+    fun saveNotification(
+        item: NotificationItem,
+        isEdit: Boolean,
+        language: AppLanguage,
+        context: Context? = null
+    ) {
+        val isReminder = item.isReminderItem()
+        val msgHi = when {
+            isEdit && isReminder -> "रिमाइंडर अपडेट किया गया।"
+            isEdit -> "सूचना अपडेट की गई।"
+            !item.published -> "ड्राफ्ट के रूप में सुरक्षित किया गया।"
+            isReminder -> "नया रिमाइंडर प्रकाशित किया गया।"
+            else -> "नई सूचना प्रकाशित की गई।"
+        }
+        val msgEn = when {
+            isEdit && isReminder -> "Reminder updated."
+            isEdit -> "Notification updated."
+            !item.published -> "Saved as draft."
+            isReminder -> "Reminder published."
+            else -> "Notification published."
+        }
+        runMutation(language, msgHi, msgEn) {
+            repository.saveNotification(session, item, isEdit, context)
+        }
+    }
+
+    fun setNotificationPublished(notifId: String, published: Boolean, language: AppLanguage) {
+        runMutation(
+            language,
+            if (published) "सूचना प्रकाशित कर दी गई।" else "सूचना अप्रकाशित (ड्राफ्ट) की गई।",
+            if (published) "Notification published." else "Notification unpublished."
+        ) {
+            repository.setNotificationPublished(session, notifId, published)
+        }
+    }
+
+    fun deleteNotification(item: NotificationItem, language: AppLanguage) {
+        runMutation(language, "सूचना हटाई गई।", "Notification deleted.") {
+            repository.deleteNotification(session, item.id, item.title)
+        }
+    }
+
     fun markNotificationRead(notifId: String) {
         viewModelScope.launch {
             repository.markNotificationRead(notifId)
+        }
+    }
+
+    fun markNotificationUnread(notifId: String) {
+        viewModelScope.launch {
+            repository.markNotificationUnread(notifId)
+        }
+    }
+
+    fun toggleNotificationActionDone(notifId: String, done: Boolean, language: AppLanguage) {
+        runMutation(
+            language,
+            if (done) "कार्य पूर्ण चिह्नित किया गया।" else "कार्य लंबित चिह्नित किया गया।",
+            if (done) "Action marked as done." else "Action marked as pending."
+        ) {
+            repository.toggleNotificationActionDone(notifId, done)
+        }
+    }
+
+    fun markAllNotificationsRead(notifIds: List<String>, language: AppLanguage) {
+        if (notifIds.isEmpty()) return
+        runMutation(language, "सभी सूचनाएँ पढ़ी गईं चिह्नित हुईं।", "All notifications marked as read.") {
+            repository.markAllNotificationsRead(notifIds)
         }
     }
 

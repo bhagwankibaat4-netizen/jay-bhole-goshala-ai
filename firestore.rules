@@ -378,14 +378,42 @@ service cloud.firestore {
              isValidTimestamp(data.updatedAt);
     }
 
+    function isPublishedNotification(data) {
+      return !('published' in data) || data.published == true;
+    }
+
+    function isBroadcastNotification(data) {
+      return !('targetUid' in data) || data.targetUid == '';
+    }
+
+    function staffCanAccessNotifModule(data) {
+      return !('targetModule' in data) ||
+             data.targetModule == '' ||
+             hasStaffPermission(data.targetModule.lower(), 'VIEW');
+    }
+
     function isValidNotification(data) {
       return data.targetRole in ['ADMIN', 'STAFF', 'PUBLIC', 'ALL'] &&
              isOptString(data, 'targetUid', 128) &&
              data.category is string && data.category.size() >= 1 && data.category.size() <= 40 &&
-             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
-             data.message is string && data.message.size() >= 1 && data.message.size() <= 500 &&
-             data.readByUids is list && data.readByUids.size() <= 50 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+             data.message is string && data.message.size() >= 1 && data.message.size() <= 1500 &&
+             data.readByUids is list && data.readByUids.size() <= 500 &&
              (data.readByUids.size() == 0 || data.readByUids[0] is string) &&
+             (!('completedByUids' in data) || (data.completedByUids is list && data.completedByUids.size() <= 500 && (data.completedByUids.size() == 0 || data.completedByUids[0] is string))) &&
+             isOptString(data, 'photoUrl', 2000) &&
+             (!('published' in data) || data.published is bool) &&
+             isOptString(data, 'publishDate', 20) &&
+             isOptString(data, 'expiryDate', 20) &&
+             (!('itemKind' in data) || data.itemKind in ['NOTICE', 'REMINDER']) &&
+             isOptString(data, 'reminderTime', 20) &&
+             (!('recurrence' in data) || data.recurrence in ['ONCE', 'DAILY', 'WEEKLY', 'MONTHLY']) &&
+             (!('priority' in data) || data.priority in ['NORMAL', 'HIGH', 'URGENT']) &&
+             isOptString(data, 'assigneeName', 120) &&
+             isOptString(data, 'targetModule', 40) &&
+             isOptString(data, 'createdBy', 128) &&
+             isOptString(data, 'dedupKey', 200) &&
+             (!('updatedAt' in data) || isValidTimestamp(data.updatedAt)) &&
              isValidTimestamp(data.createdAt);
     }
 
@@ -805,21 +833,34 @@ service cloud.firestore {
     match /notifications/{notifId} {
       allow get: if isSignedIn() && isValidId(notifId) && (
         isAdmin() ||
-        hasStaffPermission('reports', 'VIEW') ||
-        existing().targetUid == request.auth.uid ||
-        existing().targetRole == 'PUBLIC' ||
-        existing().targetRole == 'ALL'
+        (
+          isPublishedNotification(existing()) && (
+            existing().targetUid == request.auth.uid ||
+            (isBroadcastNotification(existing()) && existing().targetRole in ['PUBLIC', 'ALL']) ||
+            (isActiveStaff() && isBroadcastNotification(existing()) && existing().targetRole == 'STAFF' && staffCanAccessNotifModule(existing()))
+          )
+        )
       );
       allow list: if isSignedIn() && (
         isAdmin() ||
-        hasStaffPermission('reports', 'VIEW') ||
-        resource.data.targetUid == request.auth.uid ||
-        resource.data.targetRole == 'PUBLIC'
+        (
+          isPublishedNotification(resource.data) && (
+            resource.data.targetUid == request.auth.uid ||
+            (isBroadcastNotification(resource.data) && resource.data.targetRole in ['PUBLIC', 'ALL']) ||
+            (isActiveStaff() && isBroadcastNotification(resource.data) && resource.data.targetRole == 'STAFF' && staffCanAccessNotifModule(resource.data))
+          )
+        )
       );
       allow create: if isSignedIn() &&
                        isValidId(notifId) &&
                        isValidNotification(incoming()) &&
-                       (isAdmin() || hasStaffPermission('health', 'ADD') || hasStaffPermission('feed', 'ADD') || hasStaffPermission('donations', 'EDIT'));
+                       (
+                         isAdmin() ||
+                         (
+                           incoming().targetRole in ['ADMIN', 'STAFF'] &&
+                           (hasStaffPermission('health', 'ADD') || hasStaffPermission('feed', 'ADD') || hasStaffPermission('donations', 'EDIT'))
+                         )
+                       );
       allow update: if isSignedIn() &&
                        isValidId(notifId) &&
                        isValidNotification(incoming()) &&
@@ -827,8 +868,24 @@ service cloud.firestore {
                        (
                          isAdmin() ||
                          (
-                           (existing().targetUid == request.auth.uid || existing().targetRole in ['PUBLIC', 'ALL']) &&
-                           incoming().diff(existing()).affectedKeys().hasOnly(['readByUids'])
+                           isPublishedNotification(existing()) && (
+                             existing().targetUid == request.auth.uid ||
+                             (isBroadcastNotification(existing()) && existing().targetRole in ['PUBLIC', 'ALL']) ||
+                             (isActiveStaff() && isBroadcastNotification(existing()) && existing().targetRole == 'STAFF' && staffCanAccessNotifModule(existing()))
+                           ) &&
+                           (
+                             (
+                               incoming().diff(existing()).affectedKeys().hasOnly(['readByUids']) &&
+                               incoming().readByUids.toSet().difference(existing().readByUids.toSet()).hasOnly([request.auth.uid]) &&
+                               existing().readByUids.toSet().difference(incoming().readByUids.toSet()).hasOnly([request.auth.uid])
+                             ) ||
+                             (
+                               isActiveStaff() &&
+                               incoming().diff(existing()).affectedKeys().hasOnly(['completedByUids']) &&
+                               incoming().completedByUids.toSet().difference(('completedByUids' in existing() ? existing().completedByUids : []).toSet()).hasOnly([request.auth.uid]) &&
+                               ('completedByUids' in existing() ? existing().completedByUids : []).toSet().difference(incoming().completedByUids.toSet()).hasOnly([request.auth.uid])
+                             )
+                           )
                          )
                        );
       allow delete: if isAdmin() && isValidId(notifId);

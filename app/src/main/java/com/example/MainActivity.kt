@@ -41,6 +41,7 @@ import com.example.data.model.Cattle
 import com.example.data.model.LoginPortal
 import com.example.data.model.UserRole
 import com.example.data.model.UserSession
+import com.example.data.model.todayIsoDateString
 import com.example.data.repository.AuthSessionRepository
 import com.example.data.repository.GosalaRepository
 import com.example.data.repository.LiveStaffUpdate
@@ -74,16 +75,33 @@ private data class FirebaseBootstrap(
 )
 
 class MainActivity : ComponentActivity() {
+    private val pendingOpenNotificationsRoute = mutableStateOf(false)
+    private val pendingOpenNotificationId = mutableStateOf<String?>(null)
+
+    private fun captureNotificationDeepLink(intent: Intent?) {
+        if (intent == null) return
+        val route = intent.getStringExtra(NotificationReminderScheduler.EXTRA_OPEN_ROUTE)
+        val notifId = intent.getStringExtra(NotificationReminderScheduler.EXTRA_NOTIFICATION_ID)
+        if (route == NotificationReminderScheduler.ROUTE_NOTIFICATIONS || !notifId.isNullOrBlank()) {
+            pendingOpenNotificationsRoute.value = true
+            pendingOpenNotificationId.value = notifId
+            intent.removeExtra(NotificationReminderScheduler.EXTRA_OPEN_ROUTE)
+            intent.removeExtra(NotificationReminderScheduler.EXTRA_NOTIFICATION_ID)
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         configureAppCheck(this, intent)
+        captureNotificationDeepLink(intent)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Configure Firebase App Check synchronously before any UI, ViewModels, or Firebase calls
         configureAppCheck(this, intent)
+        captureNotificationDeepLink(intent)
         enableEdgeToEdge()
 
         setContent {
@@ -248,6 +266,7 @@ class MainActivity : ComponentActivity() {
                         rejectedAccountNote = null
                         sessionState = null
                         sessionError = null
+                        NotificationReminderScheduler.cancelAllScheduledReminders(appContext)
                         scope.launch {
                             activeBootstrap?.authRepo?.signOut(credentialManager)
                             authNavController.redirectToLogin()
@@ -369,6 +388,10 @@ class MainActivity : ComponentActivity() {
                                     language = language,
                                     themeMode = themeMode,
                                     isDark = isDark,
+                                    pendingOpenNotificationsRoute = pendingOpenNotificationsRoute.value,
+                                    pendingOpenNotificationId = pendingOpenNotificationId.value,
+                                    onConsumeOpenNotificationsRoute = { pendingOpenNotificationsRoute.value = false },
+                                    onConsumeOpenNotificationId = { pendingOpenNotificationId.value = null },
                                     onSetLanguage = { lang -> scope.launch { prefs.setLanguage(lang) } },
                                     onSetThemeMode = { mode -> scope.launch { prefs.setThemeMode(mode) } },
                                     onSignOut = handleSignOut
@@ -384,6 +407,10 @@ class MainActivity : ComponentActivity() {
                                     language = language,
                                     themeMode = themeMode,
                                     isDark = isDark,
+                                    pendingOpenNotificationsRoute = pendingOpenNotificationsRoute.value,
+                                    pendingOpenNotificationId = pendingOpenNotificationId.value,
+                                    onConsumeOpenNotificationsRoute = { pendingOpenNotificationsRoute.value = false },
+                                    onConsumeOpenNotificationId = { pendingOpenNotificationId.value = null },
                                     onSetLanguage = { lang -> scope.launch { prefs.setLanguage(lang) } },
                                     onSetThemeMode = { mode -> scope.launch { prefs.setThemeMode(mode) } },
                                     onSignOut = handleSignOut
@@ -399,6 +426,10 @@ class MainActivity : ComponentActivity() {
                                     language = language,
                                     themeMode = themeMode,
                                     isDark = isDark,
+                                    pendingOpenNotificationsRoute = pendingOpenNotificationsRoute.value,
+                                    pendingOpenNotificationId = pendingOpenNotificationId.value,
+                                    onConsumeOpenNotificationsRoute = { pendingOpenNotificationsRoute.value = false },
+                                    onConsumeOpenNotificationId = { pendingOpenNotificationId.value = null },
                                     onSetLanguage = { lang -> scope.launch { prefs.setLanguage(lang) } },
                                     onSetThemeMode = { mode -> scope.launch { prefs.setThemeMode(mode) } },
                                     onSignOut = handleSignOut
@@ -427,6 +458,10 @@ private fun GosalaAuthenticatedShell(
     language: AppLanguage,
     themeMode: AppThemeMode,
     isDark: Boolean,
+    pendingOpenNotificationsRoute: Boolean = false,
+    pendingOpenNotificationId: String? = null,
+    onConsumeOpenNotificationsRoute: () -> Unit = {},
+    onConsumeOpenNotificationId: () -> Unit = {},
     onSetLanguage: (AppLanguage) -> Unit,
     onSetThemeMode: (AppThemeMode) -> Unit,
     onSignOut: () -> Unit
@@ -485,8 +520,31 @@ private fun GosalaAuthenticatedShell(
     val productOrdersList = (productOrdersState as? DataUiState.Success)?.data.orEmpty()
     val productsList = (productsState as? DataUiState.Success)?.data.orEmpty()
     val notificationsList = (notificationsState as? DataUiState.Success)?.data.orEmpty()
-    val unreadNotifCount = remember(notificationsList, session.uid) {
-        notificationsList.count { !it.readByUids.contains(session.uid) }
+    val notifPrefs = remember(appContext) { PreferencesManager(appContext) }
+    val alertsEnabled by notifPrefs.alertsEnabledFlow.collectAsStateWithLifecycle(initialValue = true)
+    val remindersEnabled by notifPrefs.remindersEnabledFlow.collectAsStateWithLifecycle(initialValue = true)
+    val isNotifSubmitting by gosalaViewModel.isSubmitting.collectAsStateWithLifecycle()
+    val unreadNotifCount = remember(notificationsList, session, alertsEnabled, remindersEnabled) {
+        val todayIso = todayIsoDateString()
+        notificationsList.count { item ->
+            item.published &&
+                !item.isExpired(todayIso) &&
+                item.isVisibleToSession(session, todayIso) &&
+                !item.isReadBy(session.uid) &&
+                (session.role == UserRole.ADMIN || if (item.isReminderItem()) remindersEnabled else alertsEnabled)
+        }
+    }
+
+    // Keep Android AlarmManager & local persistence synchronized with active Firestore reminders
+    LaunchedEffect(session, notificationsList, remindersEnabled) {
+        withContext(Dispatchers.IO) {
+            NotificationReminderScheduler.syncRemindersForSession(
+                context = appContext,
+                session = session,
+                notifications = notificationsList,
+                remindersEnabled = remindersEnabled
+            )
+        }
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -554,6 +612,16 @@ private fun GosalaAuthenticatedShell(
             }
             launchSingleTop = true
             restoreState = true
+        }
+    }
+
+    // Deep-link directly to Notifications screen when user taps a system reminder notification
+    LaunchedEffect(pendingOpenNotificationsRoute, pendingOpenNotificationId) {
+        if (pendingOpenNotificationsRoute || !pendingOpenNotificationId.isNullOrBlank()) {
+            if (currentRoute != Routes.NOTIFICATIONS) {
+                navController.navigate(Routes.NOTIFICATIONS) { launchSingleTop = true }
+            }
+            onConsumeOpenNotificationsRoute()
         }
     }
 
@@ -1121,7 +1189,36 @@ private fun GosalaAuthenticatedShell(
                             language = language,
                             session = session,
                             notificationsState = notificationsState,
-                            onMarkRead = { id -> gosalaViewModel.markNotificationRead(id) }
+                            onMarkRead = { id -> gosalaViewModel.markNotificationRead(id) },
+                            alertsEnabled = alertsEnabled,
+                            remindersEnabled = remindersEnabled,
+                            isSubmitting = isNotifSubmitting,
+                            staffAccounts = staffAccountsList,
+                            initialNotificationId = pendingOpenNotificationId,
+                            onConsumeInitialNotificationId = onConsumeOpenNotificationId,
+                            onToggleAlerts = { enabled -> scope.launch { notifPrefs.setAlertsEnabled(enabled) } },
+                            onToggleReminders = { enabled -> scope.launch { notifPrefs.setRemindersEnabled(enabled) } },
+                            onMarkUnread = { id -> gosalaViewModel.markNotificationUnread(id) },
+                            onMarkAllRead = { ids -> gosalaViewModel.markAllNotificationsRead(ids, language) },
+                            onToggleActionDone = { id, done ->
+                                gosalaViewModel.toggleNotificationActionDone(id, done, language)
+                            },
+                            onNavigateToRelatedRoute = { route ->
+                                if (primaryTabs.any { it.route == route }) {
+                                    navigateTopTab(route)
+                                } else {
+                                    navController.navigate(route) { launchSingleTop = true }
+                                }
+                            },
+                            onSaveNotification = { item, isEdit ->
+                                gosalaViewModel.saveNotification(item, isEdit, language, appContext)
+                            },
+                            onSetPublished = { id, pub ->
+                                gosalaViewModel.setNotificationPublished(id, pub, language)
+                            },
+                            onDeleteNotification = { item ->
+                                gosalaViewModel.deleteNotification(item, language)
+                            }
                         )
                     }
 

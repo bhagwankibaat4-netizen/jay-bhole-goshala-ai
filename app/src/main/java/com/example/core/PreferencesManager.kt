@@ -3,6 +3,7 @@ package com.example.core
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -14,6 +15,8 @@ private val Context.gosalaDataStore: DataStore<Preferences> by preferencesDataSt
 class PreferencesManager(private val context: Context) {
     private val keyLang = stringPreferencesKey("app_language")
     private val keyTheme = stringPreferencesKey("theme_mode")
+    private val keyAlertsEnabled = booleanPreferencesKey("alerts_enabled")
+    private val keyRemindersEnabled = booleanPreferencesKey("reminders_enabled")
 
     val languageFlow: Flow<AppLanguage> = context.gosalaDataStore.data.map { prefs ->
         when (prefs[keyLang]) {
@@ -26,6 +29,14 @@ class PreferencesManager(private val context: Context) {
         enumValues<AppThemeMode>().firstOrNull { it.name == prefs[keyTheme] } ?: AppThemeMode.LIGHT
     }
 
+    val alertsEnabledFlow: Flow<Boolean> = context.gosalaDataStore.data.map { prefs ->
+        prefs[keyAlertsEnabled] ?: true
+    }
+
+    val remindersEnabledFlow: Flow<Boolean> = context.gosalaDataStore.data.map { prefs ->
+        prefs[keyRemindersEnabled] ?: true
+    }
+
     suspend fun setLanguage(language: AppLanguage) {
         context.gosalaDataStore.edit { prefs ->
             prefs[keyLang] = language.code
@@ -35,6 +46,18 @@ class PreferencesManager(private val context: Context) {
     suspend fun setThemeMode(mode: AppThemeMode) {
         context.gosalaDataStore.edit { prefs ->
             prefs[keyTheme] = mode.name
+        }
+    }
+
+    suspend fun setAlertsEnabled(enabled: Boolean) {
+        context.gosalaDataStore.edit { prefs ->
+            prefs[keyAlertsEnabled] = enabled
+        }
+    }
+
+    suspend fun setRemindersEnabled(enabled: Boolean) {
+        context.gosalaDataStore.edit { prefs ->
+            prefs[keyRemindersEnabled] = enabled
         }
     }
 }

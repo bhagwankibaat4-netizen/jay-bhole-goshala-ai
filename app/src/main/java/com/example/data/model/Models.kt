@@ -717,27 +717,242 @@ fun paymentModeLabel(mode: String, isHindi: Boolean): String = when (mode) {
     else -> mode
 }
 
+enum class NotificationCategory(
+    val titleHi: String,
+    val titleEn: String,
+    val emoji: String
+) {
+    ACTIVITIES("गौशाला गतिविधियाँ", "Goshala Activities", "🐄"),
+    PRODUCTS("गौशाला उत्पाद", "Goshala Products", "🌿"),
+    PRODUCT_AVAILABILITY("उत्पाद उपलब्धता एवं बिक्री", "Product Availability & Sales", "🛒"),
+    DONATIONS("दान एवं सहयोग", "Donations & Support", "❤️"),
+    ADOPTION("गौ-गोद योजना", "Cow Adoption Scheme", "🐮"),
+    ANNOUNCEMENTS("महत्वपूर्ण घोषणाएँ", "Important Announcements", "📢"),
+    REMINDERS("रिमाइंडर", "Reminders", "🔔");
+
+    fun label(isHindi: Boolean): String = if (isHindi) titleHi else titleEn
+
+    companion object {
+        fun fromRaw(raw: String?): NotificationCategory {
+            val key = raw?.trim()?.uppercase().orEmpty()
+            enumValues<NotificationCategory>().firstOrNull { it.name == key }?.let { return it }
+            return when (key) {
+                "HEALTH", "VACCINATION", "FEED", "FOLLOW_UP", "REMINDER", "ALERT" -> REMINDERS
+                "DONATION", "SEVA" -> DONATIONS
+                "SPONSORSHIP", "COW_ADOPTION" -> ADOPTION
+                "ORDER", "PRODUCT_ORDER", "SALES", "PRICE_UPDATE" -> PRODUCT_AVAILABILITY
+                "PRODUCT", "COMPOST", "GOBAR" -> PRODUCTS
+                "ACTIVITY", "CATTLE", "EVENT", "CAMP" -> ACTIVITIES
+                else -> ANNOUNCEMENTS
+            }
+        }
+    }
+}
+
+enum class ReminderRecurrence(val titleHi: String, val titleEn: String) {
+    ONCE("एक बार", "Once"),
+    DAILY("दैनिक", "Daily"),
+    WEEKLY("साप्ताहिक", "Weekly"),
+    MONTHLY("मासिक", "Monthly");
+
+    fun label(isHindi: Boolean): String = if (isHindi) titleHi else titleEn
+
+    companion object {
+        fun fromRaw(raw: String?): ReminderRecurrence =
+            enumValues<ReminderRecurrence>().firstOrNull { it.name == raw?.trim()?.uppercase() } ?: ONCE
+    }
+}
+
+enum class NotificationPriority(val titleHi: String, val titleEn: String) {
+    NORMAL("सामान्य", "Normal"),
+    HIGH("उच्च", "High"),
+    URGENT("अति-आवश्यक", "Urgent");
+
+    fun label(isHindi: Boolean): String = if (isHindi) titleHi else titleEn
+
+    companion object {
+        fun fromRaw(raw: String?): NotificationPriority =
+            enumValues<NotificationPriority>().firstOrNull { it.name == raw?.trim()?.uppercase() } ?: NORMAL
+    }
+}
+
+fun todayIsoDateString(): String =
+    java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+
+fun normalizeNotifModuleKey(raw: String?): String {
+    val clean = raw?.trim().orEmpty()
+    if (clean.isBlank()) return ""
+    val matched = enumValues<AppModule>().firstOrNull {
+        it.key.equals(clean, ignoreCase = true) || it.name.equals(clean, ignoreCase = true)
+    }
+    return matched?.key ?: clean.lowercase().take(40)
+}
+
+fun computeNotificationDedupKey(
+    title: String,
+    category: String,
+    targetRole: String,
+    publishDate: String,
+    itemKind: String,
+    reminderTime: String,
+    targetUid: String = ""
+): String {
+    val normTitle = title.trim().lowercase().replace(Regex("\\s+"), " ").take(70)
+    val normCat = NotificationCategory.fromRaw(category).name
+    val normRole = targetRole.trim().uppercase().ifBlank { "ALL" }
+    val normUid = targetUid.trim().take(28)
+    val normDate = publishDate.trim().take(10)
+    val normKind = if (itemKind.equals("REMINDER", ignoreCase = true)) "REMINDER" else "NOTICE"
+    val normTime = reminderTime.trim().take(10)
+    return "$normKind|$normRole|$normUid|$normCat|$normDate|$normTime|$normTitle".take(180)
+}
+
 @Keep
 @IgnoreExtraProperties
 data class NotificationItem(
     @DocumentId val id: String = "",
     val targetRole: String = "ALL",
     val targetUid: String = "",
-    val category: String = "",
+    val category: String = NotificationCategory.ANNOUNCEMENTS.name,
     val title: String = "",
     val message: String = "",
+    val photoUrl: String = "",
+    val published: Boolean = true,
+    val publishDate: String = "",
+    val expiryDate: String = "",
+    val itemKind: String = "NOTICE",
+    val reminderTime: String = "",
+    val recurrence: String = ReminderRecurrence.ONCE.name,
+    val priority: String = NotificationPriority.NORMAL.name,
+    val assigneeName: String = "",
+    val targetModule: String = "",
+    val createdBy: String = "",
+    val dedupKey: String = "",
     val readByUids: List<String> = emptyList(),
-    @ServerTimestamp val createdAt: Timestamp? = null
+    val completedByUids: List<String> = emptyList(),
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
-    fun toCreateMap(): Map<String, Any> = mapOf(
-        "targetRole" to targetRole,
-        "targetUid" to targetUid,
-        "category" to category,
-        "title" to title,
-        "message" to message,
-        "readByUids" to readByUids,
-        "createdAt" to FieldValue.serverTimestamp()
-    )
+    fun resolvedCategory(): NotificationCategory = NotificationCategory.fromRaw(category)
+
+    fun resolvedRecurrence(): ReminderRecurrence = ReminderRecurrence.fromRaw(recurrence)
+
+    fun resolvedPriority(): NotificationPriority = NotificationPriority.fromRaw(priority)
+
+    fun isReminderItem(): Boolean =
+        itemKind.equals("REMINDER", ignoreCase = true) || resolvedCategory() == NotificationCategory.REMINDERS
+
+    fun isReadBy(uid: String): Boolean = uid.isNotBlank() && readByUids.contains(uid)
+
+    fun isCompletedBy(uid: String): Boolean = uid.isNotBlank() && completedByUids.contains(uid)
+
+    fun isScheduledFuture(todayIso: String = todayIsoDateString()): Boolean =
+        publishDate.isNotBlank() && publishDate > todayIso
+
+    fun isExpired(todayIso: String = todayIsoDateString()): Boolean =
+        expiryDate.isNotBlank() && expiryDate < todayIso
+
+    fun isHistoryForUser(uid: String, todayIso: String = todayIsoDateString()): Boolean =
+        isExpired(todayIso) || isReadBy(uid)
+
+    fun isVisibleToSession(session: UserSession, todayIso: String = todayIsoDateString()): Boolean {
+        if (session.role == UserRole.ADMIN) return true
+        if (!published) return false
+        if (isScheduledFuture(todayIso)) return false
+        // Strict Specific-User / Specific-Staff privacy isolation: if targetUid is set, ONLY that UID sees it!
+        if (targetUid.isNotBlank()) {
+            return targetUid == session.uid
+        }
+        return when (session.role) {
+            UserRole.PUBLIC -> targetRole == "PUBLIC" || targetRole == "ALL"
+            UserRole.STAFF -> {
+                if (!session.staffActive) {
+                    targetRole == "PUBLIC" || targetRole == "ALL"
+                } else if (targetRole == "PUBLIC" || targetRole == "ALL") {
+                    true
+                } else if (targetRole == "STAFF") {
+                    val normMod = normalizeNotifModuleKey(targetModule)
+                    if (normMod.isBlank()) {
+                        true
+                    } else {
+                        val mod = enumValues<AppModule>().firstOrNull {
+                            it.key.equals(normMod, ignoreCase = true) || it.name.equals(normMod, ignoreCase = true)
+                        }
+                        mod != null && session.hasPermission(mod, CrudAction.VIEW)
+                    }
+                } else {
+                    false
+                }
+            }
+            UserRole.ADMIN -> true
+        }
+    }
+
+    fun toCreateMap(): Map<String, Any> {
+        val safeRole = targetRole.trim().uppercase().takeIf { it in setOf("ALL", "PUBLIC", "STAFF", "ADMIN") } ?: "ALL"
+        val safeKind = if (itemKind.equals("REMINDER", ignoreCase = true)) "REMINDER" else "NOTICE"
+        val safeRecurrence = resolvedRecurrence().name
+        val safePriority = resolvedPriority().name
+        val safeModule = normalizeNotifModuleKey(targetModule)
+        val safeDate = publishDate.trim().ifBlank { todayIsoDateString() }.take(20)
+        val safeDedup = dedupKey.trim().ifBlank {
+            computeNotificationDedupKey(title, category, safeRole, safeDate, safeKind, reminderTime, targetUid)
+        }.take(200)
+        return mapOf(
+            "targetRole" to safeRole,
+            "targetUid" to targetUid.trim().take(128),
+            "category" to category.trim().ifBlank { NotificationCategory.ANNOUNCEMENTS.name }.take(40),
+            "title" to title.trim().take(140),
+            "message" to message.trim().take(1500),
+            "photoUrl" to photoUrl.trim().take(2000),
+            "published" to published,
+            "publishDate" to safeDate,
+            "expiryDate" to expiryDate.trim().take(20),
+            "itemKind" to safeKind,
+            "reminderTime" to reminderTime.trim().take(20),
+            "recurrence" to safeRecurrence,
+            "priority" to safePriority,
+            "assigneeName" to assigneeName.trim().take(120),
+            "targetModule" to safeModule,
+            "createdBy" to createdBy.trim().take(128),
+            "dedupKey" to safeDedup,
+            "readByUids" to readByUids.distinct().take(500),
+            "completedByUids" to completedByUids.distinct().take(500),
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+    }
+
+    fun toUpdateMap(): Map<String, Any> {
+        val safeRole = targetRole.trim().uppercase().takeIf { it in setOf("ALL", "PUBLIC", "STAFF", "ADMIN") } ?: "ALL"
+        val safeKind = if (itemKind.equals("REMINDER", ignoreCase = true)) "REMINDER" else "NOTICE"
+        val safeRecurrence = resolvedRecurrence().name
+        val safePriority = resolvedPriority().name
+        val safeModule = normalizeNotifModuleKey(targetModule)
+        val safeDate = publishDate.trim().ifBlank { todayIsoDateString() }.take(20)
+        val safeDedup = dedupKey.trim().ifBlank {
+            computeNotificationDedupKey(title, category, safeRole, safeDate, safeKind, reminderTime, targetUid)
+        }.take(200)
+        return mapOf(
+            "targetRole" to safeRole,
+            "targetUid" to targetUid.trim().take(128),
+            "category" to category.trim().ifBlank { NotificationCategory.ANNOUNCEMENTS.name }.take(40),
+            "title" to title.trim().take(140),
+            "message" to message.trim().take(1500),
+            "photoUrl" to photoUrl.trim().take(2000),
+            "published" to published,
+            "publishDate" to safeDate,
+            "expiryDate" to expiryDate.trim().take(20),
+            "itemKind" to safeKind,
+            "reminderTime" to reminderTime.trim().take(20),
+            "recurrence" to safeRecurrence,
+            "priority" to safePriority,
+            "assigneeName" to assigneeName.trim().take(120),
+            "targetModule" to safeModule,
+            "dedupKey" to safeDedup,
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+    }
 }
 
 @Keep

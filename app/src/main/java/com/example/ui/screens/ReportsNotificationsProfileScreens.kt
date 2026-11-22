@@ -303,113 +303,44 @@ fun NotificationsScreen(
     language: AppLanguage,
     session: UserSession,
     notificationsState: DataUiState<List<NotificationItem>>,
-    onMarkRead: (String) -> Unit
+    onMarkRead: (String) -> Unit,
+    alertsEnabled: Boolean = true,
+    remindersEnabled: Boolean = true,
+    isSubmitting: Boolean = false,
+    staffAccounts: List<StaffAccount> = emptyList(),
+    initialNotificationId: String? = null,
+    onConsumeInitialNotificationId: () -> Unit = {},
+    onToggleAlerts: (Boolean) -> Unit = {},
+    onToggleReminders: (Boolean) -> Unit = {},
+    onMarkUnread: (String) -> Unit = {},
+    onMarkAllRead: (List<String>) -> Unit = {},
+    onToggleActionDone: (String, Boolean) -> Unit = { _, _ -> },
+    onNavigateToRelatedRoute: ((String) -> Unit)? = null,
+    onSaveNotification: (NotificationItem, Boolean) -> Unit = { _, _ -> },
+    onSetPublished: (String, Boolean) -> Unit = { _, _ -> },
+    onDeleteNotification: (NotificationItem) -> Unit = {}
 ) {
-    val context = LocalContext.current
-    var notifPermissionGranted by remember {
-        mutableStateOf(
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-        )
-    }
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        notifPermissionGranted = granted
-    }
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        if (!notifPermissionGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            item {
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = SoftGoldTint)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.NotificationsActive, contentDescription = null, tint = Saffron)
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            text = str(language, "टीकाकरण व फॉलो-अप अलर्ट पाने के लिए सूचना अनुमति दें।", "Enable notifications for vaccine & follow-up alerts."),
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f)
-                        )
-                        TextButton(onClick = { permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }) {
-                            Text(str(language, "अनुमति दें", "Allow"))
-                        }
-                    }
-                }
-            }
-        }
-
-        when (notificationsState) {
-            is DataUiState.Loading -> item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
-            is DataUiState.Error -> item { Text(notificationsState.message, color = AlertRed) }
-            is DataUiState.Success -> {
-                if (notificationsState.data.isEmpty()) {
-                    item {
-                        EmptyStateCard(
-                            icon = Icons.Default.NotificationsNone,
-                            title = str(language, "कोई नई सूचना नहीं", "No Notifications"),
-                            subtitle = str(language, "स्वास्थ्य अनुस्मारक, चारा स्टॉक अलर्ट और दान अपडेट यहाँ दिखेंगे।", "Health reminders, fodder stock alerts, and donation updates appear here.")
-                        )
-                    }
-                } else {
-                    items(notificationsState.data, key = { it.id }) { item ->
-                        val isRead = item.readByUids.contains(session.uid)
-                        Card(
-                            onClick = { if (!isRead) onMarkRead(item.id) },
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (isRead) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-                            )
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(14.dp),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = if (isRead) MaterialTheme.colorScheme.surfaceVariant else Saffron,
-                                    modifier = Modifier.size(36.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            Icons.Default.Notifications,
-                                            contentDescription = null,
-                                            tint = if (isRead) MaterialTheme.colorScheme.onSurfaceVariant else Color.White,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
-                                Spacer(Modifier.width(12.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(
-                                            text = item.title,
-                                            style = MaterialTheme.typography.titleSmall,
-                                            fontWeight = if (isRead) FontWeight.Normal else FontWeight.Bold,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        if (!isRead) {
-                                            Box(Modifier.size(8.dp).background(Saffron, CircleShape))
-                                        }
-                                    }
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(item.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    NotificationCenterScreen(
+        language = language,
+        session = session,
+        notificationsState = notificationsState,
+        alertsEnabled = alertsEnabled,
+        remindersEnabled = remindersEnabled,
+        isSubmitting = isSubmitting,
+        staffAccounts = staffAccounts,
+        initialNotificationId = initialNotificationId,
+        onConsumeInitialNotificationId = onConsumeInitialNotificationId,
+        onToggleAlerts = onToggleAlerts,
+        onToggleReminders = onToggleReminders,
+        onMarkRead = onMarkRead,
+        onMarkUnread = onMarkUnread,
+        onMarkAllRead = onMarkAllRead,
+        onToggleActionDone = onToggleActionDone,
+        onNavigateToRelatedRoute = onNavigateToRelatedRoute,
+        onSaveNotification = onSaveNotification,
+        onSetPublished = onSetPublished,
+        onDeleteNotification = onDeleteNotification
+    )
 }
 
 @Composable
