@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.AppLanguage
+import com.example.core.isAppCheckTokenError
 import com.example.data.model.*
 import com.example.data.repository.GeminiAiRepository
 import com.example.data.repository.VoiceEntryDraft
@@ -26,7 +27,8 @@ sealed interface AiUiState {
 data class AiChatMessage(
     val isUser: Boolean,
     val text: String,
-    val modeLabel: String = ""
+    val modeLabel: String = "",
+    val cowContextLabel: String = ""
 )
 
 class AiViewModel(
@@ -58,64 +60,99 @@ class AiViewModel(
         farmers: List<FarmerRecord>,
         farmerTx: List<FarmerTransaction>,
         compost: List<CompostBatch>,
-        donations: List<Donation>
+        donations: List<Donation>,
+        products: List<GoshalaProduct> = emptyList(),
+        selectedCow: Cattle? = null
     ) {
-        if (prompt.isBlank()) return
+        val trimmed = prompt.trim()
+        if (trimmed.isBlank()) return
         val roleContext = aiRepository.buildRoleScopedContext(
-            session, summary, cattle, health, feedLogs, finance, farmers, farmerTx, compost, donations
+            session = session,
+            summary = summary,
+            cattle = cattle,
+            health = health,
+            feedLogs = feedLogs,
+            finance = finance,
+            farmers = farmers,
+            farmerTx = farmerTx,
+            compost = compost,
+            donations = donations,
+            products = products,
+            selectedCow = selectedCow
         )
-        _messages.value = _messages.value + AiChatMessage(isUser = true, text = prompt, modeLabel = modeLabel)
+        val cowTag = selectedCow?.let { "${it.name} (${it.animalCode})" }.orEmpty()
+        _messages.value = _messages.value + AiChatMessage(
+            isUser = true,
+            text = trimmed,
+            modeLabel = modeLabel,
+            cowContextLabel = cowTag
+        )
 
         viewModelScope.launch {
             _uiState.value = AiUiState.Loading
             var finalText = ""
             try {
-                aiRepository.streamAssistantResponse(prompt, roleContext, modeLabel, language).collect { partial ->
+                aiRepository.streamAssistantResponse(trimmed, roleContext, modeLabel, language).collect { partial ->
                     finalText = partial
                     _uiState.value = AiUiState.Streaming(partial)
                 }
                 _uiState.value = AiUiState.Success(finalText)
-                _messages.value = _messages.value + AiChatMessage(isUser = false, text = finalText, modeLabel = modeLabel)
+                _messages.value = _messages.value + AiChatMessage(
+                    isUser = false,
+                    text = finalText,
+                    modeLabel = modeLabel,
+                    cowContextLabel = cowTag
+                )
             } catch (e: TimeoutCancellationException) {
                 Log.e(TAG, "AI request timed out", e)
                 _uiState.value = AiUiState.Error(
                     if (language == AppLanguage.HINDI) {
-                        "AI सहायक का समय समाप्त हो गया (60 सेकंड)। कृपया पुनः प्रयास करें।"
+                        "AI सहायक का समय समाप्त हो गया (60 सेकंड)। कृपया नेटवर्क जांचकर पुनः प्रयास करें।"
                     } else {
-                        "AI request timed out after 60 seconds. Please retry."
+                        "AI request timed out after 60 seconds. Please check network and retry."
                     }
                 )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Firebase AI generation failed", e)
-                _uiState.value = AiUiState.Error(
-                    e.localizedMessage ?: if (language == AppLanguage.HINDI) {
-                        "AI सेवा अभी उपलब्ध नहीं है। कृपया नेटवर्क या App Check स्थिति जांचें।"
-                    } else {
-                        "AI service is currently unavailable."
-                    }
-                )
+                _uiState.value = AiUiState.Error(formatAiErrorMessage(e, language))
             }
         }
     }
 
-    fun analyzeCattlePhoto(bitmap: Bitmap, notes: String, language: AppLanguage) {
+    fun analyzeCattlePhoto(
+        bitmap: Bitmap,
+        notes: String,
+        language: AppLanguage,
+        selectedCow: Cattle? = null,
+        cowHealthRecords: List<HealthRecord> = emptyList(),
+        isPublic: Boolean = false
+    ) {
         viewModelScope.launch {
             _photoAnalysisState.value = AiUiState.Loading
-            val res = aiRepository.analyzeCattlePhoto(bitmap, notes, language)
+            val res = aiRepository.analyzeCattlePhoto(
+                bitmap = bitmap,
+                notes = notes,
+                language = language,
+                selectedCow = selectedCow,
+                cowHealthRecords = cowHealthRecords,
+                isPublic = isPublic
+            )
             res.fold(
                 onSuccess = { text ->
                     _photoAnalysisState.value = AiUiState.Success(text)
                 },
                 onFailure = { e ->
                     Log.e(TAG, "Photo analysis failed", e)
-                    _photoAnalysisState.value = AiUiState.Error(
-                        e.localizedMessage ?: "Photo analysis failed."
-                    )
+                    _photoAnalysisState.value = AiUiState.Error(formatAiErrorMessage(e, language))
                 }
             )
         }
+    }
+
+    fun clearPhotoAnalysis() {
+        _photoAnalysisState.value = AiUiState.Idle
     }
 
     fun createVoiceDraft(spokenText: String, language: AppLanguage) {
@@ -136,7 +173,7 @@ class AiViewModel(
                 },
                 onFailure = { e ->
                     Log.e(TAG, "Voice draft failed", e)
-                    _uiState.value = AiUiState.Error(e.localizedMessage ?: "Voice draft failed.")
+                    _uiState.value = AiUiState.Error(formatAiErrorMessage(e, language))
                 }
             )
         }
@@ -149,6 +186,24 @@ class AiViewModel(
     fun clearChat() {
         _messages.value = emptyList()
         _uiState.value = AiUiState.Idle
+    }
+
+    private fun formatAiErrorMessage(e: Throwable, language: AppLanguage): String {
+        val raw = e.localizedMessage?.trim().orEmpty()
+        if (isAppCheckTokenError(e)) {
+            return if (language == AppLanguage.HINDI) {
+                "Firebase App Check सत्यापन में त्रुटि आई है। कृपया ऐप को पुनः खोलें या कुछ सेकंड बाद पुनः प्रयास करें। ($raw)"
+            } else {
+                "Firebase App Check verification failed. Please relaunch the app or retry in a moment. ($raw)"
+            }
+        }
+        return if (raw.isNotBlank()) {
+            raw
+        } else if (language == AppLanguage.HINDI) {
+            "AI सेवा अभी उपलब्ध नहीं है। कृपया इंटरनेट कनेक्शन जांचकर पुनः प्रयास करें।"
+        } else {
+            "AI service is currently unavailable. Please check your connection and retry."
+        }
     }
 
     private companion object {

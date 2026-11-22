@@ -1,5 +1,6 @@
 package com.example
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -73,8 +74,16 @@ private data class FirebaseBootstrap(
 )
 
 class MainActivity : ComponentActivity() {
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        configureAppCheck(this, intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Configure Firebase App Check synchronously before any UI, ViewModels, or Firebase calls
+        configureAppCheck(this, intent)
         enableEdgeToEdge()
 
         setContent {
@@ -96,7 +105,6 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(Unit) {
                 if (bootstrap == null) {
                     val initialized = withContext(Dispatchers.IO) {
-                        configureAppCheck(appContext, intent)
                         val loader = appContext.imageLoader
                         loader.enqueue(
                             ImageRequest.Builder(appContext)
@@ -1073,6 +1081,7 @@ private fun GosalaAuthenticatedShell(
                                 farmerTx = farmerTxList,
                                 compost = compostList,
                                 donations = donationsList,
+                                products = productsList,
                                 aiViewModel = aiViewModel,
                                 initialMode = initialAiMode,
                                 onSaveCattleDraft = { item -> gosalaViewModel.saveCattle(item, false, language) },

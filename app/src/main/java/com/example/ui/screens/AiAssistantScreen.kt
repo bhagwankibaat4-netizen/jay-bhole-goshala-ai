@@ -14,9 +14,7 @@ import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -32,21 +31,18 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.core.AppLanguage
+import com.example.core.CattlePhotoStorage
 import com.example.core.QrAndExportUtils
 import com.example.core.str
 import com.example.data.model.*
-import com.example.data.repository.VoiceEntryDraft
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.AiChatMessage
 import com.example.ui.viewmodel.AiUiState
@@ -54,11 +50,12 @@ import com.example.ui.viewmodel.AiViewModel
 import java.util.Locale
 
 enum class AiMode(val labelHi: String, val labelEn: String) {
-    VOICE_DRAFT("वॉइस ड्राफ्ट", "Voice Draft"),
-    MANAGEMENT("प्रबंधन AI", "Management"),
-    ANIMAL_CARE("पशु स्वास्थ्य व फोटो", "Animal Care & Photo"),
-    BUSINESS("व्यापार व खाद लागत", "Business & Compost"),
-    ADMIN_SUMMARY("प्रशासक सारांश", "Admin Summary")
+    ANIMAL_CARE("गाय स्वास्थ्य व फोटो", "Cow Health & Photo"),
+    MANAGEMENT("गौशाला सवाल-जवाब", "Goshala Q&A"),
+    ACTION_PLAN("AI कार्य योजना", "AI Action Plan"),
+    BUSINESS("खाद, उत्पाद व आय", "Compost & Business"),
+    ADMIN_SUMMARY("प्रशासक सारांश", "Admin Summary"),
+    VOICE_DRAFT("वॉइस ड्राफ्ट", "Voice Draft")
 }
 
 @Composable
@@ -80,7 +77,8 @@ fun AiAssistantScreen(
     onSaveFeedDraft: (FeedAndOperationLog) -> Unit,
     onSaveExpenseDraft: (FinancialTransaction) -> Unit,
     onSaveHealthDraft: (HealthRecord) -> Unit,
-    onNavigateToCattleSearch: () -> Unit
+    onNavigateToCattleSearch: () -> Unit,
+    products: List<GoshalaProduct> = emptyList()
 ) {
     val context = LocalContext.current
     val uiState by aiViewModel.uiState.collectAsState()
@@ -91,34 +89,92 @@ fun AiAssistantScreen(
     val isPublic = session.role == UserRole.PUBLIC
     val availableModes = remember(session) {
         buildList {
-            if (!isPublic) add(AiMode.VOICE_DRAFT)
-            add(AiMode.MANAGEMENT)
             add(AiMode.ANIMAL_CARE)
+            add(AiMode.MANAGEMENT)
+            add(AiMode.ACTION_PLAN)
             if (!isPublic && (session.canView(AppModule.PRODUCTION) || session.canView(AppModule.FINANCE))) {
                 add(AiMode.BUSINESS)
             }
             if (session.role == UserRole.ADMIN) {
                 add(AiMode.ADMIN_SUMMARY)
             }
+            if (!isPublic) add(AiMode.VOICE_DRAFT)
         }
     }
 
     var selectedMode by remember(availableModes) {
         mutableStateOf(if (initialMode in availableModes) initialMode else availableModes.first())
     }
+    var selectedCow by remember(cattle) { mutableStateOf<Cattle?>(null) }
     var promptText by remember { mutableStateOf("") }
+    var lastSentPrompt by remember { mutableStateOf("") }
     var voiceInputText by remember { mutableStateOf("") }
     var speechError by remember { mutableStateOf<String?>(null) }
 
-    // Photo picker state for Cattle Health Photo Check
+    // Photo picker & camera capture state for Cow Photo Health Check
     var selectedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var photoNotes by remember { mutableStateOf("") }
+    var cameraError by remember { mutableStateOf<String?>(null) }
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         if (uri != null) {
+            cameraError = null
             selectedBitmap = decodeScaledBitmap(context, uri, maxDim = 1024)
+            aiViewModel.clearPhotoAnalysis()
+        }
+    }
+
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success: Boolean ->
+        val uri = pendingCameraUri
+        if (success && uri != null) {
+            cameraError = null
+            selectedBitmap = decodeScaledBitmap(context, uri, maxDim = 1024)
+            aiViewModel.clearPhotoAnalysis()
+        } else if (!success && uri != null) {
+            cameraError = null
+        }
+    }
+
+    fun launchCameraCapture() {
+        try {
+            val uri = CattlePhotoStorage.createCameraCaptureUri(context)
+            pendingCameraUri = uri
+            cameraError = null
+            takePictureLauncher.launch(uri)
+        } catch (_: Exception) {
+            cameraError = str(
+                language,
+                "कैमरा शुरू नहीं हो सका। कृपया गैलरी से गाय की फोटो चुनें।",
+                "Unable to open camera. Please pick a photo from Gallery."
+            )
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            launchCameraCapture()
+        } else {
+            cameraError = str(
+                language,
+                "कैमरा अनुमति आवश्यक है। आप गैलरी से भी गाय की फोटो चुन सकते हैं।",
+                "Camera permission is required. You can also select a photo from Gallery."
+            )
+        }
+    }
+
+    fun onCameraClicked() {
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            launchCameraCapture()
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
 
@@ -169,7 +225,7 @@ fun AiAssistantScreen(
         } else {
             speechError = str(
                 language,
-                "माइक्रोफ़ोन अनुमति अस्वीकृत। आप नीचे लिखकर भी ड्राफ्ट बना सकते हैं।",
+                "माइक्रोफ़ोन अनुमति अस्वीकृत। आप नीचे लिखकर भी प्रश्न पूछ सकते हैं।",
                 "Microphone permission denied. You can still type below."
             )
         }
@@ -184,9 +240,12 @@ fun AiAssistantScreen(
         }
     }
 
+    val isBusy = uiState is AiUiState.Loading || uiState is AiUiState.Streaming
+
     fun sendPrompt(text: String = promptText) {
         val trimmed = text.trim()
-        if (trimmed.isBlank()) return
+        if (trimmed.isBlank() || isBusy) return
+        lastSentPrompt = trimmed
         promptText = ""
         aiViewModel.askAssistant(
             prompt = trimmed,
@@ -201,7 +260,9 @@ fun AiAssistantScreen(
             farmers = farmers,
             farmerTx = farmerTx,
             compost = compost,
-            donations = donations
+            donations = donations,
+            products = products,
+            selectedCow = selectedCow
         )
     }
 
@@ -210,8 +271,9 @@ fun AiAssistantScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
             .padding(horizontal = 14.dp, vertical = 10.dp)
+            .testTag("ai_assistant_screen_root")
     ) {
-        // Role & Safety Banner
+        // Role & Strict Read-Only Safety Banner
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
@@ -240,16 +302,27 @@ fun AiAssistantScreen(
                     )
                     Text(
                         text = if (isPublic) {
-                            str(language, "सार्वजनिक सहायता मोड: केवल स्वीकृत गौवंश व सेवा जानकारी", "Public Mode: Approved cattle & donation guidance only")
+                            str(
+                                language,
+                                "सार्वजनिक सहायता: गाय देखभाल, फोटो जाँच व स्वीकृत गौशाला जानकारी (केवल सलाह)",
+                                "Public Mode: Cow care, photo check & approved goshala guidance (Read-only)"
+                            )
                         } else {
-                            str(language, "कोई भी डेटा आपकी पुष्टि के बिना नहीं सहेजा जाता।", "AI drafts always require your explicit confirmation before saving.")
+                            str(
+                                language,
+                                "केवल सलाह मोड: AI किसी भी रिकॉर्ड को अपने आप बदलता या डिलीट नहीं करता।",
+                                "Read-only Guidance: AI never edits, deletes, or saves records automatically."
+                            )
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = Golden
                     )
                 }
                 if (messages.isNotEmpty()) {
-                    IconButton(onClick = { aiViewModel.clearChat() }) {
+                    IconButton(
+                        onClick = { aiViewModel.clearChat() },
+                        modifier = Modifier.testTag("ai_clear_chat_btn")
+                    ) {
                         Icon(Icons.Default.DeleteSweep, contentDescription = str(language, "चैट साफ़ करें", "Clear chat"), tint = Color.White)
                     }
                 }
@@ -280,11 +353,65 @@ fun AiAssistantScreen(
         LazyColumn(
             modifier = Modifier
                 .weight(1f)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .testTag("ai_content_list"),
             verticalArrangement = Arrangement.spacedBy(10.dp),
             contentPadding = PaddingValues(bottom = 12.dp)
         ) {
-            // 1. VOICE DRAFT MODE PANEL
+            // 1. OPTIONAL COW RECORD SELECTOR (Read-only context for Photo Health & Health/Management Q&A)
+            if (selectedMode == AiMode.ANIMAL_CARE || selectedMode == AiMode.MANAGEMENT) {
+                item {
+                    CowContextSelectorCard(
+                        language = language,
+                        cattle = cattle,
+                        health = health,
+                        selectedCow = selectedCow,
+                        isPublic = isPublic,
+                        onSelectCow = { cow -> selectedCow = cow }
+                    )
+                }
+            }
+
+            // 2. ANIMAL CARE PHOTO HEALTH CHECK PANEL (Camera + Gallery + Selected Cow Record)
+            if (selectedMode == AiMode.ANIMAL_CARE) {
+                item {
+                    PhotoHealthCheckCard(
+                        language = language,
+                        selectedCow = selectedCow,
+                        selectedBitmap = selectedBitmap,
+                        notes = photoNotes,
+                        cameraError = cameraError,
+                        photoState = photoState,
+                        onNotesChange = { photoNotes = it },
+                        onPickPhoto = {
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        onCapturePhoto = { onCameraClicked() },
+                        onClearPhoto = {
+                            selectedBitmap = null
+                            photoNotes = ""
+                            cameraError = null
+                            aiViewModel.clearPhotoAnalysis()
+                        },
+                        onAnalyze = {
+                            selectedBitmap?.let { bmp ->
+                                aiViewModel.analyzeCattlePhoto(
+                                    bitmap = bmp,
+                                    notes = photoNotes,
+                                    language = language,
+                                    selectedCow = selectedCow,
+                                    cowHealthRecords = health,
+                                    isPublic = isPublic
+                                )
+                            }
+                        }
+                    )
+                }
+            }
+
+            // 3. VOICE DRAFT MODE PANEL (Explicit user confirmation required before saving)
             if (selectedMode == AiMode.VOICE_DRAFT && !isPublic) {
                 item {
                     VoiceDraftPanel(
@@ -340,7 +467,7 @@ fun AiAssistantScreen(
                                     )
                                 }
                                 "HEALTH_NOTE" -> {
-                                    val firstCattle = cattle.firstOrNull()
+                                    val firstCattle = selectedCow ?: cattle.firstOrNull()
                                     onSaveHealthDraft(
                                         HealthRecord(
                                             cattleId = firstCattle?.id ?: "GENERAL",
@@ -354,9 +481,7 @@ fun AiAssistantScreen(
                                         )
                                     )
                                 }
-                                "SEARCH" -> {
-                                    onNavigateToCattleSearch()
-                                }
+                                "SEARCH" -> onNavigateToCattleSearch()
                             }
                             aiViewModel.clearVoiceDraft()
                         }
@@ -364,59 +489,63 @@ fun AiAssistantScreen(
                 }
             }
 
-            // 2. ANIMAL CARE PHOTO HEALTH CHECK PANEL
-            if (selectedMode == AiMode.ANIMAL_CARE) {
-                item {
-                    PhotoHealthCheckCard(
-                        language = language,
-                        selectedBitmap = selectedBitmap,
-                        notes = photoNotes,
-                        onNotesChange = { photoNotes = it },
-                        photoState = photoState,
-                        onPickPhoto = {
-                            photoPickerLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        },
-                        onAnalyze = {
-                            selectedBitmap?.let { bmp ->
-                                aiViewModel.analyzeCattlePhoto(bmp, photoNotes, language)
-                            }
-                        }
-                    )
-                }
-            }
-
-            // 3. QUICK SUGGESTION CHIPS FOR CURRENT MODE
+            // 4. QUICK SUGGESTION CHIPS FOR CURRENT MODE (All 13 Goshala Q&A topics + Action Plan)
             item {
-                val quickPrompts = remember(selectedMode, language, isPublic) {
+                val quickPrompts = remember(selectedMode, language, isPublic, selectedCow) {
                     when (selectedMode) {
-                        AiMode.VOICE_DRAFT -> listOf(
-                            str(language, "आज 120 किलो हरा चारा दिया गया", "Logged 120 kg green fodder today"),
-                            str(language, "चारे के लिए 1500 रुपये खर्च हुए", "Spent 1500 INR on fodder")
-                        )
+                        AiMode.ANIMAL_CARE -> buildList {
+                            if (selectedCow != null) {
+                                add(
+                                    str(
+                                        language,
+                                        "${selectedCow!!.name} (${selectedCow!!.animalCode}) की स्वास्थ्य रिपोर्ट, पिछला उपचार और टीकाकरण स्थिति बताएं",
+                                        "Summarize health report, past treatment & vaccination for ${selectedCow!!.name}"
+                                    )
+                                )
+                            }
+                            add(str(language, "बीमार गाय की देखभाल कैसे करें?", "How to care for a sick cow?"))
+                            add(str(language, "गाय को दस्त होने पर क्या सावधानी रखें?", "Precautions when a cow has diarrhea"))
+                            add(str(language, "गाय खाना क्यों नहीं खा रही?", "Why is a cow not eating?"))
+                            add(str(language, "बछड़े की देखभाल कैसे करें?", "How to care for a newborn calf?"))
+                            add(str(language, "टीकाकरण कब कराना चाहिए?", "When should vaccination be done?"))
+                            add(str(language, "गर्मी और सर्दी में गायों की देखभाल कैसे करें?", "Summer & winter care for cows"))
+                        }
                         AiMode.MANAGEMENT -> if (isPublic) {
                             listOf(
-                                str(language, "गौशाला में गोद लेने के लिए कौन-सी गाय उपलब्ध हैं?", "Which cows are available for sponsorship?"),
-                                str(language, "मैं गौशाला को किस प्रकार दान या सहयोग कर सकता हूँ?", "How can I donate or support the goshala?")
+                                str(language, "गौशाला में गोद लेने के लिए कौन-सी गाय उपलब्ध हैं?", "Which cows are available for adoption?"),
+                                str(language, "गोबर से खाद, कंडे और धूपबत्ती कैसे बनाएँ?", "How to make compost, kande & dhoop from dung?"),
+                                str(language, "गौशाला में साफ-सफाई और गायों की देखभाल कैसे रखें?", "How to maintain cleanliness & cow care?"),
+                                str(language, "गर्मी और सर्दी में गायों की देखभाल कैसे करें?", "Summer & winter care for cows")
                             )
                         } else {
                             listOf(
-                                str(language, "आज गौशाला की कुल स्थिति बताएं", "Give today's goshala summary"),
-                                str(language, "किन गायों को स्वास्थ्य देखभाल या टीकाकरण की ज़रूरत है?", "Which cattle need medical attention or follow-up?")
+                                str(language, "आज गायों को कितना चारा देना चाहिए?", "How much fodder should be given today?"),
+                                str(language, "कुल गाय, बैल, बछड़े और बीमार गायों की वास्तविक स्थिति बताएं", "Real status of cows, bulls, calves & sick cattle"),
+                                str(language, "गौशाला में साफ-सफाई कैसे रखें?", "How to keep the goshala clean?"),
+                                str(language, "किसान से चारा कैसे खरीदें और गुणवत्ता कैसे जाँचें?", "How to buy fodder from farmers?")
                             )
                         }
-                        AiMode.ANIMAL_CARE -> listOf(
-                            str(language, "गौवंश को लू और गर्मी से बचाने के उपाय बताएं", "Summer heatstroke care tips for cows"),
-                            str(language, "बछड़ों के पोषण और टीकाकरण का सामान्य क्रम क्या है?", "Basic calf nutrition & vaccination care tips")
+                        AiMode.ACTION_PLAN -> listOf(
+                            str(language, "गौशाला के लिए आज के जरूरी कार्य की चरणबद्ध कार्य योजना बनाएँ", "Create today's priority action plan"),
+                            str(language, "गाय की देखभाल, चारा प्रबंधन और सफाई की दैनिक कार्य योजना दें", "Daily cow care, fodder & cleaning plan"),
+                            str(language, "गोबर से खाद, कंडे, गोबर की लकड़ी और धूपबत्ती निर्माण कार्य योजना बनाएँ", "Dung compost, kande, gau-kashtha & dhoop plan"),
+                            str(language, "गौशाला के उत्पादों की बिक्री बढ़ाने और खर्च कम करने की कार्य योजना दें", "Plan to grow product sales & cut expenses")
                         )
                         AiMode.BUSINESS -> listOf(
-                            str(language, "वर्मी कंपोस्ट खाद के बैच का लाभ-हानि विश्लेषण करें", "Analyze vermicompost batch cost and profit margin"),
-                            str(language, "किसान सहयोग व्यापार में बकाया व बिक्री सारांश दें", "Summarize farmer fodder purchases & product sales")
+                            str(language, "गोबर से खाद कैसे बनाएँ?", "How to make organic compost from cow dung?"),
+                            str(language, "गोबर से कंडे, गोबर की लकड़ी और धूपबत्ती कैसे बनाएँ?", "How to make kande, gau-kashtha & dhoop?"),
+                            str(language, "गौशाला के उत्पाद कैसे तैयार करें और बेचें?", "How to prepare and sell goshala products?"),
+                            str(language, "गौशाला के खर्च कम और आमदनी को कैसे बेहतर करें?", "How to reduce expenses and improve income?"),
+                            str(language, "किसान से चारा खरीद और उत्पाद बिक्री लेन-देन का सारांश दें", "Summarize farmer fodder purchases & product sales")
                         )
                         AiMode.ADMIN_SUMMARY -> listOf(
-                            str(language, "मासिक आय, व्यय और दान का कार्यकारी सारांश बनाएं", "Executive summary of monthly income, expense & donations"),
-                            str(language, "चारा स्टॉक और लंबित भुगतानों पर सलाह दें", "Advise on fodder stock and pending payments")
+                            str(language, "कुल गाय-बैल-बछड़े, बीमार गायें, आज का चारा, स्टॉक, आय-व्यय और दान का वास्तविक सारांश दें", "Full verified summary of cattle, feed, finance & donations"),
+                            str(language, "गोबर उत्पादन, खाद-उत्पाद स्टॉक और किसान लेन-देन की स्थिति बताएं", "Dung production, compost stock & farmer ledger status"),
+                            str(language, "खर्च कम करने और आज के जरूरी कार्यों की प्रशासक कार्य योजना बनाएँ", "Admin cost-saving & today's priority plan")
+                        )
+                        AiMode.VOICE_DRAFT -> listOf(
+                            str(language, "आज 120 किलो हरा चारा दिया गया", "Logged 120 kg green fodder today"),
+                            str(language, "चारे के लिए 1500 रुपये खर्च हुए", "Spent 1500 INR on fodder")
                         )
                     }
                 }
@@ -442,40 +571,91 @@ fun AiAssistantScreen(
                 }
             }
 
-            // 4. CHAT HISTORY
+            // 5. CHAT HISTORY
             items(messages) { msg ->
                 ChatBubble(msg)
             }
 
-            // Streaming / Loading / Error State
+            // 6. STREAMING / LOADING / SUCCESS / ERROR FEEDBACK
             when (val state = uiState) {
                 is AiUiState.Loading -> {
                     item {
                         Row(
-                            modifier = Modifier.padding(8.dp),
+                            modifier = Modifier
+                                .padding(8.dp)
+                                .testTag("ai_chat_loading"),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(10.dp))
-                            Text(str(language, "AI विचार कर रहा है...", "AI is thinking..."), style = MaterialTheme.typography.bodySmall)
+                            Text(str(language, "AI गौशाला सहायक उत्तर तैयार कर रहा है...", "AI Goshala Assistant is thinking..."), style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
                 is AiUiState.Streaming -> {
                     item {
-                        ChatBubble(AiChatMessage(isUser = false, text = state.text, modeLabel = str(language, selectedMode.labelHi, selectedMode.labelEn)))
+                        Box(modifier = Modifier.testTag("ai_chat_streaming")) {
+                            ChatBubble(
+                                AiChatMessage(
+                                    isUser = false,
+                                    text = state.text,
+                                    modeLabel = str(language, selectedMode.labelHi, selectedMode.labelEn),
+                                    cowContextLabel = selectedCow?.let { "${it.name} (${it.animalCode})" }.orEmpty()
+                                )
+                            )
+                        }
+                    }
+                }
+                is AiUiState.Success -> {
+                    if (messages.isNotEmpty()) {
+                        item {
+                            Row(
+                                modifier = Modifier
+                                    .padding(horizontal = 4.dp)
+                                    .testTag("ai_chat_success_badge"),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = ForestGreen, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = str(language, "AI उत्तर सफलतापूर्वक प्राप्त हुआ (केवल मार्गदर्शन हेतु)", "AI response received (guidance only)"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = ForestGreen
+                                )
+                            }
+                        }
                     }
                 }
                 is AiUiState.Error -> {
                     item {
                         Card(
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                            shape = RoundedCornerShape(14.dp)
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("ai_chat_error")
                         ) {
-                            Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.WarningAmber, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                                Spacer(Modifier.width(8.dp))
-                                Text(state.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.WarningAmber, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = state.message,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                if (lastSentPrompt.isNotBlank()) {
+                                    OutlinedButton(
+                                        onClick = { sendPrompt(lastSentPrompt) },
+                                        modifier = Modifier.testTag("ai_chat_retry_btn")
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(str(language, "पुनः प्रयास करें", "Retry"))
+                                    }
+                                }
                             }
                         }
                     }
@@ -506,11 +686,13 @@ fun AiAssistantScreen(
                     onValueChange = { promptText = it },
                     placeholder = {
                         Text(
-                            str(language, "गौशाला से जुड़ा प्रश्न पूछें...", "Ask about cattle, feed, or care..."),
+                            str(language, "गौशाला, चारा, गाय देखभाल या कार्य योजना पूछें...", "Ask about cattle, fodder, care or plan..."),
                             style = MaterialTheme.typography.bodySmall
                         )
                     },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { sendPrompt() }),
                     modifier = Modifier
                         .weight(1f)
                         .testTag("ai_prompt_input"),
@@ -519,326 +701,12 @@ fun AiAssistantScreen(
                 Spacer(Modifier.width(6.dp))
                 FilledIconButton(
                     onClick = { sendPrompt() },
-                    enabled = promptText.isNotBlank() && uiState !is AiUiState.Loading,
+                    enabled = promptText.isNotBlank() && !isBusy,
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = ForestGreen),
                     modifier = Modifier.testTag("ai_send_button")
                 ) {
                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = str(language, "भेजें", "Send"), tint = Color.White)
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun VoiceDraftPanel(
-    language: AppLanguage,
-    session: UserSession,
-    voiceInputText: String,
-    onVoiceTextChange: (String) -> Unit,
-    speechError: String?,
-    isLoading: Boolean,
-    draft: VoiceEntryDraft?,
-    onMicClick: () -> Unit,
-    onGenerateDraft: () -> Unit,
-    onDiscardDraft: () -> Unit,
-    onConfirmDraft: (VoiceEntryDraft) -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-    ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.RecordVoiceOver, contentDescription = null, tint = Saffron)
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = str(language, "हिंदी वॉइस एंट्री सहायक (ड्राफ्ट मोड)", "Hindi Voice Entry Drafts"),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Text(
-                text = str(
-                    language,
-                    "माइक दबाकर बोलें जैसे: \"आज सुबह 150 किलो हरा चारा डाला\" या \"दवाई के 850 रुपये खर्च हुए\"।",
-                    "Tap mic and speak an entry (e.g. 'Logged 150 kg green fodder' or 'Spent 850 INR on medicine')."
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(
-                    onClick = onMicClick,
-                    colors = ButtonDefaults.buttonColors(containerColor = Saffron),
-                    modifier = Modifier.testTag("voice_draft_mic_btn")
-                ) {
-                    Icon(Icons.Default.Mic, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text(str(language, "बोलें (हिंदी)", "Speak"))
-                }
-                OutlinedButton(
-                    onClick = onGenerateDraft,
-                    enabled = voiceInputText.isNotBlank() && !isLoading,
-                    modifier = Modifier.testTag("voice_draft_parse_btn")
-                ) {
-                    Text(str(language, "ड्राफ्ट बनाएं", "Prepare Draft"))
-                }
-            }
-
-            OutlinedTextField(
-                value = voiceInputText,
-                onValueChange = onVoiceTextChange,
-                label = { Text(str(language, "बोला गया या लिखा गया पाठ", "Spoken or typed entry text")) },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 2
-            )
-
-            if (!speechError.isNullOrBlank()) {
-                Text(speechError, style = MaterialTheme.typography.labelSmall, color = AlertRed)
-            }
-
-            if (draft != null) {
-                var editTitle by remember(draft) { mutableStateOf(draft.title) }
-                var editQty by remember(draft) { mutableStateOf(if (draft.quantity > 0) draft.quantity.toString() else "0") }
-                var editAmt by remember(draft) { mutableStateOf(if (draft.amountInr > 0) draft.amountInr.toString() else "0") }
-                var editNotes by remember(draft) { mutableStateOf(draft.notes) }
-
-                val permittedForDraft = when (draft.draftType) {
-                    "CATTLE_ENTRY" -> session.canAdd(AppModule.CATTLE)
-                    "FEED_LOG" -> session.canAdd(AppModule.FEED)
-                    "EXPENSE" -> session.canAdd(AppModule.FINANCE)
-                    "HEALTH_NOTE" -> session.canAdd(AppModule.HEALTH)
-                    "SEARCH" -> session.canView(AppModule.CATTLE)
-                    else -> false
-                }
-
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.5.dp, Golden, RoundedCornerShape(14.dp)),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f))
-                ) {
-                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            text = str(language, "पुष्टि हेतु ड्राफ्ट (${draft.draftType})", "Review Draft (${draft.draftType})"),
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = ForestGreen
-                        )
-                        OutlinedTextField(
-                            value = editTitle,
-                            onValueChange = { editTitle = it },
-                            label = { Text(str(language, "शीर्षक / विवरण", "Title")) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(
-                                value = editQty,
-                                onValueChange = { editQty = it },
-                                label = { Text(str(language, "मात्रा (Kg)", "Quantity")) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                singleLine = true,
-                                modifier = Modifier.weight(1f)
-                            )
-                            OutlinedTextField(
-                                value = editAmt,
-                                onValueChange = { editAmt = it },
-                                label = { Text(str(language, "राशि (₹)", "Amount ₹")) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                singleLine = true,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                        OutlinedTextField(
-                            value = editNotes,
-                            onValueChange = { editNotes = it },
-                            label = { Text(str(language, "टिप्पणी", "Notes")) },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        if (!permittedForDraft) {
-                            Text(
-                                text = str(language, "आपको इस मॉड्यूल में जोड़ने की अनुमति नहीं है।", "You do not have ADD permission for this module."),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = AlertRed
-                            )
-                        }
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = {
-                                    onConfirmDraft(
-                                        draft.copy(
-                                            title = editTitle.trim(),
-                                            quantity = editQty.toDoubleOrNull() ?: 0.0,
-                                            amountInr = editAmt.toDoubleOrNull() ?: 0.0,
-                                            notes = editNotes.trim()
-                                        )
-                                    )
-                                },
-                                enabled = permittedForDraft,
-                                colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
-                                modifier = Modifier.testTag("confirm_voice_draft_btn")
-                            ) {
-                                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text(
-                                    if (draft.draftType == "SEARCH") str(language, "खोजें", "Search")
-                                    else str(language, "पुष्टि करें व सहेजें", "Confirm & Save")
-                                )
-                            }
-                            OutlinedButton(onClick = onDiscardDraft) {
-                                Text(str(language, "रद्द करें", "Discard"))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PhotoHealthCheckCard(
-    language: AppLanguage,
-    selectedBitmap: Bitmap?,
-    notes: String,
-    onNotesChange: (String) -> Unit,
-    photoState: AiUiState,
-    onPickPhoto: () -> Unit,
-    onAnalyze: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-    ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.CameraAlt, contentDescription = null, tint = ForestGreen)
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = str(language, "गाय/बछड़ा फोटो स्वास्थ्य जांच (AI)", "Cattle Photo Health Check (AI)"),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Text(
-                text = str(
-                    language,
-                    "पशु की तस्वीर चुनें और प्राथमिक देखभाल सलाह पाएं। गंभीर लक्षण होने पर पशु चिकित्सक से तुरंत परामर्श लें।",
-                    "Pick a cattle photo for preliminary visual care tips. Always consult a qualified veterinarian for diagnosis."
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(
-                    onClick = onPickPhoto,
-                    modifier = Modifier.testTag("pick_cattle_photo_ai_btn")
-                ) {
-                    Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(str(language, "फोटो चुनें", "Pick Photo"))
-                }
-                Button(
-                    onClick = onAnalyze,
-                    enabled = selectedBitmap != null && photoState !is AiUiState.Loading,
-                    colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
-                    modifier = Modifier.testTag("analyze_cattle_photo_btn")
-                ) {
-                    Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(str(language, "जांच करें", "Analyze"))
-                }
-            }
-
-            if (selectedBitmap != null) {
-                Image(
-                    bitmap = selectedBitmap.asImageBitmap(),
-                    contentDescription = str(language, "चयनित पशु फोटो", "Selected cattle photo"),
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(170.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                )
-                OutlinedTextField(
-                    value = notes,
-                    onValueChange = onNotesChange,
-                    label = { Text(str(language, "लक्षण या टिप्पणी (वैकल्पिक)", "Observed symptoms/notes (optional)")) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            when (photoState) {
-                is AiUiState.Loading -> {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text(str(language, "फोटो का विश्लेषण हो रहा है...", "Analyzing photo..."), style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-                is AiUiState.Success -> {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = SoftGreenTint
-                    ) {
-                        Text(
-                            text = photoState.text,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = DarkText,
-                            modifier = Modifier.padding(12.dp)
-                        )
-                    }
-                }
-                is AiUiState.Error -> {
-                    Text(photoState.message, style = MaterialTheme.typography.bodySmall, color = AlertRed)
-                }
-                else -> Unit
-            }
-        }
-    }
-}
-
-@Composable
-private fun ChatBubble(message: AiChatMessage) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (message.isUser) Arrangement.End else Arrangement.Start
-    ) {
-        Surface(
-            shape = RoundedCornerShape(
-                topStart = 18.dp,
-                topEnd = 18.dp,
-                bottomStart = if (message.isUser) 18.dp else 4.dp,
-                bottomEnd = if (message.isUser) 4.dp else 18.dp
-            ),
-            color = if (message.isUser) ForestGreen else MaterialTheme.colorScheme.surface,
-            tonalElevation = if (message.isUser) 0.dp else 2.dp,
-            modifier = Modifier.widthIn(max = 330.dp)
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                if (!message.isUser && message.modeLabel.isNotBlank()) {
-                    Text(
-                        text = message.modeLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Saffron,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(Modifier.height(2.dp))
-                }
-                Text(
-                    text = message.text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (message.isUser) Color.White else MaterialTheme.colorScheme.onSurface
-                )
             }
         }
     }
