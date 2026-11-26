@@ -888,7 +888,10 @@ private fun GosalaAuthenticatedShell(
                                 },
                                 healthRecords = healthList,
                                 feedLogs = feedLogsList,
-                                onLookupCattleByQr = { rawQr -> gosalaViewModel.findCattleByQr(rawQr) }
+                                onLookupCattleByQr = { rawQr -> gosalaViewModel.findCattleByQr(rawQr) },
+                                onSyncPublicCattleCard = { cow, checkup ->
+                                    gosalaViewModel.syncPublicCattleCardIfAuthorized(cow, checkup)
+                                }
                             )
                         }
                     }

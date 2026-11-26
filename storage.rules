@@ -59,8 +59,7 @@ service firebase.storage {
     }
 
     function isPublicApprovedCattle(cattleId) {
-      return !hasStaffDoc() &&
-             firestore.exists(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/cattle/$(cattleId)) &&
+      return firestore.exists(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/cattle/$(cattleId)) &&
              firestore.get(/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/cattle/$(cattleId)).data.publicApproved == true;
     }
 
@@ -73,17 +72,15 @@ service firebase.storage {
     }
 
     // 1. Cow photos:
-    // - Read: Admin, Cattle-authorized Staff (VIEW/ADD/EDIT), or Public users ONLY for publicApproved cows.
-    // - Create/Update: Admin or Admin-authorized Cattle Staff (ADD/EDIT) with valid <=5MB image.
-    // - Delete: Admin only.
+    // - Read: Admin, Cattle-authorized Staff (VIEW/ADD/EDIT), or Public/Google Lens web viewer ONLY for publicApproved cows (inactive Staff remain blocked when signed in).
+    // - Create/Update/Delete: Authorized Admin ONLY (with valid <=5MB image on upload/update).
     match /cattle_photos/{cattleId}/{fileName} {
-      allow read: if isSignedIn() && (
+      allow read: if (isSignedIn() && (
         isAdminInDb() ||
         isAuthorizedCattleViewer() ||
-        isAuthorizedCattleStaff() ||
-        isPublicApprovedCattle(cattleId)
-      );
-      allow create, update: if (isAdminInDb() || isAuthorizedCattleStaff()) && isValidImageUpload();
+        isAuthorizedCattleStaff()
+      )) || ((!isSignedIn() || !hasStaffDoc()) && isPublicApprovedCattle(cattleId));
+      allow create, update: if isAdminInDb() && isValidImageUpload();
       allow delete: if isAdminInDb();
     }
 

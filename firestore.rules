@@ -175,6 +175,46 @@ service cloud.firestore {
              isValidTimestamp(data.updatedAt);
     }
 
+    function isValidPublicAnimalCode(code) {
+      return code is string &&
+             code.size() >= 2 &&
+             code.size() <= 40 &&
+             code.matches('^[A-Z0-9][A-Z0-9_-]{1,39}$');
+    }
+
+    function isValidPublicCattleCard(data) {
+      return data.keys().hasOnly([
+               'animalCode', 'name', 'category', 'breed', 'sex', 'ageText', 'birthDate',
+               'colour', 'weightKg', 'entryDate', 'healthStatus', 'vaccinationSummary',
+               'lastHealthCheckup', 'identificationMarks', 'photoUrl', 'photoDataUrl',
+               'goshalaNameHi', 'goshalaNameEn', 'goshalaAddressHi', 'goshalaAddressEn',
+               'qrUrl', 'publicApproved', 'updatedAt'
+             ]) &&
+             isValidPublicAnimalCode(data.animalCode) &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+             data.category in ['COW', 'BULL', 'CALF'] &&
+             data.breed is string && data.breed.size() >= 1 && data.breed.size() <= 80 &&
+             data.sex in ['FEMALE', 'MALE'] &&
+             data.ageText is string && data.ageText.size() >= 1 && data.ageText.size() <= 40 &&
+             isOptString(data, 'birthDate', 30) &&
+             data.colour is string && data.colour.size() >= 1 && data.colour.size() <= 40 &&
+             (data.weightKg is int || data.weightKg is float) && data.weightKg >= 0 && data.weightKg <= 2000 &&
+             data.entryDate is string && data.entryDate.size() >= 1 && data.entryDate.size() <= 30 &&
+             data.healthStatus in ['HEALTHY', 'SICK', 'UNDER_TREATMENT', 'RECOVERING'] &&
+             isOptString(data, 'vaccinationSummary', 500) &&
+             isOptString(data, 'lastHealthCheckup', 120) &&
+             isOptString(data, 'identificationMarks', 200) &&
+             isOptString(data, 'photoUrl', 2000) &&
+             isOptString(data, 'photoDataUrl', 260000) &&
+             data.goshalaNameHi is string && data.goshalaNameHi.size() >= 1 && data.goshalaNameHi.size() <= 120 &&
+             data.goshalaNameEn is string && data.goshalaNameEn.size() >= 1 && data.goshalaNameEn.size() <= 120 &&
+             data.goshalaAddressHi is string && data.goshalaAddressHi.size() >= 1 && data.goshalaAddressHi.size() <= 200 &&
+             data.goshalaAddressEn is string && data.goshalaAddressEn.size() >= 1 && data.goshalaAddressEn.size() <= 200 &&
+             data.qrUrl is string && data.qrUrl.size() >= 12 && data.qrUrl.size() <= 300 &&
+             data.publicApproved == true &&
+             isValidTimestamp(data.updatedAt);
+    }
+
     function isValidHealthRecord(data) {
       return data.cattleId is string && data.cattleId.size() >= 1 && data.cattleId.size() <= 128 &&
              data.cattleName is string && data.cattleName.size() >= 1 && data.cattleName.size() <= 80 &&
@@ -591,6 +631,34 @@ service cloud.firestore {
                        incoming().cattleId == cattleId &&
                        (isAdmin() || hasStaffPermission('cattle', 'EDIT') || hasStaffPermission('cattle', 'ADD'));
       allow delete: if isSignedIn() && isValidId(cattleId) && (isAdmin() || hasStaffPermission('cattle', 'DELETE'));
+    }
+
+    // Public-safe Digital Cow ID Card projection for Google Lens / web QR scans.
+    // Strictly single-document GET without login ONLY when publicApproved == true.
+    // Directory listing is Admin-only; never exposes internal notes, mobile numbers, or Firebase doc IDs.
+    match /publicCattleCards/{animalCode} {
+      allow get: if isValidPublicAnimalCode(animalCode) &&
+                    existing().publicApproved == true;
+      allow list: if isAdmin();
+      allow create, update: if isSignedIn() &&
+                               isValidPublicAnimalCode(animalCode) && (
+                                 (
+                                   isValidPublicCattleCard(incoming()) &&
+                                   incoming().animalCode == animalCode &&
+                                   (isAdmin() || hasStaffPermission('cattle', 'ADD') || hasStaffPermission('cattle', 'EDIT'))
+                                 ) ||
+                                 (
+                                   resource != null &&
+                                   existing().publicApproved == true &&
+                                   isValidPublicCattleCard(incoming()) &&
+                                   incoming().animalCode == animalCode &&
+                                   incoming().diff(existing()).affectedKeys().hasOnly(['vaccinationSummary', 'lastHealthCheckup', 'updatedAt']) &&
+                                   (isAdmin() || hasStaffPermission('health', 'ADD') || hasStaffPermission('health', 'EDIT'))
+                                 )
+                               );
+      allow delete: if isSignedIn() &&
+                       isValidPublicAnimalCode(animalCode) &&
+                       (isAdmin() || hasStaffPermission('cattle', 'EDIT') || hasStaffPermission('cattle', 'DELETE'));
     }
 
     match /healthRecords/{recordId} {

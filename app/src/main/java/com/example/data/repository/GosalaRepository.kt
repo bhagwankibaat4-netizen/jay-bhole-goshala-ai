@@ -166,7 +166,14 @@ class GosalaRepository(
             }
             generated.take(40)
         }
-        val qr = cattle.qrPayload.ifBlank { QrAndExportUtils.buildCattleQrPayload(docRef.id, code) }.take(300)
+        val normalizedCode = QrAndExportUtils.normalizeAnimalCode(code) ?: code
+        val existingQr = cattle.qrPayload.trim()
+        val qr = when {
+            existingQr.startsWith("${QrAndExportUtils.PUBLIC_HOSTING_BASE_URL}/cattle/", ignoreCase = true) -> existingQr
+            normalizedCode.isNotBlank() -> QrAndExportUtils.buildCattleQrPayload(docRef.id, normalizedCode)
+            existingQr.isNotBlank() -> existingQr
+            else -> QrAndExportUtils.buildCattleQrPayload(docRef.id, code)
+        }.take(300)
 
         // Ensure cow photo is ALWAYS uploaded to permanent cloud storage — NEVER save an ephemeral local URI.
         val rawPhoto = cattle.photoUri?.trim()?.takeIf { it.isNotBlank() }
@@ -219,7 +226,9 @@ class GosalaRepository(
                     "monthlySupportInr" to cattle.monthlySupportInr.coerceIn(0L, 500000L),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
-                if (cattle.qrPayload.isBlank()) {
+                if (cattle.qrPayload.isBlank() ||
+                    !cattle.qrPayload.startsWith("${QrAndExportUtils.PUBLIC_HOSTING_BASE_URL}/cattle/", ignoreCase = true)
+                ) {
                     updates["qrPayload"] = qr
                 }
                 if (resolvedPhotoUrl != null) {
@@ -257,6 +266,14 @@ class GosalaRepository(
                 ).toCreateMap()
                 docRef.set(payload).await()
             }
+            val savedCattleForSync = cattle.copy(
+                id = docRef.id,
+                animalCode = code,
+                qrPayload = qr,
+                photoUri = resolvedPhotoUrl ?: cattle.photoUri,
+                photoStoragePath = resolvedStoragePath ?: cattle.photoStoragePath
+            )
+            syncPublicCattleCardInternal(savedCattleForSync, lastHealthCheckup = null)
             if (cattle.healthStatus == "SICK" || cattle.healthStatus == "UNDER_TREATMENT") {
                 createNotificationInternal(
                     targetRole = "STAFF",
@@ -278,7 +295,88 @@ class GosalaRepository(
             require(cattle.id.isNotBlank())
             db.collection("cattle").document(cattle.id).delete().await()
             CattlePhotoStorage.deleteCattlePhoto(db, cattle.id, cattle.photoStoragePath)
+            deletePublicCattleCardInternal(cattle.animalCode)
             logAudit(session, "DELETE", "cattle", cattle.id, "Removed ${cattle.name} (${cattle.animalCode})")
+        }
+    }
+
+    /**
+     * Best-effort synchronization of an Admin-approved cow's public-safe Digital Cow ID Card
+     * into `/publicCattleCards/{animalCode}` so Google Lens / browser QR scans immediately display
+     * the latest details without login. Never writes private internal `notes` or unapproved cows.
+     */
+    suspend fun syncPublicCattleCard(
+        session: UserSession,
+        cattle: Cattle,
+        lastHealthCheckup: String? = null
+    ) {
+        if (!session.canEdit(AppModule.CATTLE) && !session.canAdd(AppModule.CATTLE)) return
+        syncPublicCattleCardInternal(cattle, lastHealthCheckup)
+    }
+
+    private suspend fun syncPublicCattleCardInternal(
+        cattle: Cattle,
+        lastHealthCheckup: String?
+    ) {
+        val normalizedCode = QrAndExportUtils.normalizeAnimalCode(cattle.animalCode) ?: return
+        val cardDocRef = db.collection("publicCattleCards").document(normalizedCode)
+        if (!cattle.publicApproved) {
+            deletePublicCattleCardInternal(normalizedCode)
+            return
+        }
+        try {
+            val enriched = enrichCattlePhoto(cattle)
+            val resolvedPhoto = enriched.photoUri?.trim()
+            var httpsPhotoUrl: String? = resolvedPhoto?.takeIf {
+                it.startsWith("https://", ignoreCase = true)
+            }
+            var photoDataUrl: String? = null
+
+            // If cow photo is stored in Firestore fallback (`cattlePhotos/{cattleId}`), embed compact
+            // JPEG data URL so public Google Lens viewers see the real cow photo even without Storage bucket activation.
+            if (httpsPhotoUrl.isNullOrBlank() && cattle.id.isNotBlank()) {
+                val fallbackSnap = runCatching {
+                    withTimeout(6_000L) {
+                        db.collection("cattlePhotos").document(cattle.id).get().await()
+                    }
+                }.getOrNull()
+                if (fallbackSnap != null && fallbackSnap.exists()) {
+                    val b64 = fallbackSnap.getString("imageBase64")?.trim().orEmpty()
+                    val mime = fallbackSnap.getString("contentType")?.trim().orEmpty().ifBlank { "image/jpeg" }
+                    if (b64.length in 16..240_000) {
+                        photoDataUrl = "data:$mime;base64,$b64"
+                    }
+                }
+            }
+
+            val cardMap = QrAndExportUtils.buildPublicCattleCardMap(
+                cattle = enriched.copy(animalCode = normalizedCode),
+                resolvedPhotoUrl = httpsPhotoUrl,
+                photoDataUrl = photoDataUrl,
+                lastHealthCheckup = lastHealthCheckup,
+                useServerTimestamp = true
+            ) ?: return
+
+            withTimeout(8_000L) {
+                cardDocRef.set(cardMap).await()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Non-fatal publicCattleCards sync warning for $normalizedCode: ${e.message}")
+        }
+    }
+
+    private suspend fun deletePublicCattleCardInternal(animalCode: String) {
+        val normalizedCode = QrAndExportUtils.normalizeAnimalCode(animalCode) ?: return
+        try {
+            withTimeout(6_000L) {
+                db.collection("publicCattleCards").document(normalizedCode).delete().await()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Non-fatal publicCattleCards cleanup notice for $normalizedCode: ${e.message}")
         }
     }
 
@@ -450,6 +548,30 @@ class GosalaRepository(
                             "updatedAt" to FieldValue.serverTimestamp()
                         )
                     ).await()
+                }
+            }
+            val normalizedCode = QrAndExportUtils.normalizeAnimalCode(record.animalCode)
+            if (normalizedCode != null) {
+                val checkupText = buildString {
+                    append(record.title.trim().ifBlank { record.recordType })
+                    append(" • ")
+                    append(QrAndExportUtils.todayIso())
+                }.take(120)
+                val publicHealthUpdates = mutableMapOf<String, Any>(
+                    "lastHealthCheckup" to checkupText,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                if (record.recordType.equals("VACCINATION", ignoreCase = true)) {
+                    val summary = buildString {
+                        append(record.title.trim())
+                        if (record.nextFollowUpDate.isNotBlank()) {
+                            append(" (आगामी: ${record.nextFollowUpDate.trim()})")
+                        }
+                    }.take(500)
+                    publicHealthUpdates["vaccinationSummary"] = summary
+                }
+                runCatching {
+                    db.collection("publicCattleCards").document(normalizedCode).update(publicHealthUpdates).await()
                 }
             }
             if (record.reminderActive && record.nextFollowUpDate.isNotBlank()) {

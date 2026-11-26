@@ -135,13 +135,19 @@ class CowQrScannerAndDetailRobolectricTest {
     @Test
     fun `QR payload builder, parser, and ZXing bitmap round-trip decode match Firebase Cow ID`() {
         val payload = QrAndExportUtils.buildCattleQrPayload("cow_firebase_unique_99", "JBGS-G-501")
-        assertEquals("JBGS:CATTLE:cow_firebase_unique_99:JBGS-G-501", payload)
+        assertEquals("https://gen-lang-client-0821187064.web.app/cattle/JBGS-G-501", payload)
 
-        // Canonical format
+        // New Firebase Hosting HTTPS URL format (Google Lens ready — no Firebase docId exposed)
         val parsed = QrAndExportUtils.parseCattleQrPayload(payload)
         assertNotNull(parsed)
-        assertEquals("cow_firebase_unique_99", parsed!!.cowDocId)
+        assertNull(parsed!!.cowDocId)
         assertEquals("JBGS-G-501", parsed.animalCode)
+
+        // Legacy canonical format backward compatibility
+        val parsedLegacyCanonical = QrAndExportUtils.parseCattleQrPayload("JBGS:CATTLE:cow_firebase_unique_99:JBGS-G-501")
+        assertNotNull(parsedLegacyCanonical)
+        assertEquals("cow_firebase_unique_99", parsedLegacyCanonical!!.cowDocId)
+        assertEquals("JBGS-G-501", parsedLegacyCanonical.animalCode)
 
         // Legacy 1-part canonical QR containing animalCode only
         val parsedLegacyCodeOnly = QrAndExportUtils.parseCattleQrPayload("JBGS:CATTLE:JBGS-G-501")

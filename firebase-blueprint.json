@@ -431,6 +431,37 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["actorUid", "actorName", "actorRole", "action", "module", "entityId", "summary", "createdAt"]
+    },
+    "PublicCattleCard": {
+      "title": "PublicCattleCard",
+      "description": "Public-safe Digital Cow ID Card projection keyed by uppercase Animal Code for unauthenticated Google Lens QR web access (only Admin-approved cows).",
+      "type": "object",
+      "properties": {
+        "animalCode": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string", "enum": ["COW", "BULL", "CALF"] },
+        "breed": { "type": "string" },
+        "sex": { "type": "string", "enum": ["FEMALE", "MALE"] },
+        "ageText": { "type": "string" },
+        "birthDate": { "type": "string" },
+        "colour": { "type": "string" },
+        "weightKg": { "type": "number" },
+        "entryDate": { "type": "string" },
+        "healthStatus": { "type": "string", "enum": ["HEALTHY", "SICK", "UNDER_TREATMENT", "RECOVERING"] },
+        "vaccinationSummary": { "type": "string" },
+        "lastHealthCheckup": { "type": "string" },
+        "identificationMarks": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "photoDataUrl": { "type": "string" },
+        "goshalaNameHi": { "type": "string" },
+        "goshalaNameEn": { "type": "string" },
+        "goshalaAddressHi": { "type": "string" },
+        "goshalaAddressEn": { "type": "string" },
+        "qrUrl": { "type": "string" },
+        "publicApproved": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["animalCode", "name", "category", "breed", "sex", "ageText", "colour", "weightKg", "entryDate", "healthStatus", "goshalaNameHi", "goshalaNameEn", "goshalaAddressHi", "goshalaAddressEn", "qrUrl", "publicApproved", "updatedAt"]
     }
   },
   "firestore": {
@@ -442,6 +473,7 @@
     "/products/{productId}": { "schema": "GoshalaProduct", "description": "Admin-managed live Goshala products catalog" },
     "/cattle/{cattleId}": { "schema": "Cattle", "description": "Cattle registry" },
     "/cattlePhotos/{cattleId}": { "schema": "CattlePhoto", "description": "Cloud-persisted cow photo fallback linked to cattle/{cattleId}" },
+    "/publicCattleCards/{animalCode}": { "schema": "PublicCattleCard", "description": "Public-safe Digital Cow ID Card projection for Google Lens QR scans" },
     "/healthRecords/{recordId}": { "schema": "HealthRecord", "description": "Health, vaccination, and treatment logs" },
     "/feedAndOperations/{logId}": { "schema": "FeedAndOperationLog", "description": "Daily feed, water, cleaning, and task logs" },
     "/staffOperations/{entryId}": { "schema": "StaffOperation", "description": "Staff attendance, salary, and tasks" },

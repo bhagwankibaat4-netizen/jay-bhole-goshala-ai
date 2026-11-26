@@ -19,6 +19,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -42,15 +43,20 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
+import com.example.R
 import com.example.core.AppLanguage
+import com.example.core.CattlePhotoStorage
+import com.example.core.GosalaBrand
 import com.example.core.QrAndExportUtils
 import com.example.core.str
 import com.example.data.model.Cattle
 import com.example.data.model.FeedAndOperationLog
 import com.example.data.model.HealthRecord
 import com.example.ui.components.CowPhotoImage
+import com.example.ui.components.GosalaAsyncResourceImage
 import com.example.ui.theme.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -491,6 +497,8 @@ fun CattleDetailFullScreen(
 ) {
     BackHandler(onBack = onBack)
 
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val isHindi = language == AppLanguage.HINDI
     val cowHealth = remember(healthRecords, cattle.id, cattle.animalCode) {
         healthRecords.filter { rec ->
@@ -504,10 +512,18 @@ fun CattleDetailFullScreen(
     val illnessTreatmentRecords = remember(cowHealth) {
         cowHealth.filter { !it.recordType.equals("VACCINATION", ignoreCase = true) }
     }
+    val lastHealthCheckup = remember(cowHealth) {
+        cowHealth.firstOrNull()?.let { rec ->
+            listOfNotNull(
+                rec.title.takeIf { it.isNotBlank() } ?: rec.recordType,
+                rec.nextFollowUpDate.takeIf { it.isNotBlank() }?.let { "Follow-up: $it" }
+            ).joinToString(" • ")
+        }
+    }
     val recentFeedLogs = remember(feedLogs) { feedLogs.take(5) }
 
     val qrPayload = remember(cattle.id, cattle.animalCode, cattle.qrPayload) {
-        cattle.qrPayload.ifBlank { QrAndExportUtils.buildCattleQrPayload(cattle.id, cattle.animalCode) }
+        QrAndExportUtils.resolvePublicCattleQrUrl(cattle)
     }
     val qrBitmap by produceState<android.graphics.Bitmap?>(initialValue = null, qrPayload) {
         value = withContext(Dispatchers.Default) {
@@ -710,9 +726,20 @@ fun CattleDetailFullScreen(
                             ) {
                                 Icon(Icons.Default.QrCode2, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
-                                Text(str(language, "QR कोड देखें", "View QR"))
+                                Text(str(language, "डिजिटल ID कार्ड", "Digital ID Card"))
                             }
-                            if (cattle.sponsorshipAvailable) {
+                            if (canEdit && !openedFromQrScan) {
+                                OutlinedButton(
+                                    onClick = onEdit,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("cattle_detail_edit_photo_btn")
+                                ) {
+                                    Icon(Icons.Default.AddAPhoto, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(str(language, "फोटो / विवरण बदलें", "Edit Photo"))
+                                }
+                            } else if (cattle.sponsorshipAvailable) {
                                 Button(
                                     onClick = onSponsor,
                                     colors = ButtonDefaults.buttonColors(containerColor = Saffron),
@@ -724,6 +751,19 @@ fun CattleDetailFullScreen(
                                     Spacer(Modifier.width(6.dp))
                                     Text(str(language, "गाय गोद लें", "Adopt Cow"))
                                 }
+                            }
+                        }
+                        if (canEdit && !openedFromQrScan && cattle.sponsorshipAvailable) {
+                            Button(
+                                onClick = onSponsor,
+                                colors = ButtonDefaults.buttonColors(containerColor = Saffron),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("cattle_detail_sponsor_btn")
+                            ) {
+                                Icon(Icons.Default.VolunteerActivism, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(str(language, "गाय गोद लें", "Adopt Cow"))
                             }
                         }
                     }
@@ -939,49 +979,206 @@ fun CattleDetailFullScreen(
                 }
             }
 
-            // 6. Permanent Cow QR Card
+            // 6. Professional PVC Digital Cow ID Card (Google Lens Ready)
             item {
-                DetailSectionCard(
-                    title = str(language, "स्थायी गाय QR पहचान कार्ड", "Permanent Cow QR Identity"),
-                    icon = Icons.Default.QrCode2
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(2.dp, Golden, RoundedCornerShape(20.dp))
+                        .testTag("cattle_detail_digital_id_card"),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val bmp = qrBitmap
-                        if (bmp != null) {
-                            Image(
-                                bitmap = bmp.asImageBitmap(),
-                                contentDescription = "QR ${cattle.animalCode}",
-                                modifier = Modifier
-                                    .size(92.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .border(1.5.dp, Golden, RoundedCornerShape(10.dp))
-                                    .background(Color.White)
-                                    .padding(4.dp)
-                            )
-                        }
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                    Column {
+                        // Official Forest Green PVC Header
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(ForestGreen)
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Text(
-                                text = str(
-                                    language,
-                                    "यह QR कोड गाय की स्थायी Firebase Unique ID से जुड़ा है। जानकारी अपडेट करने पर भी QR नहीं बदलेगा।",
-                                    "This QR code is permanently linked to the cow's Firebase Unique ID and stays unchanged on profile updates."
-                                ),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            GosalaAsyncResourceImage(
+                                resId = R.drawable.img_official_goshala_logo,
+                                contentDescription = GosalaBrand.NAME_HI,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .border(1.5.dp, Golden, CircleShape)
                             )
-                            Text(
-                                text = qrPayload,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = ForestGreen,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (isHindi) GosalaBrand.NAME_HI else GosalaBrand.NAME_EN,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = str(language, "डिजिटल गौ पहचान पत्र • Digital Cow ID Card", "Official Digital Cow ID Card"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFFF4E4BD)
+                                )
+                                Text(
+                                    text = if (isHindi) GosalaBrand.SHORT_ADDRESS_HI else GosalaBrand.SHORT_ADDRESS_EN,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White.copy(alpha = 0.85f)
+                                )
+                            }
+                            Surface(
+                                color = Color.White.copy(alpha = 0.16f),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text(
+                                    text = cattle.animalCode,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Surface(
+                                color = if (cattle.publicApproved) SoftGreenTint else AlertRed.copy(alpha = 0.1f),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = if (cattle.publicApproved) {
+                                        str(
+                                            language,
+                                            "✓ सार्वजनिक Google Lens पहचान पत्र सक्रिय — कोई भी QR स्कैन कर सुरक्षित विवरण देख सकता है।",
+                                            "✓ Public Google Lens ID Card Active — anyone scanning this QR sees verified public cow details."
+                                        )
+                                    } else {
+                                        str(
+                                            language,
+                                            "निजी रिकॉर्ड — एडमिन द्वारा 'सार्वजनिक स्वीकृति' चालू करने पर ही Google Lens में खुलेगा।",
+                                            "Private Record — enable 'Public Approved' as Admin to publish on Google Lens."
+                                        )
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (cattle.publicApproved) ForestGreen else AlertRed,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val bmp = qrBitmap
+                                if (bmp != null) {
+                                    Image(
+                                        bitmap = bmp.asImageBitmap(),
+                                        contentDescription = "QR ${cattle.animalCode}",
+                                        modifier = Modifier
+                                            .size(102.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .border(1.5.dp, Golden, RoundedCornerShape(12.dp))
+                                            .background(Color.White)
+                                            .padding(4.dp)
+                                    )
+                                }
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = "${cattle.name} • ${cattle.animalCode}",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = ForestGreen
+                                    )
+                                    Text(
+                                        text = str(
+                                            language,
+                                            "स्थायी Google Lens / वेब QR लिंक (Firebase Document ID सुरक्षित व गोपनीय):",
+                                            "Permanent Google Lens / Web QR URL (Firebase Doc ID never exposed):"
+                                        ),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = qrPayload,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = ForestGreen,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        scope.launch {
+                                            val photoBmp = if (cattle.photoUri?.startsWith(CattlePhotoStorage.FIRESTORE_PHOTO_SCHEME, ignoreCase = true) == true) {
+                                                CattlePhotoStorage.loadFirestorePhotoBitmap(cattle.photoUri)
+                                            } else null
+                                            val res = QrAndExportUtils.exportDigitalCowIdCardPdf(
+                                                context = context,
+                                                cattle = cattle,
+                                                language = language,
+                                                lastHealthCheckup = lastHealthCheckup,
+                                                cowPhotoBitmap = photoBmp
+                                            )
+                                            res.getOrNull()?.let { pdfFile ->
+                                                QrAndExportUtils.shareFile(
+                                                    context = context,
+                                                    file = pdfFile,
+                                                    mimeType = "application/pdf",
+                                                    chooserTitle = str(language, "डिजिटल गौ पहचान पत्र PDF / प्रिंट", "Digital Cow ID Card PDF / Print")
+                                                )
+                                            }
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("cattle_detail_export_pdf_btn")
+                                ) {
+                                    Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(str(language, "PDF / प्रिंट", "PDF / Print"))
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        QrAndExportUtils.shareDigitalCowCardOnWhatsApp(context, cattle, language)
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("cattle_detail_whatsapp_share_btn")
+                                ) {
+                                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("WhatsApp")
+                                }
+                            }
+
+                            if (qrPayload.startsWith("https://", ignoreCase = true)) {
+                                OutlinedButton(
+                                    onClick = { QrAndExportUtils.openDigitalCowCardInBrowser(context, cattle) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("cattle_detail_open_web_card_btn")
+                                ) {
+                                    Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(str(language, "वेब पर डिजिटल पहचान पत्र खोलें (Google Lens)", "Open Digital ID Card on Web"))
+                                }
+                            }
                         }
                     }
                 }

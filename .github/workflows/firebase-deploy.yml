@@ -1,0 +1,126 @@
+name: Deploy Firebase Hosting & Storage Rules
+
+# Manual trigger only so Production Deployment NEVER runs without explicit owner approval.
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: 'Choose Firebase target to deploy (Firestore rules & database are NEVER modified)'
+        required: true
+        default: 'hosting,storage'
+        type: choice
+        options:
+          - 'hosting,storage'
+          - 'hosting'
+          - 'storage'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firebase-hosting-storage-deploy
+  cancel-in-progress: false
+
+jobs:
+  verify-and-deploy:
+    name: Verify & Deploy (${{ inputs.deploy_target }})
+    runs-on: ubuntu-latest
+    env:
+      EXPECTED_FIREBASE_PROJECT_ID: gen-lang-client-0821187064
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Verify Firebase Project ID & Config Safety
+        run: |
+          set -euo pipefail
+
+          # 1. Confirm .firebaserc targets the exact approved Firebase project
+          RC_PROJECT=$(node -e "const rc = require('./.firebaserc'); console.log(rc?.projects?.default || '');")
+          if [ "$RC_PROJECT" != "$EXPECTED_FIREBASE_PROJECT_ID" ]; then
+            echo "::error::Firebase Project ID mismatch in .firebaserc! Expected '$EXPECTED_FIREBASE_PROJECT_ID', got '$RC_PROJECT'."
+            exit 1
+          fi
+
+          # 2. Confirm firebase.json has valid hosting/storage config and public dir exists
+          node -e "
+            const fs = require('fs');
+            const cfg = JSON.parse(fs.readFileSync('firebase.json', 'utf8'));
+            if (!cfg.hosting || cfg.hosting.public !== 'hosting') {
+              throw new Error('firebase.json hosting.public must be \"hosting\"');
+            }
+            if (!cfg.storage || cfg.storage.rules !== 'storage.rules') {
+              throw new Error('firebase.json storage.rules must be \"storage.rules\"');
+            }
+            if (!fs.existsSync('hosting/index.html') || !fs.existsSync('storage.rules')) {
+              throw new Error('Required hosting/index.html or storage.rules file is missing');
+            }
+          "
+
+          # 3. Confirm storage.rules restricts cattle_photos writes strictly to Admin
+          if ! grep -q "allow create, update: if isAdminInDb() && isValidImageUpload();" storage.rules; then
+            echo "::error::storage.rules safety check failed: cattle_photos create/update must be Admin-only."
+            exit 1
+          fi
+
+          # 4. If app/google-services.json is present, ensure its project_id matches too
+          if [ -f app/google-services.json ]; then
+            GS_PROJECT=$(node -e "const gs = require('./app/google-services.json'); console.log(gs?.project_info?.project_id || '');")
+            if [ "$GS_PROJECT" != "$EXPECTED_FIREBASE_PROJECT_ID" ]; then
+              echo "::error::app/google-services.json project_id mismatch: got '$GS_PROJECT'."
+              exit 1
+            fi
+          fi
+
+          echo "Verified Firebase Project ID: $EXPECTED_FIREBASE_PROJECT_ID"
+
+      - name: Run Digital Cow ID Card Web Unit Tests
+        run: node --test hosting/app.test.mjs
+
+      - name: Validate FIREBASE_SERVICE_ACCOUNT Secret
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          set +x
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "::error::GitHub Secret FIREBASE_SERVICE_ACCOUNT is not configured. Go to GitHub Repository -> Settings -> Secrets and variables -> Actions -> New repository secret, create FIREBASE_SERVICE_ACCOUNT, and paste your Firebase Service Account JSON."
+            exit 1
+          fi
+
+          SA_PATH="$RUNNER_TEMP/firebase-sa.json"
+          if printf '%s' "$FIREBASE_SERVICE_ACCOUNT" | grep -q '^[[:space:]]*{'; then
+            printf '%s\n' "$FIREBASE_SERVICE_ACCOUNT" > "$SA_PATH"
+          else
+            printf '%s' "$FIREBASE_SERVICE_ACCOUNT" | tr -d '\r\n' | base64 --decode > "$SA_PATH"
+          fi
+          chmod 600 "$SA_PATH"
+
+          # Verify JSON is valid and belongs to the exact expected Firebase Project ID
+          SA_PROJECT=$(node -e "const sa = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')); if (!sa.client_email || !sa.private_key) process.exit(2); console.log(sa.project_id || '');" "$SA_PATH")
+          if [ "$SA_PROJECT" != "$EXPECTED_FIREBASE_PROJECT_ID" ]; then
+            echo "::error::Service Account JSON belongs to project '$SA_PROJECT', expected '$EXPECTED_FIREBASE_PROJECT_ID'. Refusing to deploy to wrong project."
+            exit 1
+          fi
+
+          echo "Verified Service Account credentials for project: $SA_PROJECT"
+
+      - name: Deploy Firebase (${{ inputs.deploy_target }})
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/firebase-sa.json
+          DEPLOY_TARGET: ${{ inputs.deploy_target }}
+        run: |
+          set -euo pipefail
+          npx --yes firebase-tools@13 deploy \
+            --project "$EXPECTED_FIREBASE_PROJECT_ID" \
+            --only "$DEPLOY_TARGET" \
+            --non-interactive
+
+      - name: Cleanup temporary credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/firebase-sa.json"

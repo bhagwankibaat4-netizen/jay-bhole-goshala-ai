@@ -60,8 +60,10 @@ fun CattleManagementScreen(
     onSponsorCattle: (Cattle) -> Unit,
     healthRecords: List<HealthRecord> = emptyList(),
     feedLogs: List<FeedAndOperationLog> = emptyList(),
-    onLookupCattleByQr: (suspend (String) -> Result<Cattle?>)? = null
+    onLookupCattleByQr: (suspend (String) -> Result<Cattle?>)? = null,
+    onSyncPublicCattleCard: ((Cattle, String?) -> Unit)? = null
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var searchQuery by remember { mutableStateOf("") }
     var categoryFilter by remember { mutableStateOf("ALL") }
@@ -99,6 +101,23 @@ fun CattleManagementScreen(
             editingCattle = null
             showFormDialog = true
             onConsumedOpenAdd()
+        }
+    }
+
+    // Auto-sync pre-existing approved cows to /publicCattleCards/{animalCode} when viewed by Admin/Staff
+    // so Google Lens QR scans always open fresh live records.
+    LaunchedEffect(activeSelectedCattle?.id, activeSelectedCattle?.animalCode, activeSelectedCattle?.publicApproved) {
+        val current = activeSelectedCattle ?: return@LaunchedEffect
+        if (onSyncPublicCattleCard != null && (session.canEdit(AppModule.CATTLE) || session.canAdd(AppModule.CATTLE))) {
+            val latestCheckup = healthRecords.firstOrNull { rec ->
+                (current.id.isNotBlank() && rec.cattleId == current.id) ||
+                    (current.animalCode.isNotBlank() && rec.animalCode.equals(current.animalCode, ignoreCase = true))
+            }?.let { rec ->
+                listOf(rec.title.ifBlank { rec.recordType }, rec.nextFollowUpDate.takeIf { it.isNotBlank() }?.let { "Next: $it" })
+                    .filterNotNull()
+                    .joinToString(" • ")
+            }
+            onSyncPublicCattleCard(current, latestCheckup)
         }
     }
 
@@ -287,10 +306,24 @@ fun CattleManagementScreen(
     }
 
     qrCattle?.let { animal ->
+        val latestCheckup = remember(healthRecords, animal.id, animal.animalCode) {
+            healthRecords.firstOrNull { rec ->
+                (animal.id.isNotBlank() && rec.cattleId == animal.id) ||
+                    (animal.animalCode.isNotBlank() && rec.animalCode.equals(animal.animalCode, ignoreCase = true))
+            }?.let { rec -> rec.title.ifBlank { rec.recordType } }
+        }
+        LaunchedEffect(animal.id, animal.animalCode, animal.publicApproved) {
+            if (onSyncPublicCattleCard != null && (session.canEdit(AppModule.CATTLE) || session.canAdd(AppModule.CATTLE))) {
+                onSyncPublicCattleCard(animal, latestCheckup)
+            }
+        }
+        val publicQrUrl = remember(animal.id, animal.animalCode, animal.qrPayload) {
+            QrAndExportUtils.resolvePublicCattleQrUrl(animal)
+        }
         QrCodeDialog(
             title = animal.name,
             codeLabel = animal.animalCode,
-            payload = animal.qrPayload.ifBlank { QrAndExportUtils.buildCattleQrPayload(animal.id, animal.animalCode) },
+            payload = publicQrUrl,
             language = language,
             onDismiss = { qrCattle = null },
             primaryActionLabel = str(language, "पूरा विवरण खोलें", "Open Full Details"),
@@ -298,6 +331,35 @@ fun CattleManagementScreen(
                 qrCattle = null
                 openedFromQrScan = false
                 selectedCattle = animal
+            },
+            publicApproved = animal.publicApproved,
+            onExportPdf = {
+                scope.launch {
+                    val photoBmp = if (animal.photoUri?.startsWith(CattlePhotoStorage.FIRESTORE_PHOTO_SCHEME, ignoreCase = true) == true) {
+                        CattlePhotoStorage.loadFirestorePhotoBitmap(animal.photoUri)
+                    } else null
+                    val result = QrAndExportUtils.exportDigitalCowIdCardPdf(
+                        context = context,
+                        cattle = animal,
+                        language = language,
+                        lastHealthCheckup = latestCheckup,
+                        cowPhotoBitmap = photoBmp
+                    )
+                    result.getOrNull()?.let { pdfFile ->
+                        QrAndExportUtils.shareFile(
+                            context = context,
+                            file = pdfFile,
+                            mimeType = "application/pdf",
+                            chooserTitle = str(language, "डिजिटल गौ पहचान पत्र PDF / प्रिंट", "Digital Cow ID Card PDF / Print")
+                        )
+                    }
+                }
+            },
+            onShareWhatsApp = {
+                QrAndExportUtils.shareDigitalCowCardOnWhatsApp(context, animal, language)
+            },
+            onOpenWebCard = {
+                QrAndExportUtils.openDigitalCowCardInBrowser(context, animal)
             }
         )
     }

@@ -175,6 +175,15 @@ class GosalaViewModel(
         }
     }
 
+    fun syncPublicCattleCardIfAuthorized(cattle: Cattle, lastHealthCheckup: String? = null) {
+        if (!session.canEdit(AppModule.CATTLE) && !session.canAdd(AppModule.CATTLE)) return
+        viewModelScope.launch {
+            runCatching {
+                repository.syncPublicCattleCard(session, cattle, lastHealthCheckup)
+            }
+        }
+    }
+
     suspend fun findCattleByQr(rawQrOrId: String): Result<Cattle?> {
         val parsed = QrAndExportUtils.parseCattleQrPayload(rawQrOrId)
             ?: return Result.failure(IllegalArgumentException("INVALID_QR"))

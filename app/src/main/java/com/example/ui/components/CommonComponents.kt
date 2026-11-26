@@ -832,55 +832,158 @@ fun QrCodeDialog(
     language: AppLanguage,
     onDismiss: () -> Unit,
     primaryActionLabel: String? = null,
-    onPrimaryAction: (() -> Unit)? = null
+    onPrimaryAction: (() -> Unit)? = null,
+    publicApproved: Boolean? = null,
+    onExportPdf: (() -> Unit)? = null,
+    onShareWhatsApp: (() -> Unit)? = null,
+    onOpenWebCard: (() -> Unit)? = null
 ) {
     val qrBitmap by produceState<Bitmap?>(initialValue = null, payload) {
         value = withContext(Dispatchers.Default) {
             QrAndExportUtils.generateQrBitmap(payload, 512)
         }
     }
+    val isWebQr = payload.startsWith("https://", ignoreCase = true)
     AlertDialog(
         onDismissRequest = onDismiss,
         modifier = Modifier.testTag("qr_code_dialog"),
         title = {
-            Text(
-                text = "$title ($codeLabel)",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                GosalaAsyncResourceImage(
+                    resId = R.drawable.img_official_goshala_logo,
+                    contentDescription = GosalaBrand.NAME_HI,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .border(1.5.dp, Golden, CircleShape)
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "$title ($codeLabel)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = ForestGreen,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = str(language, "डिजिटल गौ पहचान पत्र • Digital Cow ID Card", "Official Digital Cow ID Card"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (publicApproved != null) {
+                    Surface(
+                        color = if (publicApproved) SoftGreenTint else AlertRed.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(50)
+                    ) {
+                        Text(
+                            text = if (publicApproved) {
+                                str(language, "✓ Google Lens सार्वजनिक कार्ड सक्रिय", "✓ Google Lens Public Card Active")
+                            } else {
+                                str(language, "निजी रिकॉर्ड (एडमिन स्वीकृति शेष)", "Private Record (Awaiting Admin Approval)")
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (publicApproved) ForestGreen else AlertRed,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
                 val bmp = qrBitmap
                 if (bmp != null) {
                     Image(
                         bitmap = bmp.asImageBitmap(),
                         contentDescription = "QR Code $codeLabel",
                         modifier = Modifier
-                            .size(220.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .border(2.dp, Golden, RoundedCornerShape(12.dp))
+                            .size(216.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .border(2.dp, Golden, RoundedCornerShape(14.dp))
                             .background(Color.White)
                             .padding(8.dp)
                     )
                 } else {
                     Box(
-                        modifier = Modifier.size(220.dp),
+                        modifier = Modifier.size(216.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         CircularProgressIndicator(color = ForestGreen)
                     }
                 }
-                Spacer(Modifier.height(10.dp))
                 Text(
                     text = payload,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = ForestGreen,
+                    fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center
                 )
+                if (isWebQr) {
+                    Text(
+                        text = str(
+                            language,
+                            "Google Lens या किसी भी QR स्कैनर से सीधे डिजिटल पहचान पत्र खोलें।",
+                            "Scan with Google Lens or any QR scanner to open the Digital ID Card directly."
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+                if (onExportPdf != null || onShareWhatsApp != null || onOpenWebCard != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (onExportPdf != null) {
+                            OutlinedButton(
+                                onClick = onExportPdf,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("qr_dialog_pdf_button")
+                            ) {
+                                Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(str(language, "PDF/प्रिंट", "PDF/Print"), maxLines = 1)
+                            }
+                        }
+                        if (onShareWhatsApp != null) {
+                            OutlinedButton(
+                                onClick = onShareWhatsApp,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("qr_dialog_whatsapp_button")
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("WhatsApp", maxLines = 1)
+                            }
+                        }
+                    }
+                    if (onOpenWebCard != null && isWebQr) {
+                        TextButton(
+                            onClick = onOpenWebCard,
+                            modifier = Modifier.testTag("qr_dialog_open_web_button")
+                        ) {
+                            Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(str(language, "वेब पहचान पत्र खोलें", "Open Web ID Card"), color = ForestGreen, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
