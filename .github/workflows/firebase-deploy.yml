@@ -42,7 +42,7 @@ jobs:
           set -euo pipefail
 
           # 1. Confirm .firebaserc targets the exact approved Firebase project
-          RC_PROJECT=$(node -e "const rc = require('./.firebaserc'); console.log(rc?.projects?.default || '');")
+          RC_PROJECT=$(node -e 'const fs = require("fs"); const rc = JSON.parse(fs.readFileSync(".firebaserc", "utf8")); console.log(rc.projects?.default || "");')
           if [ "$RC_PROJECT" != "$EXPECTED_FIREBASE_PROJECT_ID" ]; then
             echo "::error::Firebase Project ID mismatch in .firebaserc! Expected '$EXPECTED_FIREBASE_PROJECT_ID', got '$RC_PROJECT'."
             exit 1
