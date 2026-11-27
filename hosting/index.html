@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#124B32" />
-  <title>डिजिटल गौ पहचान पत्र | जय भोले गौशाला समिति</title>
+  <title>जय भोले गौशाला समिति | आधिकारिक डिजिटल पोर्टल</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800&family=Noto+Sans+Devanagari:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -14,13 +14,18 @@
   <main class="page-shell">
     <!-- Top Toolbar (hidden on print/PDF) -->
     <header class="top-toolbar no-print">
-      <div class="brand-pill">
+      <a id="brandHomeLink" href="/" class="brand-pill" aria-label="जय भोले गौशाला समिति होम">
         <img src="/assets/goshala-logo.jpg" alt="जय भोले गौशाला समिति लोगो" />
         <span id="toolbarBrand">जय भोले गौशाला समिति</span>
-      </div>
-      <div class="lang-toggle" role="group" aria-label="Language switcher">
-        <button id="langHiBtn" type="button" class="lang-btn active">हिन्दी</button>
-        <button id="langEnBtn" type="button" class="lang-btn">English</button>
+      </a>
+      <div class="toolbar-actions">
+        <button id="backHomeNavBtn" type="button" class="btn btn-outline btn-small hidden">
+          <span id="backHomeNavText">होम डैशबोर्ड</span>
+        </button>
+        <div class="lang-toggle" role="group" aria-label="Language switcher">
+          <button id="langHiBtn" type="button" class="lang-btn active">हिन्दी</button>
+          <button id="langEnBtn" type="button" class="lang-btn">English</button>
+        </div>
       </div>
     </header>
 
@@ -30,22 +35,160 @@
       <button id="offlineRetryBtn" type="button" class="btn btn-outline btn-small">पुनः प्रयास</button>
     </div>
 
-    <!-- Loading State -->
-    <section id="loadingState" class="state-card" aria-live="polite">
+    <!-- ========================================================= -->
+    <!-- HOME DASHBOARD (Root Route: /)                            -->
+    <!-- ========================================================= -->
+    <section id="homeDashboard" class="home-dashboard hidden" aria-label="Jay Bhole Goshala Samiti Home Dashboard">
+      <!-- Hero Card -->
+      <div class="hero-card">
+        <div class="hero-header">
+          <div class="pvc-org-group">
+            <img
+              class="hero-logo"
+              src="/assets/goshala-logo.jpg"
+              alt="जय भोले गौशाला समिति लोगो"
+            />
+            <div class="hero-org-text">
+              <span id="homePortalTag" class="hero-badge">आधिकारिक डिजिटल गौशाला पोर्टल</span>
+              <h1 id="homeTitle">जय भोले गौशाला समिति</h1>
+              <p id="homeSloganPrimary" class="hero-slogan-main">महादेव की कृपा, गौमाता की सेवा।</p>
+              <p id="homeSloganSecondary" class="hero-slogan-sub">बेसहारा गौवंश का सहारा बनना ही हमारा संकल्प है।</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="pvc-ribbon">
+          <span class="verified-pill">
+            <span class="verified-dot" aria-hidden="true"></span>
+            <span id="homePillarText">गौ सेवा • जीव रक्षा • समाज सेवा</span>
+          </span>
+          <span id="homeLocationBadge" class="location-pill">मेहदोरा, पोरसा, मुरैना (म. प्र.)</span>
+        </div>
+
+        <div class="hero-body">
+          <div class="hero-info-col">
+            <div class="section-heading" id="homeLookupKicker">डिजिटल गौ पहचान पत्र खोजें</div>
+            <h2 id="homeLookupHeading" class="lookup-heading">पशु पहचान क्रमांक (Animal ID) से कार्ड खोलें</h2>
+            <p id="homeLookupDesc" class="lookup-desc">
+              यदि आपके पास गौशाला द्वारा जारी पशु पहचान क्रमांक है (जैसे JBGS-G-357), तो नीचे दर्ज करके सीधे सत्यापित PVC डिजिटल गौ पहचान पत्र देखें।
+            </p>
+
+            <form id="cattleLookupForm" class="lookup-form" novalidate>
+              <label for="animalCodeInput" class="sr-only" id="homeLookupInputLabel">पशु पहचान क्रमांक</label>
+              <input
+                id="animalCodeInput"
+                name="animalCode"
+                type="text"
+                class="lookup-input"
+                placeholder="उदाहरण: JBGS-G-357"
+                autocomplete="off"
+                spellcheck="false"
+                maxlength="40"
+              />
+              <button id="lookupSubmitBtn" type="submit" class="btn btn-primary">
+                <span id="lookupSubmitText">पहचान पत्र देखें</span>
+              </button>
+            </form>
+            <p id="lookupErrorText" class="lookup-error hidden" role="alert"></p>
+          </div>
+
+          <div class="hero-visual-col">
+            <div class="hero-photo-card">
+              <img src="/assets/default-cow.jpg" alt="जय भोले गौशाला समिति गौमाता सेवा" />
+              <div class="photo-caption">
+                <span id="homePhotoTitle" class="photo-caption-name">गौमाता की सेवा एवं संरक्षण</span>
+                <span id="homePhotoTag" class="photo-caption-type">QR सत्यापित</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Services & Mission Grid -->
+      <div class="dashboard-grid">
+        <article class="dash-card">
+          <div class="dash-icon dash-icon-forest" aria-hidden="true">ID</div>
+          <h3 id="featCard1Title">डिजिटल गौ पहचान प्रणाली</h3>
+          <p id="featCard1Desc">प्रत्येक पंजीकृत गौवंश के लिए सुरक्षित QR-सत्यापित PVC डिजिटल पहचान पत्र, जिसमें नस्ल, आयु, स्वास्थ्य स्थिति और टीकाकरण विवरण उपलब्ध रहता है।</p>
+        </article>
+
+        <article class="dash-card">
+          <div class="dash-icon dash-icon-saffron" aria-hidden="true">♥</div>
+          <h3 id="featCard2Title">गौ सेवा, आश्रय एवं उपचार</h3>
+          <p id="featCard2Desc">बेसहारा और जरूरतमंद गौवंश के लिए सुरक्षित आश्रय, स्वच्छ चारा-पानी, नियमित पशु चिकित्सा जांच एवं संवेदनशील देखभाल की व्यवस्था।</p>
+        </article>
+
+        <article class="dash-card">
+          <div class="dash-icon dash-icon-gold" aria-hidden="true">✓</div>
+          <h3 id="featCard3Title">पारदर्शी और सुरक्षित रिकॉर्ड</h3>
+          <p id="featCard3Desc">केवल एडमिन द्वारा स्वीकृत सार्वजनिक विवरण ही ऑनलाइन प्रदर्शित होते हैं, जबकि गौशाला का निजी व आंतरिक डेटा पूर्णतः सुरक्षित रहता है।</p>
+        </article>
+      </div>
+
+      <!-- How QR Scanning Works -->
+      <section class="guide-card" aria-labelledby="guideHeading">
+        <div class="section-heading" id="guideKicker">QR सत्यापन प्रक्रिया</div>
+        <h2 id="guideHeading" class="guide-title">Google Lens या QR स्कैनर से पहचान पत्र कैसे देखें?</h2>
+        <div class="steps-grid">
+          <div class="step-item">
+            <span class="step-num">1</span>
+            <div>
+              <h4 id="step1Title">आधिकारिक QR स्कैन करें</h4>
+              <p id="step1Desc">गौवंश के टैग या कार्ड पर छपे QR कोड को Google Lens या किसी भी मोबाइल कैमरे से स्कैन करें।</p>
+            </div>
+          </div>
+          <div class="step-item">
+            <span class="step-num">2</span>
+            <div>
+              <h4 id="step2Title">सत्यापित कार्ड तुरंत खुलेगा</h4>
+              <p id="step2Desc">/cattle/Animal-ID लिंक पर जाते ही गौमाता का फोटो, पहचान विवरण और स्वास्थ्य रिकॉर्ड दिखाई देगा।</p>
+            </div>
+          </div>
+          <div class="step-item">
+            <span class="step-num">3</span>
+            <div>
+              <h4 id="step3Title">प्रिंट, PDF या शेयर करें</h4>
+              <p id="step3Desc">पहचान पत्र को सीधे प्रिंट करें, PDF के रूप में सहेजें या WhatsApp पर साझा करें।</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Official Address Footer -->
+      <footer class="home-footer">
+        <div class="home-footer-org">
+          <strong id="homeFooterOrg">जय भोले गौशाला समिति</strong>
+          <span id="homeFooterAddress">ग्राम – मेहदोरा, विकासखंड – पोरसा, जिला – मुरैना, मध्य प्रदेश, भारत।</span>
+        </div>
+        <span id="homeFooterTag" class="home-footer-tag">सुरक्षित डिजिटल गौवंश पहचान एवं प्रबंधन पोर्टल</span>
+      </footer>
+    </section>
+
+    <!-- ========================================================= -->
+    <!-- LOADING STATE (Cattle Route: /cattle/{validCattleId})     -->
+    <!-- ========================================================= -->
+    <section id="loadingState" class="state-card hidden" aria-live="polite">
       <div class="spinner" aria-hidden="true"></div>
       <h2 id="loadingTitle">डिजिटल गौ पहचान पत्र लोड हो रहा है...</h2>
       <p id="loadingSubtitle">जय भोले गौशाला समिति के आधिकारिक रिकॉर्ड से विवरण प्राप्त किया जा रहा है।</p>
     </section>
 
-    <!-- Error / Private / Invalid State -->
+    <!-- ========================================================= -->
+    <!-- ERROR / INVALID QR / NOT FOUND STATE                      -->
+    <!-- ========================================================= -->
     <section id="errorState" class="state-card hidden" role="alert">
       <div class="state-badge" id="errorIcon" aria-hidden="true">!</div>
       <h2 id="errorTitle">पहचान पत्र उपलब्ध नहीं है</h2>
       <p id="errorMessage"></p>
-      <button id="retryBtn" type="button" class="btn btn-primary no-print">पुनः प्रयास करें</button>
+      <div class="state-actions no-print">
+        <button id="retryBtn" type="button" class="btn btn-primary">पुनः प्रयास करें</button>
+        <button id="errorHomeBtn" type="button" class="btn btn-outline">होम डैशबोर्ड पर जाएं</button>
+      </div>
     </section>
 
-    <!-- Professional PVC Digital Cow ID Card -->
+    <!-- ========================================================= -->
+    <!-- PROFESSIONAL PVC DIGITAL COW ID CARD (/cattle/{id})       -->
+    <!-- ========================================================= -->
     <article id="cowCard" class="pvc-card hidden" aria-label="Digital Cow ID Card">
       <!-- 1. Goshala Logo, Name & Address Header -->
       <div class="pvc-header">

@@ -20,6 +20,10 @@
       {
         "source": "/cattle/**",
         "destination": "/index.html"
+      },
+      {
+        "source": "**",
+        "destination": "/index.html"
       }
     ],
     "headers": [

@@ -1,10 +1,58 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = require('./app.js');
 const qr = require('./qrcode.js');
+
+test('Routing: Root URL (/) and /index.html open Home Dashboard, NEVER Invalid QR', () => {
+  assert.deepEqual(app.resolveRoute('/', ''), { view: 'home', animalCode: null });
+  assert.deepEqual(app.resolveRoute('/index.html', ''), { view: 'home', animalCode: null });
+  assert.deepEqual(app.resolveRoute('/', '?utm_source=whatsapp'), { view: 'home', animalCode: null });
+});
+
+test('Routing: Valid /cattle/{validCattleId} and query lookup route to Cattle QR validation page', () => {
+  assert.deepEqual(app.resolveRoute('/cattle/JBGS-G-357', ''), { view: 'cattle', animalCode: 'JBGS-G-357' });
+  assert.deepEqual(app.resolveRoute('/cattle/jbgs-g-357/', ''), { view: 'cattle', animalCode: 'JBGS-G-357' });
+  assert.deepEqual(app.resolveRoute('/', '?id=JBGS-G-357'), { view: 'cattle', animalCode: 'JBGS-G-357' });
+  assert.deepEqual(app.resolveRoute('/', '?code=jbgs_01'), { view: 'cattle', animalCode: 'JBGS_01' });
+});
+
+test('Routing: Invalid QR routes stay strictly separated from Home Dashboard', () => {
+  assert.deepEqual(app.resolveRoute('/cattle', ''), { view: 'invalid_qr', animalCode: null });
+  assert.deepEqual(app.resolveRoute('/cattle/', ''), { view: 'invalid_qr', animalCode: null });
+  assert.deepEqual(app.resolveRoute('/cattle/a b c', ''), { view: 'invalid_qr', animalCode: null });
+  assert.deepEqual(app.resolveRoute('/cattle/../../etc', ''), { view: 'invalid_qr', animalCode: null });
+  assert.deepEqual(app.resolveRoute('/cattle/JBGS-G-357/extra', ''), { view: 'invalid_qr', animalCode: null });
+  assert.deepEqual(app.resolveRoute('/', '?id='), { view: 'invalid_qr', animalCode: null });
+  assert.deepEqual(app.resolveRoute('/', '?id=invalid id'), { view: 'invalid_qr', animalCode: null });
+});
+
+test('Routing: Unknown non-QR routes resolve to dedicated Not Found view, not Invalid QR', () => {
+  assert.deepEqual(app.resolveRoute('/other/JBGS-G-357', ''), { view: 'not_found', animalCode: null });
+  assert.deepEqual(app.resolveRoute('/unknown-page', ''), { view: 'not_found', animalCode: null });
+});
+
+test('Firebase Hosting config preserves hosting public dir, /cattle/** rewrite, and SPA fallback', () => {
+  const firebaseJsonPath = path.resolve(__dirname, '..', 'firebase.json');
+  const config = JSON.parse(fs.readFileSync(firebaseJsonPath, 'utf8'));
+  assert.equal(config.hosting.public, 'hosting');
+  assert.equal(config.storage.rules, 'storage.rules');
+  assert.ok(Array.isArray(config.hosting.rewrites));
+  assert.ok(
+    config.hosting.rewrites.some((r) => r.source === '/cattle/**' && r.destination === '/index.html'),
+    'Expected /cattle/** rewrite to /index.html'
+  );
+  assert.ok(
+    config.hosting.rewrites.some((r) => r.source === '**' && r.destination === '/index.html'),
+    'Expected catch-all ** rewrite to /index.html'
+  );
+});
 
 test('Scenario 1 & 2: Extracts valid Animal Code from Google Lens /cattle/ URLs', () => {
   assert.equal(app.extractAnimalCodeFromLocation('/cattle/JBGS-G-357', ''), 'JBGS-G-357');

@@ -1,7 +1,10 @@
 /**
- * Jay Bhole Gosala Samiti — Public Digital Cow ID Card Web App
- * Loads Admin-approved cow ID cards directly from the project's named Firestore DB
- * without requiring login, keeping all private/internal fields strictly inaccessible.
+ * Jay Bhole Gosala Samiti — Official Web Portal & Public Digital Cow ID Card
+ * Routes cleanly:
+ *  - `/` (and `/index.html`)             -> Home Dashboard (with Cow ID lookup & Goshala overview)
+ *  - `/cattle/<validAnimalCode>`         -> Verified Public Digital Cow ID Card from Firestore
+ *  - `/cattle/...` (missing/invalid ID)  -> Dedicated Invalid QR Code screen (with Home link)
+ *  - Any other unknown path              -> Clean Page Not Found screen (with Home link)
  */
 (function (root) {
   'use strict';
@@ -13,8 +16,43 @@
 
   var I18N = {
     hi: {
+      homePageTitle: 'जय भोले गौशाला समिति | आधिकारिक डिजिटल पोर्टल',
       pageTitlePrefix: 'डिजिटल गौ पहचान पत्र',
       toolbarBrand: 'जय भोले गौशाला समिति',
+      backHomeNav: '← होम डैशबोर्ड',
+      btnGoHome: 'होम डैशबोर्ड पर जाएं',
+      homePortalTag: 'आधिकारिक डिजिटल गौशाला पोर्टल',
+      homeTitle: 'जय भोले गौशाला समिति',
+      homeSloganPrimary: 'महादेव की कृपा, गौमाता की सेवा।',
+      homeSloganSecondary: 'बेसहारा गौवंश का सहारा बनना ही हमारा संकल्प है।',
+      homePillarText: 'गौ सेवा • जीव रक्षा • समाज सेवा',
+      homeLocationBadge: 'मेहदोरा, पोरसा, मुरैना (म. प्र.)',
+      homeLookupKicker: 'डिजिटल गौ पहचान पत्र खोजें',
+      homeLookupHeading: 'पशु पहचान क्रमांक (Animal ID) से कार्ड खोलें',
+      homeLookupDesc: 'यदि आपके पास गौशाला द्वारा जारी पशु पहचान क्रमांक है (जैसे JBGS-G-357), तो नीचे दर्ज करके सीधे सत्यापित PVC डिजिटल गौ पहचान पत्र देखें।',
+      homeLookupInputLabel: 'पशु पहचान क्रमांक',
+      homeLookupPlaceholder: 'उदाहरण: JBGS-G-357',
+      lookupSubmitText: 'पहचान पत्र देखें',
+      lookupInvalidMsg: 'कृपया वैध पशु पहचान क्रमांक दर्ज करें (जैसे JBGS-G-357 — केवल अक्षर, अंक, - या _)।',
+      homePhotoTitle: 'गौमाता की सेवा एवं संरक्षण',
+      homePhotoTag: 'QR सत्यापित',
+      featCard1Title: 'डिजिटल गौ पहचान प्रणाली',
+      featCard1Desc: 'प्रत्येक पंजीकृत गौवंश के लिए सुरक्षित QR-सत्यापित PVC डिजिटल पहचान पत्र, जिसमें नस्ल, आयु, स्वास्थ्य स्थिति और टीकाकरण विवरण उपलब्ध रहता है।',
+      featCard2Title: 'गौ सेवा, आश्रय एवं उपचार',
+      featCard2Desc: 'बेसहारा और जरूरतमंद गौवंश के लिए सुरक्षित आश्रय, स्वच्छ चारा-पानी, नियमित पशु चिकित्सा जांच एवं संवेदनशील देखभाल की व्यवस्था।',
+      featCard3Title: 'पारदर्शी और सुरक्षित रिकॉर्ड',
+      featCard3Desc: 'केवल एडमिन द्वारा स्वीकृत सार्वजनिक विवरण ही ऑनलाइन प्रदर्शित होते हैं, जबकि गौशाला का निजी व आंतरिक डेटा पूर्णतः सुरक्षित रहता है।',
+      guideKicker: 'QR सत्यापन प्रक्रिया',
+      guideHeading: 'Google Lens या QR स्कैनर से पहचान पत्र कैसे देखें?',
+      step1Title: 'आधिकारिक QR स्कैन करें',
+      step1Desc: 'गौवंश के टैग या कार्ड पर छपे QR कोड को Google Lens या किसी भी मोबाइल कैमरे से स्कैन करें।',
+      step2Title: 'सत्यापित कार्ड तुरंत खुलेगा',
+      step2Desc: '/cattle/Animal-ID लिंक पर जाते ही गौमाता का फोटो, पहचान विवरण और स्वास्थ्य रिकॉर्ड दिखाई देगा।',
+      step3Title: 'प्रिंट, PDF या शेयर करें',
+      step3Desc: 'पहचान पत्र को सीधे प्रिंट करें, PDF के रूप में सहेजें या WhatsApp पर साझा करें।',
+      homeFooterOrg: 'जय भोले गौशाला समिति',
+      homeFooterAddress: 'ग्राम – मेहदोरा, विकासखंड – पोरसा, जिला – मुरैना, मध्य प्रदेश, भारत।',
+      homeFooterTag: 'सुरक्षित डिजिटल गौवंश पहचान एवं प्रबंधन पोर्टल',
       cardTitleSub: 'आधिकारिक डिजिटल गौ पहचान पत्र • Official Digital Cow ID Card',
       chipKicker: 'पशु पहचान क्रमांक',
       verifiedText: 'सत्यापित सार्वजनिक गौ रिकॉर्ड (एडमिन स्वीकृत)',
@@ -45,7 +83,9 @@
       loadingSubtitle: 'जय भोले गौशाला समिति के आधिकारिक रिकॉर्ड से विवरण प्राप्त किया जा रहा है।',
       notRecorded: 'रिकॉर्ड उपलब्ध नहीं',
       errInvalidTitle: 'अमान्य QR कोड लिंक',
-      errInvalidBody: 'यह लिंक किसी वैध गौ पहचान क्रमांक (जैसे /cattle/JBGS-G-357) की ओर संकेत नहीं करता। कृपया गौशाला के आधिकारिक QR कोड को पुनः स्कैन करें।',
+      errInvalidBody: 'यह लिंक किसी वैध गौ पहचान क्रमांक (जैसे /cattle/JBGS-G-357) की ओर संकेत नहीं करता। कृपया गौशाला के आधिकारिक QR कोड को पुनः स्कैन करें या होम डैशबोर्ड पर जाएं।',
+      errNotFoundTitle: 'पेज उपलब्ध नहीं है',
+      errNotFoundBody: 'आप जिस वेब पते को खोलने का प्रयास कर रहे हैं वह उपलब्ध नहीं है। कृपया जय भोले गौशाला समिति के मुख्य होम डैशबोर्ड पर जाएं।',
       errPrivateTitle: 'पहचान पत्र सार्वजनिक रूप से उपलब्ध नहीं है',
       errPrivateBody: 'यह गौ रिकॉर्ड अभी एडमिन द्वारा सार्वजनिक प्रदर्शन के लिए स्वीकृत नहीं है या डेटाबेस में मौजूद नहीं है।',
       errOfflineTitle: 'इंटरनेट कनेक्शन नहीं है',
@@ -62,8 +102,43 @@
       }
     },
     en: {
+      homePageTitle: 'Jay Bhole Gosala Samiti | Official Digital Portal',
       pageTitlePrefix: 'Digital Cow ID Card',
       toolbarBrand: 'Jay Bhole Gosala Samiti',
+      backHomeNav: '← Home Dashboard',
+      btnGoHome: 'Go to Home Dashboard',
+      homePortalTag: 'Official Digital Goshala Portal',
+      homeTitle: 'Jay Bhole Gosala Samiti',
+      homeSloganPrimary: 'Grace of Mahadev, Service to Gaumata.',
+      homeSloganSecondary: 'Supporting destitute cattle is our solemn pledge.',
+      homePillarText: 'Cow Care • Animal Protection • Social Service',
+      homeLocationBadge: 'Mehdora, Porsa, Morena (M.P.)',
+      homeLookupKicker: 'Digital Cow ID Lookup',
+      homeLookupHeading: 'Open Verified Card by Animal ID',
+      homeLookupDesc: 'If you have an official Animal ID issued by the Goshala (for example JBGS-G-357), enter it below to open the verified PVC Digital Cow ID Card.',
+      homeLookupInputLabel: 'Animal ID',
+      homeLookupPlaceholder: 'Example: JBGS-G-357',
+      lookupSubmitText: 'View ID Card',
+      lookupInvalidMsg: 'Please enter a valid Animal ID (for example JBGS-G-357 — letters, numbers, hyphens, or underscores only).',
+      homePhotoTitle: 'Cattle Care & Protection',
+      homePhotoTag: 'QR Verified',
+      featCard1Title: 'Digital Cattle Identity System',
+      featCard1Desc: 'Every registered animal receives a QR-verified PVC Digital ID Card displaying breed, age, health status, and vaccination details.',
+      featCard2Title: 'Shelter, Care & Veterinary Support',
+      featCard2Desc: 'Safe shelter, clean fodder and water, routine veterinary checkups, and compassionate care for rescued and destitute cattle.',
+      featCard3Title: 'Transparent & Secure Records',
+      featCard3Desc: 'Only Admin-approved public records appear online, while internal Goshala management and private staff data remain fully protected.',
+      guideKicker: 'How QR Verification Works',
+      guideHeading: 'How to Open a Digital Cow ID Card via Google Lens?',
+      step1Title: 'Scan the Official QR Code',
+      step1Desc: 'Scan the QR code printed on the animal tag or ID card using Google Lens or any mobile camera.',
+      step2Title: 'Verified Card Opens Instantly',
+      step2Desc: 'The /cattle/Animal-ID link displays the animal photo, identity details, and live health record.',
+      step3Title: 'Print, Save PDF, or Share',
+      step3Desc: 'Print the PVC-ready card directly, save it as a PDF, or share the verified link on WhatsApp.',
+      homeFooterOrg: 'Jay Bhole Gosala Samiti',
+      homeFooterAddress: 'Village – Mehdora, Block – Porsa, District – Morena, Madhya Pradesh, India.',
+      homeFooterTag: 'Verified Digital Cattle Identity & Management Portal',
       cardTitleSub: 'Official Digital Cow ID Card • आधिकारिक डिजिटल गौ पहचान पत्र',
       chipKicker: 'Unique Animal ID',
       verifiedText: 'Verified Public Cow Record (Admin Approved)',
@@ -94,7 +169,9 @@
       loadingSubtitle: 'Fetching verified details from Jay Bhole Gosala Samiti records.',
       notRecorded: 'Not recorded',
       errInvalidTitle: 'Invalid QR Code URL',
-      errInvalidBody: 'This link does not contain a valid Animal ID (for example /cattle/JBGS-G-357). Please scan an official Goshala QR code.',
+      errInvalidBody: 'This link does not contain a valid Animal ID (for example /cattle/JBGS-G-357). Please scan an official Goshala QR code or return to the Home Dashboard.',
+      errNotFoundTitle: 'Page Not Found',
+      errNotFoundBody: 'The page you requested does not exist. Please return to the Jay Bhole Gosala Samiti Home Dashboard.',
       errPrivateTitle: 'ID Card Not Publicly Available',
       errPrivateBody: 'This cattle record is either not approved for public display by Admin or does not exist.',
       errOfflineTitle: 'No Internet Connection',
@@ -142,6 +219,43 @@
       }
     }
     return null;
+  }
+
+  /**
+   * Strictly separates routes:
+   * - '/' or '/index.html' (without id/code query params) -> { view: 'home', animalCode: null }
+   * - '/cattle/<validCode>' or '/?id=<validCode>'         -> { view: 'cattle', animalCode: '<CODE>' }
+   * - '/cattle', '/cattle/', '/cattle/<invalid>', '/?id=' -> { view: 'invalid_qr', animalCode: null }
+   * - Any other path                                      -> { view: 'not_found', animalCode: null }
+   */
+  function resolveRoute(pathname, search) {
+    var path = String(pathname || '/').trim() || '/';
+    var params = search ? new URLSearchParams(search) : null;
+    var hasQueryId = Boolean(params && (params.has('id') || params.has('code')));
+
+    // 1. Explicit /cattle or /cattle/... QR route
+    if (/^\/cattle(\/|$)/i.test(path)) {
+      var codeFromPath = extractAnimalCodeFromLocation(path, '');
+      if (codeFromPath) {
+        return { view: 'cattle', animalCode: codeFromPath };
+      }
+      return { view: 'invalid_qr', animalCode: null };
+    }
+
+    // 2. Root Home Dashboard route ('/' or '/index.html')
+    if (path === '/' || path.toLowerCase() === '/index.html') {
+      if (hasQueryId) {
+        var codeFromQuery = extractAnimalCodeFromLocation('/', search);
+        if (codeFromQuery) {
+          return { view: 'cattle', animalCode: codeFromQuery };
+        }
+        return { view: 'invalid_qr', animalCode: null };
+      }
+      return { view: 'home', animalCode: null };
+    }
+
+    // 3. Any other unknown route (separate from Home and Invalid QR)
+    return { view: 'not_found', animalCode: null };
   }
 
   function buildFirestoreDocumentUrl(animalCode) {
@@ -244,6 +358,7 @@
     PUBLIC_HOSTING_ORIGIN: PUBLIC_HOSTING_ORIGIN,
     normalizeAnimalCode: normalizeAnimalCode,
     extractAnimalCodeFromLocation: extractAnimalCodeFromLocation,
+    resolveRoute: resolveRoute,
     buildFirestoreDocumentUrl: buildFirestoreDocumentUrl,
     parsePublicCattleDocument: parsePublicCattleDocument,
     buildWhatsAppShareUrl: buildWhatsAppShareUrl,
@@ -258,10 +373,15 @@
   // Browser UI Controller
   var state = {
     lang: 'hi',
+    routeView: 'home', // 'home' | 'cattle' | 'invalid_qr' | 'not_found'
+    loading: false,
     card: null,
-    errorKind: null, // 'invalid' | 'private' | 'offline' | 'general'
-    animalCode: null
+    errorKind: null, // 'invalid' | 'not_found' | 'private' | 'offline' | 'general'
+    animalCode: null,
+    lookupError: false
   };
+
+  var activeRequestToken = 0;
 
   function el(id) {
     return document.getElementById(id);
@@ -330,6 +450,59 @@
     }
   }
 
+  function renderHomeContent(dict) {
+    document.title = dict.homePageTitle;
+
+    setText('homePortalTag', dict.homePortalTag);
+    setText('homeTitle', dict.homeTitle);
+    setText('homeSloganPrimary', dict.homeSloganPrimary);
+    setText('homeSloganSecondary', dict.homeSloganSecondary);
+    setText('homePillarText', dict.homePillarText);
+    setText('homeLocationBadge', dict.homeLocationBadge);
+    setText('homeLookupKicker', dict.homeLookupKicker);
+    setText('homeLookupHeading', dict.homeLookupHeading);
+    setText('homeLookupDesc', dict.homeLookupDesc);
+    setText('homeLookupInputLabel', dict.homeLookupInputLabel);
+    setText('lookupSubmitText', dict.lookupSubmitText);
+    setText('homePhotoTitle', dict.homePhotoTitle);
+    setText('homePhotoTag', dict.homePhotoTag);
+    setText('featCard1Title', dict.featCard1Title);
+    setText('featCard1Desc', dict.featCard1Desc);
+    setText('featCard2Title', dict.featCard2Title);
+    setText('featCard2Desc', dict.featCard2Desc);
+    setText('featCard3Title', dict.featCard3Title);
+    setText('featCard3Desc', dict.featCard3Desc);
+    setText('guideKicker', dict.guideKicker);
+    setText('guideHeading', dict.guideHeading);
+    setText('step1Title', dict.step1Title);
+    setText('step1Desc', dict.step1Desc);
+    setText('step2Title', dict.step2Title);
+    setText('step2Desc', dict.step2Desc);
+    setText('step3Title', dict.step3Title);
+    setText('step3Desc', dict.step3Desc);
+    setText('homeFooterOrg', dict.homeFooterOrg);
+    setText('homeFooterAddress', dict.homeFooterAddress);
+    setText('homeFooterTag', dict.homeFooterTag);
+
+    var input = el('animalCodeInput');
+    if (input) input.placeholder = dict.homeLookupPlaceholder;
+
+    var lookupErr = el('lookupErrorText');
+    if (lookupErr) {
+      lookupErr.textContent = state.lookupError ? dict.lookupInvalidMsg : '';
+      lookupErr.classList.toggle('hidden', !state.lookupError);
+    }
+  }
+
+  function hideAllViews() {
+    el('homeDashboard').classList.add('hidden');
+    el('loadingState').classList.add('hidden');
+    el('errorState').classList.add('hidden');
+    el('cowCard').classList.add('hidden');
+    el('actionBar').classList.add('hidden');
+    el('printNote').classList.add('hidden');
+  }
+
   function renderUI() {
     var dict = I18N[state.lang] || I18N.hi;
     document.documentElement.lang = state.lang;
@@ -338,32 +511,60 @@
     el('langEnBtn').classList.toggle('active', state.lang === 'en');
 
     setText('toolbarBrand', dict.toolbarBrand);
+    setText('backHomeNavText', dict.backHomeNav);
     setText('offlineBannerText', dict.offlineBanner);
     setText('offlineRetryBtn', dict.btnRetry);
     setText('loadingTitle', dict.loadingTitle);
     setText('loadingSubtitle', dict.loadingSubtitle);
     setText('retryBtn', dict.btnRetry);
+    setText('errorHomeBtn', dict.btnGoHome);
 
+    // Show "Back to Home Dashboard" button on non-home routes
+    el('backHomeNavBtn').classList.toggle('hidden', state.routeView === 'home');
+
+    hideAllViews();
+
+    // 1. Home Dashboard Route (/)
+    if (state.routeView === 'home') {
+      renderHomeContent(dict);
+      el('homeDashboard').classList.remove('hidden');
+      return;
+    }
+
+    // 2. Loading State for valid /cattle/{id}
+    if (state.loading) {
+      el('loadingState').classList.remove('hidden');
+      return;
+    }
+
+    // 3. Error / Invalid QR / Not Found State
     if (state.errorKind) {
-      el('loadingState').classList.add('hidden');
-      el('cowCard').classList.add('hidden');
-      el('actionBar').classList.add('hidden');
-      el('printNote').classList.add('hidden');
       el('errorState').classList.remove('hidden');
+      var showRetry = state.errorKind === 'offline' || state.errorKind === 'general' || state.errorKind === 'private';
+      el('retryBtn').classList.toggle('hidden', !showRetry);
 
       if (state.errorKind === 'invalid') {
+        document.title = dict.errInvalidTitle + ' — ' + dict.toolbarBrand;
         setText('errorIcon', '?');
         setText('errorTitle', dict.errInvalidTitle);
         setText('errorMessage', dict.errInvalidBody);
+      } else if (state.errorKind === 'not_found') {
+        document.title = dict.errNotFoundTitle + ' — ' + dict.toolbarBrand;
+        setText('errorIcon', '404');
+        setText('errorTitle', dict.errNotFoundTitle);
+        setText('errorMessage', dict.errNotFoundBody);
       } else if (state.errorKind === 'private') {
+        document.title = dict.errPrivateTitle + ' — ' + dict.toolbarBrand;
         setText('errorIcon', '🔒');
         setText('errorTitle', dict.errPrivateTitle);
         setText('errorMessage', dict.errPrivateBody);
       } else if (state.errorKind === 'offline') {
+        document.title = dict.errOfflineTitle + ' — ' + dict.toolbarBrand;
         setText('errorIcon', '⚡');
         setText('errorTitle', dict.errOfflineTitle);
         setText('errorMessage', dict.errOfflineBody);
       } else {
+        document.title = dict.errGeneralTitle + ' — ' + dict.toolbarBrand;
         setText('errorIcon', '!');
         setText('errorTitle', dict.errGeneralTitle);
         setText('errorMessage', dict.errGeneralBody);
@@ -371,6 +572,7 @@
       return;
     }
 
+    // 4. Verified Digital Cow ID Card (/cattle/{validCattleId})
     if (!state.card) return;
 
     var card = state.card;
@@ -383,8 +585,6 @@
 
     document.title = card.name + ' (' + card.animalCode + ') — ' + dict.pageTitlePrefix;
 
-    el('loadingState').classList.add('hidden');
-    el('errorState').classList.add('hidden');
     el('cowCard').classList.remove('hidden');
     el('actionBar').classList.remove('hidden');
     el('printNote').classList.remove('hidden');
@@ -452,26 +652,24 @@
     el('offlineBanner').classList.toggle('hidden', !offline);
   }
 
-  async function loadCard() {
-    updateOfflineBanner();
+  function navigateTo(path) {
+    if (window.location.pathname + window.location.search !== path) {
+      window.history.pushState({}, '', path);
+    }
+    handleRouteChange();
+  }
+
+  async function fetchCattleCard(animalCode) {
+    var reqToken = ++activeRequestToken;
+    state.loading = true;
     state.errorKind = null;
     state.card = null;
-    el('errorState').classList.add('hidden');
-    el('cowCard').classList.add('hidden');
-    el('actionBar').classList.add('hidden');
-    el('printNote').classList.add('hidden');
-    el('loadingState').classList.remove('hidden');
-
-    var animalCode = extractAnimalCodeFromLocation(window.location.pathname, window.location.search);
     state.animalCode = animalCode;
-
-    if (!animalCode) {
-      state.errorKind = 'invalid';
-      renderUI();
-      return;
-    }
+    renderUI();
 
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      if (reqToken !== activeRequestToken) return;
+      state.loading = false;
       state.errorKind = 'offline';
       renderUI();
       return;
@@ -485,34 +683,77 @@
         cache: 'no-store'
       });
 
+      if (reqToken !== activeRequestToken) return;
+
       if (response.status === 403 || response.status === 404) {
+        state.loading = false;
         state.errorKind = 'private';
         renderUI();
         return;
       }
 
       if (!response.ok) {
+        state.loading = false;
         state.errorKind = 'general';
         renderUI();
         return;
       }
 
       var docJson = await response.json();
+      if (reqToken !== activeRequestToken) return;
+
       var parsed = parsePublicCattleDocument(docJson);
       if (!parsed) {
+        state.loading = false;
         state.errorKind = 'private';
         renderUI();
         return;
       }
 
+      state.loading = false;
       state.card = parsed;
       configureCowPhoto(parsed);
       renderQr(parsed);
       renderUI();
     } catch (_) {
+      if (reqToken !== activeRequestToken) return;
+      state.loading = false;
       state.errorKind = (typeof navigator !== 'undefined' && navigator.onLine === false) ? 'offline' : 'general';
       renderUI();
     }
+  }
+
+  function handleRouteChange() {
+    updateOfflineBanner();
+    activeRequestToken += 1;
+    state.lookupError = false;
+
+    var resolved = resolveRoute(window.location.pathname, window.location.search);
+    state.routeView = resolved.view;
+    state.animalCode = resolved.animalCode;
+    state.card = null;
+    state.loading = false;
+
+    if (resolved.view === 'home') {
+      state.errorKind = null;
+      renderUI();
+      return;
+    }
+
+    if (resolved.view === 'invalid_qr') {
+      state.errorKind = 'invalid';
+      renderUI();
+      return;
+    }
+
+    if (resolved.view === 'not_found') {
+      state.errorKind = 'not_found';
+      renderUI();
+      return;
+    }
+
+    // resolved.view === 'cattle' with validated resolved.animalCode
+    fetchCattleCard(resolved.animalCode);
   }
 
   function bindEvents() {
@@ -524,17 +765,68 @@
       state.lang = 'en';
       renderUI();
     });
-    el('retryBtn').addEventListener('click', loadCard);
-    el('offlineRetryBtn').addEventListener('click', loadCard);
+
+    el('brandHomeLink').addEventListener('click', function (evt) {
+      evt.preventDefault();
+      navigateTo('/');
+    });
+    el('backHomeNavBtn').addEventListener('click', function () {
+      navigateTo('/');
+    });
+    el('errorHomeBtn').addEventListener('click', function () {
+      navigateTo('/');
+    });
+
+    el('cattleLookupForm').addEventListener('submit', function (evt) {
+      evt.preventDefault();
+      var input = el('animalCodeInput');
+      var normalized = normalizeAnimalCode(input ? input.value : '');
+      if (!normalized) {
+        state.lookupError = true;
+        renderUI();
+        if (input) input.focus();
+        return;
+      }
+      state.lookupError = false;
+      input.value = normalized;
+      navigateTo('/cattle/' + encodeURIComponent(normalized));
+    });
+
+    el('animalCodeInput').addEventListener('input', function () {
+      if (state.lookupError) {
+        state.lookupError = false;
+        renderUI();
+      }
+    });
+
+    el('retryBtn').addEventListener('click', function () {
+      if (state.routeView === 'cattle' && state.animalCode) {
+        fetchCattleCard(state.animalCode);
+      } else {
+        handleRouteChange();
+      }
+    });
+    el('offlineRetryBtn').addEventListener('click', function () {
+      if (state.routeView === 'cattle' && state.animalCode) {
+        fetchCattleCard(state.animalCode);
+      } else {
+        updateOfflineBanner();
+      }
+    });
+
     el('printBtn').addEventListener('click', function () {
       window.print();
     });
     el('pdfBtn').addEventListener('click', function () {
       window.print();
     });
+
+    window.addEventListener('popstate', handleRouteChange);
     window.addEventListener('online', function () {
       updateOfflineBanner();
-      if (state.errorKind === 'offline') loadCard();
+      if (state.routeView === 'cattle' && state.errorKind === 'offline' && state.animalCode) {
+        fetchCattleCard(state.animalCode);
+      }
     });
     window.addEventListener('offline', updateOfflineBanner);
   }
@@ -542,7 +834,7 @@
   if (typeof document !== 'undefined') {
     document.addEventListener('DOMContentLoaded', function () {
       bindEvents();
-      loadCard();
+      handleRouteChange();
     });
   }
 })(typeof window !== 'undefined' ? window : globalThis);
