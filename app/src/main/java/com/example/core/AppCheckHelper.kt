@@ -436,11 +436,13 @@ suspend fun refreshAppCheckToken(forceRefresh: Boolean = true): Boolean {
 fun describeAppCheckProviderForLog(): String {
     val provider = activeAppCheckProviderKind.name
     val mode = if (BuildConfig.DEBUG) "DEBUG" else "RELEASE"
-    val diag = lastAppCheckDiagnostic?.take(60)
+    val emulator = isAndroidEmulator()
+    val hasSiteKey = appCheckAppContext?.let { !resolveRecaptchaSiteKey(it).isNullOrBlank() } ?: false
+    val diag = lastAppCheckDiagnostic?.take(80)
     return if (diag.isNullOrBlank()) {
-        "AppCheck[mode=$mode,provider=$provider]"
+        "AppCheck[mode=$mode,provider=$provider,emulator=$emulator,siteKey=$hasSiteKey]"
     } else {
-        "AppCheck[mode=$mode,provider=$provider,note=$diag]"
+        "AppCheck[mode=$mode,provider=$provider,emulator=$emulator,siteKey=$hasSiteKey,note=$diag]"
     }
 }
 

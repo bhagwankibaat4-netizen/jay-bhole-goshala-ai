@@ -36,6 +36,7 @@ import com.example.ui.components.MetricStatCard
 import com.example.ui.components.ModuleGridCard
 import com.example.ui.components.RoleBadgeChip
 import com.example.ui.theme.*
+import com.example.ui.viewmodel.AdminAiDiagnosticUiState
 
 @Composable
 fun AdminDashboardScreen(
@@ -54,7 +55,10 @@ fun AdminDashboardScreen(
     onQuickAddFeed: () -> Unit,
     onQuickAddExpense: () -> Unit,
     productOrders: List<ProductOrder> = emptyList(),
-    products: List<GoshalaProduct> = emptyList()
+    products: List<GoshalaProduct> = emptyList(),
+    adminDiagnosticState: AdminAiDiagnosticUiState = AdminAiDiagnosticUiState.Idle,
+    onRunAdminAiTest: () -> Unit = {},
+    onClearAdminAiTest: () -> Unit = {}
 ) {
     val today = QrAndExportUtils.todayIso()
     val cowCount = cattle.count { it.category == "COW" }
@@ -325,6 +329,17 @@ fun AdminDashboardScreen(
                     }
                 }
             }
+        }
+
+        // 4B. Admin-Only Live Gemini Backend Diagnostic Card (Test AI Connection)
+        item(key = "admin_ai_connection_diagnostic") {
+            AdminAiDiagnosticCard(
+                language = language,
+                session = session,
+                diagnosticState = adminDiagnosticState,
+                onRunTest = onRunAdminAiTest,
+                onClearResult = onClearAdminAiTest
+            )
         }
 
         if (cattle.isNotEmpty()) {

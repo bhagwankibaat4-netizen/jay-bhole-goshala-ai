@@ -174,8 +174,8 @@ internal fun EmergencyVetCallBanner(
         )
     }
 
-    if (isEmergency && assessment != null) {
-        val emergencyAssessment = assessment
+    val emergencyAssessment = assessment?.takeIf { isEmergency }
+    if (emergencyAssessment != null) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -526,39 +526,58 @@ private fun TriageChoiceRow(
 internal fun VetSourcesCard(
     language: AppLanguage,
     sources: List<VetSourceReference>,
-    usedGoogleSearch: Boolean
+    usedGoogleSearch: Boolean,
+    searchAttempted: Boolean = false
 ) {
-    if (sources.isEmpty() && !usedGoogleSearch) return
+    val hasVerifiedSources = sources.isNotEmpty()
+    if (!hasVerifiedSources && !searchAttempted) return
     val context = LocalContext.current
+    val bgColor = if (hasVerifiedSources) Color(0xFFF1F8E9) else Color(0xFFFFF8E1)
+    val borderColor = if (hasVerifiedSources) ForestGreen.copy(alpha = 0.28f) else Saffron.copy(alpha = 0.35f)
+    val headerTint = if (hasVerifiedSources) ForestGreen else Saffron
+
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = Color(0xFFF1F8E9),
-        border = BorderStroke(1.dp, ForestGreen.copy(alpha = 0.28f)),
+        color = bgColor,
+        border = BorderStroke(1.dp, borderColor),
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("ai_vet_sources_card")
+            .testTag(if (hasVerifiedSources) "ai_vet_sources_card" else "ai_vet_sources_unavailable_card")
     ) {
         Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Public, contentDescription = null, tint = ForestGreen, modifier = Modifier.size(16.dp))
+                Icon(
+                    imageVector = if (hasVerifiedSources) Icons.Default.Public else Icons.Default.Info,
+                    contentDescription = null,
+                    tint = headerTint,
+                    modifier = Modifier.size(16.dp)
+                )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    text = str(
-                        language,
-                        "विश्वसनीय स्रोत (Google Search Grounded • DAHD / ICAR / IVRI / NDDB)",
-                        "Trusted Sources (Google Search Grounded • DAHD / ICAR / IVRI / NDDB)"
-                    ),
+                    text = if (hasVerifiedSources) {
+                        str(
+                            language,
+                            "विश्वसनीय स्रोत (Google Search Grounded • ${sources.size} सत्यापित लिंक)",
+                            "Trusted Sources (Google Search Grounded • ${sources.size} Verified Links)"
+                        )
+                    } else {
+                        str(
+                            language,
+                            "वेब खोज स्रोत उपलब्ध नहीं (सामान्य पशु चिकित्सा मार्गदर्शन)",
+                            "Live Web Search Sources Unavailable (General Vet Guidance)"
+                        )
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
-                    color = ForestGreen
+                    color = headerTint
                 )
             }
-            if (sources.isEmpty()) {
+            if (!hasVerifiedSources) {
                 Text(
                     text = str(
                         language,
-                        "Google Search जांच सक्रिय थी। विशिष्ट सरकारी लिंक उपलब्ध न होने पर स्थानीय पशु चिकित्सक से पुष्टि करें।",
-                        "Google Search grounding was active. Confirm details with a qualified veterinarian."
+                        "इस उत्तर के लिए लाइव Google Search स्रोत उपलब्ध नहीं हुए — यह उत्तर मॉडल के सामान्य पशु चिकित्सा ज्ञान पर आधारित है। किसी भी उपचार से पहले योग्य पशु चिकित्सक से पुष्टि करें।",
+                        "Live Google Search sources were not returned for this reply — this guidance is based on general veterinary knowledge. Confirm with a qualified veterinarian."
                     ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant

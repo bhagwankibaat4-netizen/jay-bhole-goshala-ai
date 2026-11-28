@@ -90,6 +90,7 @@ data class AiStreamUpdate(
     val riskLevel: VetRiskLevel? = null,
     val assessment: VetTriageAssessment? = null,
     val usedGoogleSearch: Boolean = false,
+    val searchAttempted: Boolean = false,
     val modelUsed: String = PRIMARY_MODEL_NAME,
     val usedFallbackModel: Boolean = false
 )
@@ -100,6 +101,7 @@ data class AiVetReportResult(
     val riskLevel: VetRiskLevel = VetRiskLevel.CAUTION,
     val assessment: VetTriageAssessment,
     val usedGoogleSearch: Boolean = false,
+    val searchAttempted: Boolean = false,
     val modelUsed: String = PRIMARY_MODEL_NAME,
     val usedFallbackModel: Boolean = false
 )
@@ -287,7 +289,9 @@ class GeminiAiRepository {
             msg.contains("quota") ||
             msg.contains("unavailable") ||
             msg.contains("overloaded") ||
-            msg.contains("internal")
+            msg.contains("internal") ||
+            msg.contains("empty ai response") ||
+            msg.contains("कोई उत्तर प्राप्त नहीं हुआ")
     }
 
     private fun isSearchToolUnsupportedError(e: Throwable): Boolean {
@@ -666,7 +670,8 @@ class GeminiAiRepository {
     private fun buildVetEightSectionRules(
         assessment: VetTriageAssessment,
         language: AppLanguage,
-        hasPhoto: Boolean
+        hasPhoto: Boolean,
+        allowGoogleSearch: Boolean = true
     ): String {
         val emergencyDirective = if (assessment.requiresImmediateVetCall) {
             """
@@ -695,11 +700,8 @@ class GeminiAiRepository {
             "NO-PHOTO SAFETY: State clearly that symptom analysis is preliminary guidance, not a confirmed medical diagnosis."
         }
 
-        return """
-            $emergencyDirective
-            $followUpPrompt
-            $photoSafetyNote
-
+        val searchBlock = if (allowGoogleSearch) {
+            """
             GOOGLE SEARCH GROUNDING REQUIREMENT:
             Use Google Search to ground veterinary medical information prioritizing:
             1) Department of Animal Husbandry & Dairying (DAHD, Govt. of India - dahd.nic.in)
@@ -707,6 +709,28 @@ class GeminiAiRepository {
             3) NDDB (nddb.coop)
             4) Government Veterinary Universities in India
             5) Trusted Veterinary Medical Resources (Merck Veterinary Manual, FAO, WOAH)
+            HONESTY RULE: Only cite real sources returned by Google Search. NEVER fabricate URLs or falsely claim you searched Google if search returns no links.
+            """.trimIndent()
+        } else {
+            """
+            NO LIVE WEB SEARCH AVAILABLE FOR THIS RESPONSE:
+            IMPORTANT HONESTY RULE: Live Google Search is NOT active on this fallback pass. Do NOT claim that you searched Google or browsed live websites, and NEVER invent or guess any URLs.
+            In Section 8, explicitly state that live web search sources were unavailable and this guidance is based on general veterinary knowledge (confirm with a qualified veterinarian).
+            """.trimIndent()
+        }
+
+        val section8Directive = if (allowGoogleSearch) {
+            "8. विश्वसनीय जानकारी के स्रोत (Trusted Sources — cite ONLY real grounded sources like DAHD/ICAR/IVRI/NDDB/Veterinary University with date ${todayIsoDateString()}; never fabricate links)"
+        } else {
+            "8. जानकारी का आधार (Information Basis — clearly state that live Google Search was unavailable for this reply, so no live web links are attached; consult a local qualified veterinarian)"
+        }
+
+        return """
+            $emergencyDirective
+            $followUpPrompt
+            $photoSafetyNote
+
+            $searchBlock
 
             MANDATORY 8-SECTION VETERINARY HEALTH REPORT STRUCTURE (INCLUDE ALL 8 CLEAR NUMBERED HEADINGS):
             1. संभावित समस्या (Possible Problem — list possible conditions only; NEVER declare a definite diagnosis without vet clinical examination)
@@ -716,7 +740,7 @@ class GeminiAiRepository {
             5. क्या नहीं करना है (What NOT to Do — NEVER suggest antibiotics or injections without proper clinical diagnosis; NEVER set medication dosage without weight, age, pregnancy & vet supervision; NEVER suggest unsafe home remedies or force-feeding)
             6. पशु चिकित्सक को कब बुलाना है (When to Call Veterinarian — clear urgent signs & timeframe; mention प्रसव समस्या, सांस की तकलीफ, पेट फूलना/आफरा, खड़ी न हो पाना, बेहोशी, खून बहना)
             7. डॉक्टर से कौन-कौन सी जाँच करवानी चाहिए (Recommended Vet Diagnostic Tests — e.g., rectal temperature, rumen motility/auscultation, blood smear/CBC, dung/urine test, CMT for mastitis, calcium/metabolic check)
-            8. विश्वसनीय जानकारी के स्रोत (Trusted Sources — cite authority name like DAHD/ICAR/IVRI/NDDB/Veterinary University, reference link if grounded, and date ${todayIsoDateString()})
+            $section8Directive
 
             After Section 8, if important clinical details are still missing, add a brief "पशु की बेहतर जाँच हेतु अगले प्रश्न (Follow-up Questions)" list of 2-4 concise questions from the missing triage items above.
         """.trimIndent()
@@ -754,32 +778,41 @@ class GeminiAiRepository {
             }
         } else ""
 
-        val vetBlock = if (assessment != null) {
-            buildVetEightSectionRules(assessment, language, hasPhoto = false)
-        } else ""
+        fun buildChatPromptForCandidate(allowGoogleSearch: Boolean): String {
+            val vetBlock = if (assessment != null) {
+                buildVetEightSectionRules(
+                    assessment = assessment,
+                    language = language,
+                    hasPhoto = false,
+                    allowGoogleSearch = allowGoogleSearch
+                )
+            } else if (!allowGoogleSearch) {
+                "NOTE: Live web search is not attached to this reply. Do not claim you searched Google or invent URLs."
+            } else ""
 
-        val fullPrompt = """
-            Active Mode: $modeLabel
-            $langInstruction
-            $vetBlock
+            return """
+                Active Mode: $modeLabel
+                $langInstruction
+                $vetBlock
 
-            CORE GOSHALA EXPERTISE AREAS (answer practically & step-by-step):
-            1. गायों की वास्तविक संख्या के अनुसार दैनिक चारा प्रबंधन (हरा चारा, सूखा चारा/भूसा, दाना/खली, खनिज मिश्रण)
-            2. प्रतिदिन स्वच्छ पानी की व्यवस्था व मौसम (गर्मी/सर्दी/बरसात) के अनुसार देखभाल
-            3. गोशाला व शेड की नियमित सफाई, नाली प्रबंधन व मक्खी-मच्छर नियंत्रण
-            4. टीकाकरण समय-सारणी व स्वास्थ्य रिकॉर्ड प्रबंधन
-            5. बीमारी की रोकथाम, बीमार गाय व नवजात बछड़े की देखभाल
-            6. कर्मचारियों की जिम्मेदारी, शिफ्ट व कार्य वितरण
-            7. गोबर प्रबंधन, जैविक खाद / वर्मीकम्पोस्ट, कंडे, गौ-काष्ठ व धूपबत्ती निर्माण
-            8. गौशाला खर्च कम करने व उत्पाद बिक्री से आय वृद्धि तथा सरकारी योजना मार्गदर्शन
+                CORE GOSHALA EXPERTISE AREAS (answer practically & step-by-step):
+                1. गायों की वास्तविक संख्या के अनुसार दैनिक चारा प्रबंधन (हरा चारा, सूखा चारा/भूसा, दाना/खली, खनिज मिश्रण)
+                2. प्रतिदिन स्वच्छ पानी की व्यवस्था व मौसम (गर्मी/सर्दी/बरसात) के अनुसार देखभाल
+                3. गोशाला व शेड की नियमित सफाई, नाली प्रबंधन व मक्खी-मच्छर नियंत्रण
+                4. टीकाकरण समय-सारणी व स्वास्थ्य रिकॉर्ड प्रबंधन
+                5. बीमारी की रोकथाम, बीमार गाय व नवजात बछड़े की देखभाल
+                6. कर्मचारियों की जिम्मेदारी, शिफ्ट व कार्य वितरण
+                7. गोबर प्रबंधन, जैविक खाद / वर्मीकम्पोस्ट, कंडे, गौ-काष्ठ व धूपबत्ती निर्माण
+                8. गौशाला खर्च कम करने व उत्पाद बिक्री से आय वृद्धि तथा सरकारी योजना मार्गदर्शन
 
-            AUTHORIZED CONTEXT (VERIFIED FIREBASE APP DATA):
-            $roleContext
+                AUTHORIZED CONTEXT (VERIFIED FIREBASE APP DATA):
+                $roleContext
 
-            $historyBlock
-            USER QUESTION:
-            $userPrompt
-        """.trimIndent()
+                $historyBlock
+                USER QUESTION:
+                $userPrompt
+            """.trimIndent()
+        }
 
         // Test hook path for deterministic Robolectric tests
         val hook = testStreamHandler
@@ -796,7 +829,8 @@ class GeminiAiRepository {
                         sources = testSources,
                         riskLevel = finalRisk,
                         assessment = assessment,
-                        usedGoogleSearch = isHealth || testSources.isNotEmpty()
+                        usedGoogleSearch = testSources.isNotEmpty(),
+                        searchAttempted = isHealth || testSources.isNotEmpty()
                     )
                 )
             }
@@ -832,6 +866,7 @@ class GeminiAiRepository {
         var skipGroundedBecauseUnsupported = false
         for ((modelIndex, spec) in candidateSpecs.withIndex()) {
             if (skipGroundedBecauseUnsupported && spec.isGrounded) continue
+            val candidatePrompt = buildChatPromptForCandidate(allowGoogleSearch = spec.isGrounded)
             var appCheckRetried = false
             var attemptNumber = 0
             while (true) {
@@ -841,13 +876,13 @@ class GeminiAiRepository {
                 try {
                     val attemptRunner = testModelAttemptRunner
                     if (attemptRunner != null) {
-                        val (textResult, srcList) = attemptRunner(spec, attemptNumber, fullPrompt)
+                        val (textResult, srcList) = attemptRunner(spec, attemptNumber, candidatePrompt)
                         srcList.forEach { collectedSources.putIfAbsent(it.url, it) }
                         accumulated.append(textResult)
                     } else {
                         val model = resolveCandidateModel(spec)
                         withTimeout(60_000L) {
-                            model.generateContentStream(fullPrompt).collect { chunk ->
+                            model.generateContentStream(candidatePrompt).collect { chunk ->
                                 extractGroundingSources(chunk).forEach { src ->
                                     collectedSources.putIfAbsent(src.url, src)
                                 }
@@ -857,13 +892,15 @@ class GeminiAiRepository {
                                     val finalRisk = assessment?.let {
                                         VetTriageEngine.resolveFinalRiskLevel(accumulated.toString(), it.riskLevel)
                                     }
+                                    val verifiedSources = collectedSources.values.toList()
                                     emit(
                                         AiStreamUpdate(
                                             text = accumulated.toString(),
-                                            sources = collectedSources.values.toList(),
+                                            sources = verifiedSources,
                                             riskLevel = finalRisk,
                                             assessment = assessment,
-                                            usedGoogleSearch = spec.isGrounded,
+                                            usedGoogleSearch = spec.isGrounded && verifiedSources.isNotEmpty(),
+                                            searchAttempted = useGroundedFirst,
                                             modelUsed = spec.modelName,
                                             usedFallbackModel = spec.isFallback
                                         )
@@ -878,13 +915,15 @@ class GeminiAiRepository {
                     val finalRisk = assessment?.let {
                         VetTriageEngine.resolveFinalRiskLevel(accumulated.toString(), it.riskLevel)
                     }
+                    val finalVerifiedSources = collectedSources.values.toList()
                     emit(
                         AiStreamUpdate(
                             text = accumulated.toString(),
-                            sources = collectedSources.values.toList(),
+                            sources = finalVerifiedSources,
                             riskLevel = finalRisk,
                             assessment = assessment,
-                            usedGoogleSearch = spec.isGrounded,
+                            usedGoogleSearch = spec.isGrounded && finalVerifiedSources.isNotEmpty(),
+                            searchAttempted = useGroundedFirst,
                             modelUsed = spec.modelName,
                             usedFallbackModel = spec.isFallback
                         )
@@ -1052,7 +1091,7 @@ class GeminiAiRepository {
                     lastError = e
                     if (attempt == 0 && isAppCheckTokenError(e)) {
                         Log.w(AI_REPO_TAG, "App Check token error during work plan; forcing refresh and retrying once.", e)
-                        refreshAppCheckToken(forceRefresh = true)
+                        performAppCheckRefresh(forceRefresh = true)
                         attempt++
                         continue
                     }
@@ -1123,46 +1162,52 @@ class GeminiAiRepository {
             """.trimIndent()
         } else ""
 
-        val eightSectionsBlock = buildVetEightSectionRules(
-            assessment = assessment,
-            language = language,
-            hasPhoto = bitmap != null
-        )
+        fun buildReportPrompt(allowGoogleSearch: Boolean): String {
+            val eightSectionsBlock = buildVetEightSectionRules(
+                assessment = assessment,
+                language = language,
+                hasPhoto = bitmap != null,
+                allowGoogleSearch = allowGoogleSearch
+            )
+            return """
+                You are the Advanced AI Veterinary Assistant for ${GosalaBrand.NAME_EN} (${GosalaBrand.NAME_HI}, मेहदोरा, पोरसा, मुरैना, मध्य प्रदेश).
+                $langPrompt
 
-        val promptText = """
-            You are the Advanced AI Veterinary Assistant for ${GosalaBrand.NAME_EN} (${GosalaBrand.NAME_HI}, मेहदोरा, पोरसा, मुरैना, मध्य प्रदेश).
-            $langPrompt
+                $cowRecordBlock
 
-            $cowRecordBlock
+                CAREGIVER SYMPTOMS / NOTES:
+                ${cleanNotes.ifBlank { "केवल फोटो / जाँच बिंदु प्रदान किए गए हैं" }}
 
-            CAREGIVER SYMPTOMS / NOTES:
-            ${cleanNotes.ifBlank { "केवल फोटो / जाँच बिंदु प्रदान किए गए हैं" }}
+                ${if (triageSummary.isNotBlank()) "CLINICAL TRIAGE ANSWERS:\n$triageSummary" else ""}
 
-            ${if (triageSummary.isNotBlank()) "CLINICAL TRIAGE ANSWERS:\n$triageSummary" else ""}
+                $photoChecklistBlock
 
-            $photoChecklistBlock
+                $eightSectionsBlock
+            """.trimIndent()
+        }
 
-            $eightSectionsBlock
-        """.trimIndent()
+        val groundedPromptText = buildReportPrompt(allowGoogleSearch = true)
 
         // Test hooks for deterministic Robolectric unit testing
         if (bitmap != null) {
             testPhotoAnalyzer?.let { hook ->
                 return try {
-                    val text = hook(bitmap, promptText)
+                    val text = hook(bitmap, groundedPromptText)
                     if (text.isBlank()) Result.failure(IllegalStateException("AI returned an empty image analysis."))
                     else {
                         val finalRisk = VetTriageEngine.resolveFinalRiskLevel(text, assessment.riskLevel)
+                        val testSources = testGroundedSourcesProvider?.invoke().orEmpty()
                         Result.success(
                             AiVetReportResult(
                                 text = text,
-                                sources = testGroundedSourcesProvider?.invoke().orEmpty(),
+                                sources = testSources,
                                 riskLevel = finalRisk,
                                 assessment = assessment.copy(
                                     riskLevel = finalRisk,
                                     requiresImmediateVetCall = finalRisk == VetRiskLevel.EMERGENCY
                                 ),
-                                usedGoogleSearch = true
+                                usedGoogleSearch = testSources.isNotEmpty(),
+                                searchAttempted = true
                             )
                         )
                     }
@@ -1175,20 +1220,22 @@ class GeminiAiRepository {
         } else {
             testSymptomHealthAnalyzer?.let { hook ->
                 return try {
-                    val text = hook(promptText)
+                    val text = hook(groundedPromptText)
                     if (text.isBlank()) Result.failure(IllegalStateException("AI स्वास्थ्य रिपोर्ट से कोई उत्तर प्राप्त नहीं हुआ।"))
                     else {
                         val finalRisk = VetTriageEngine.resolveFinalRiskLevel(text, assessment.riskLevel)
+                        val testSources = testGroundedSourcesProvider?.invoke().orEmpty()
                         Result.success(
                             AiVetReportResult(
                                 text = text,
-                                sources = testGroundedSourcesProvider?.invoke().orEmpty(),
+                                sources = testSources,
                                 riskLevel = finalRisk,
                                 assessment = assessment.copy(
                                     riskLevel = finalRisk,
                                     requiresImmediateVetCall = finalRisk == VetRiskLevel.EMERGENCY
                                 ),
-                                usedGoogleSearch = true
+                                usedGoogleSearch = testSources.isNotEmpty(),
+                                searchAttempted = true
                             )
                         )
                     }
@@ -1211,6 +1258,7 @@ class GeminiAiRepository {
         var skipGroundedBecauseUnsupported = false
         for ((idx, spec) in candidateSpecs.withIndex()) {
             if (skipGroundedBecauseUnsupported && spec.isGrounded) continue
+            val candidatePromptText = buildReportPrompt(allowGoogleSearch = spec.isGrounded)
             var appCheckRetried = false
             var attemptNumber = 0
             while (true) {
@@ -1220,7 +1268,7 @@ class GeminiAiRepository {
                     val text: String
                     val sources: List<VetSourceReference>
                     if (attemptRunner != null) {
-                        val (resText, resSources) = attemptRunner(spec, attemptNumber, promptText)
+                        val (resText, resSources) = attemptRunner(spec, attemptNumber, candidatePromptText)
                         text = resText
                         sources = resSources
                     } else {
@@ -1230,11 +1278,11 @@ class GeminiAiRepository {
                                 model.generateContent(
                                     content {
                                         image(bitmap)
-                                        text(promptText)
+                                        text(candidatePromptText)
                                     }
                                 )
                             } else {
-                                model.generateContent(promptText)
+                                model.generateContent(candidatePromptText)
                             }
                         }
                         text = response.text.orEmpty()
@@ -1253,7 +1301,8 @@ class GeminiAiRepository {
                                 riskLevel = finalRisk,
                                 requiresImmediateVetCall = finalRisk == VetRiskLevel.EMERGENCY
                             ),
-                            usedGoogleSearch = spec.isGrounded,
+                            usedGoogleSearch = spec.isGrounded && sources.isNotEmpty(),
+                            searchAttempted = true,
                             modelUsed = spec.modelName,
                             usedFallbackModel = spec.isFallback
                         )
@@ -1355,7 +1404,7 @@ class GeminiAiRepository {
                     lastError = e
                     if (attempt == 0 && isAppCheckTokenError(e)) {
                         Log.w(AI_REPO_TAG, "App Check token error during voice draft; forcing refresh and retrying once.", e)
-                        refreshAppCheckToken(forceRefresh = true)
+                        performAppCheckRefresh(forceRefresh = true)
                         attempt++
                         continue
                     }

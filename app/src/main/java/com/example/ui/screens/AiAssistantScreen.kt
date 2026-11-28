@@ -637,6 +637,7 @@ fun AiAssistantScreen(
                         }
                         AiMode.MANAGEMENT -> if (isPublic) {
                             listOf(
+                                str(language, "नमस्ते, क्या आप जय भोले गौशाला सहायक हैं?", "Hello, are you Jay Bhole Goshala Assistant?"),
                                 str(language, "गौशाला में गोद लेने के लिए कौन-सी गाय उपलब्ध हैं?", "Which cows are available for adoption?"),
                                 str(language, "गोबर से खाद, कंडे और धूपबत्ती कैसे बनाएँ?", "How to make compost, kande & dhoop from dung?"),
                                 str(language, "गौशाला में साफ-सफाई और गायों की देखभाल कैसे रखें?", "How to maintain cleanliness & cow care?"),
@@ -644,6 +645,7 @@ fun AiAssistantScreen(
                             )
                         } else {
                             listOf(
+                                str(language, "नमस्ते, क्या आप जय भोले गौशाला सहायक हैं?", "Hello, are you Jay Bhole Goshala Assistant?"),
                                 str(language, "50 गायों के लिए रोज़ कितना भूसा, हरा चारा और पानी चाहिए?", "Daily bhusa, green fodder & water for 50 cows?"),
                                 str(language, "गोशाला की सफाई, टीकाकरण रिकॉर्ड और बीमारी रोकथाम कैसे करें?", "Shed cleaning, vaccination record & disease prevention?"),
                                 str(language, "कर्मचारियों की जिम्मेदारी और गोबर से जैविक खाद बनाने का तरीका बताएं", "Staff responsibilities & organic compost making guide"),
@@ -738,7 +740,8 @@ fun AiAssistantScreen(
                                     sources = state.sources,
                                     riskLevel = state.riskLevel,
                                     requiresImmediateVetCall = state.riskLevel == com.example.core.VetRiskLevel.EMERGENCY,
-                                    usedGoogleSearch = state.usedGoogleSearch
+                                    usedGoogleSearch = state.usedGoogleSearch,
+                                    searchAttempted = state.searchAttempted
                                 ),
                                 language = language,
                                 vetPhoneNumber = vetPhoneNumber,

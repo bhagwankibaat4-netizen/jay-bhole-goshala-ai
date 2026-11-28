@@ -1274,6 +1274,122 @@ class AiGoshalaAssistantRobolectricTest {
             sequence
         )
     }
+
+    @Test
+    fun `Step 7 distinct HTTP error codes (401, 403, 404, 429, 500, Network) and Step 5 honest ungrounded UI never claim false Google Search`() = runBlocking {
+        val vm = AiViewModel()
+
+        // 1. All 6 distinct HTTP / Network error classifications in Hindi
+        val msg401 = vm.formatAiErrorMessage(
+            IllegalStateException("HTTP 401 UNAUTHENTICATED: Firebase App Check token is invalid."),
+            AppLanguage.HINDI
+        )
+        assertTrue(msg401.contains("HTTP 401"))
+        assertTrue(msg401.contains("App Check"))
+
+        val msg403AppCheck = vm.formatAiErrorMessage(
+            IllegalStateException("HTTP 403 PERMISSION_DENIED: App Check attestation failed"),
+            AppLanguage.HINDI
+        )
+        assertTrue(msg403AppCheck.contains("HTTP 403"))
+        assertTrue(msg403AppCheck.contains("App Check"))
+
+        val msg403Disabled = vm.formatAiErrorMessage(
+            IllegalStateException("HTTP 403 PERMISSION_DENIED: SERVICE_DISABLED API has not been used"),
+            AppLanguage.HINDI
+        )
+        assertTrue(msg403Disabled.contains("HTTP 403"))
+        assertTrue(msg403Disabled.contains("API Permission"))
+
+        val msg404 = vm.formatAiErrorMessage(
+            IllegalStateException("HTTP 404 NOT_FOUND: models/gemini-unknown is not found"),
+            AppLanguage.HINDI
+        )
+        assertTrue(msg404.contains("HTTP 404"))
+        assertTrue(msg404.contains("Model") || msg404.contains("Endpoint"))
+
+        val msg429 = vm.formatAiErrorMessage(
+            IllegalStateException("HTTP 429 RESOURCE_EXHAUSTED: Quota exceeded"),
+            AppLanguage.HINDI
+        )
+        assertTrue(msg429.contains("HTTP 429"))
+        assertTrue(msg429.contains("Quota"))
+
+        val msg500 = vm.formatAiErrorMessage(
+            IllegalStateException("HTTP 500 INTERNAL: Backend server error"),
+            AppLanguage.HINDI
+        )
+        assertTrue(msg500.contains("HTTP 500/503"))
+        assertTrue(msg500.contains("Backend Server"))
+
+        val msgNet = vm.formatAiErrorMessage(
+            java.net.UnknownHostException("Unable to resolve host"),
+            AppLanguage.HINDI
+        )
+        assertTrue(msgNet.contains("Network Error"))
+        assertTrue(msgNet.contains("इंटरनेट"))
+
+        // 2. Step 5 Honesty: Non-grounded fallback prompt omits Google Search claim & forbids fake URLs,
+        //    and 0 returned sources sets usedGoogleSearch=false (never falsely claims Google Search succeeded!)
+        var capturedFallbackPrompt = ""
+        GeminiAiRepository.testModelAttemptRunner = { spec, _, prompt ->
+            if (spec.isGrounded) {
+                throw IllegalStateException("HTTP 400 INVALID_ARGUMENT: google_search not supported")
+            }
+            capturedFallbackPrompt = prompt
+            "1. संभावित समस्या: हल्का बुखार\n3. खतरे का स्तर: सावधानी\n8. जानकारी का आधार: लाइव वेब खोज उपलब्ध नहीं थी।" to emptyList()
+        }
+
+        val repo = GeminiAiRepository()
+        val ungroundedRes = repo.generateVetHealthReport(
+            bitmap = null,
+            notes = "गाय को बुखार है",
+            language = AppLanguage.HINDI,
+            selectedCow = sampleCow
+        )
+        assertTrue(ungroundedRes.isSuccess)
+        val report = ungroundedRes.getOrThrow()
+        assertFalse(report.usedGoogleSearch)
+        assertTrue(report.searchAttempted)
+        assertTrue(report.sources.isEmpty())
+        assertFalse(capturedFallbackPrompt.contains("GOOGLE SEARCH GROUNDING REQUIREMENT"))
+        assertTrue(capturedFallbackPrompt.contains("NO LIVE WEB SEARCH AVAILABLE"))
+
+        // 3. UI renders honest unavailable card (NOT "Google Search Grounded") when 0 sources returned
+        composeRule.setContent {
+            GosalaTheme {
+                AiAssistantScreen(
+                    language = AppLanguage.HINDI,
+                    session = adminSession,
+                    summary = PublicSummary(totalCattle = 1, healthyCattle = 1),
+                    cattle = listOf(sampleCow),
+                    health = sampleHealthRecords,
+                    feedLogs = emptyList(),
+                    finance = emptyList(),
+                    farmers = emptyList(),
+                    farmerTx = emptyList(),
+                    compost = emptyList(),
+                    donations = emptyList(),
+                    products = emptyList(),
+                    aiViewModel = vm,
+                    initialMode = AiMode.ANIMAL_CARE,
+                    onSaveCattleDraft = {},
+                    onSaveFeedDraft = {},
+                    onSaveExpenseDraft = {},
+                    onSaveHealthDraft = {},
+                    onNavigateToCattleSearch = {}
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("ai_content_list").performScrollToNode(hasTestTag("ai_photo_health_card"))
+        composeRule.onNodeWithTag("ai_photo_notes_input").performScrollTo().performTextInput("गाय को बुखार है")
+        composeRule.onNodeWithTag("analyze_cattle_photo_btn").performScrollTo().performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("ai_vet_sources_unavailable_card").assertExists()
+        composeRule.onNodeWithTag("ai_vet_sources_card").assertDoesNotExist()
+    }
 }
 
 

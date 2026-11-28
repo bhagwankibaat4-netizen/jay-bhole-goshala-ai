@@ -527,6 +527,53 @@ test('Web AI Security: Blocks direct client Gemini API keys, enforces X-Firebase
   assert.equal(aiRes.sources[0].domain, 'dahd.nic.in');
   assert.equal(aiRes.sources[0].retrievedDate, '2026-11-28');
   assert.deepEqual(aiHeadersSeen, [validJwt, refreshedJwt]);
+
+  // 5. Distinct HTTP error classification (403, 404, 429, 500, Network) and honest usedGoogleSearch=false when sources empty
+  const cases = [
+    { status: 403, expectedError: 'permission_or_app_check_denied', expectedSnippet: 'HTTP 403' },
+    { status: 404, expectedError: 'endpoint_or_model_not_found', expectedSnippet: 'HTTP 404' },
+    { status: 429, expectedError: 'quota_rate_limit', expectedSnippet: 'HTTP 429' },
+    { status: 500, expectedError: 'backend_server_error', expectedSnippet: 'HTTP 500' }
+  ];
+  for (const c of cases) {
+    const r = await app.requestServerSideVetAdvice(
+      '/api/vet-assistant',
+      { prompt: 'test' },
+      async () => ({ ok: false, status: c.status }),
+      { appCheckToken: validJwt }
+    );
+    assert.equal(r.ok, false);
+    assert.equal(r.status, c.status);
+    assert.equal(r.error, c.expectedError);
+    assert.ok(r.messageHi.includes(c.expectedSnippet));
+  }
+
+  const netRes = await app.requestServerSideVetAdvice(
+    '/api/vet-assistant',
+    { prompt: 'test' },
+    async () => { throw new Error('ECONNREFUSED'); },
+    { appCheckToken: validJwt }
+  );
+  assert.equal(netRes.ok, false);
+  assert.equal(netRes.error, 'network_error');
+  assert.ok(netRes.messageHi.includes('Network Error'));
+
+  const ungroundedWebRes = await app.requestServerSideVetAdvice(
+    '/api/vet-assistant',
+    { prompt: 'test' },
+    async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        text: 'सामान्य मार्गदर्शन',
+        usedGoogleSearch: true,
+        sources: []
+      })
+    }),
+    { appCheckToken: validJwt }
+  );
+  assert.equal(ungroundedWebRes.ok, true);
+  assert.equal(ungroundedWebRes.usedGoogleSearch, false, 'Must NEVER falsely claim Google Search succeeded when 0 sources exist');
 });
 
 

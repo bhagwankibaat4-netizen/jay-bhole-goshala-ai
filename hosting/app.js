@@ -171,11 +171,49 @@
     return out;
   }
 
+  function classifyWebAiHttpError(status) {
+    if (status === 401) {
+      return {
+        error: 'app_check_unauthorized',
+        messageHi: 'HTTP 401 (Authentication / App Check त्रुटि): सुरक्षा टोकन मान्य नहीं हुआ। पेज रीलोड कर पुनः प्रयास करें।'
+      };
+    }
+    if (status === 403) {
+      return {
+        error: 'permission_or_app_check_denied',
+        messageHi: 'HTTP 403 (Permission / App Check त्रुटि): सर्वर अनुमति या App Check सत्यापन अस्वीकृत हुआ।'
+      };
+    }
+    if (status === 404) {
+      return {
+        error: 'endpoint_or_model_not_found',
+        messageHi: 'HTTP 404 (गलत Endpoint या Model त्रुटि): चयनित AI सेवा या मॉडल उपलब्ध नहीं है।'
+      };
+    }
+    if (status === 429) {
+      return {
+        error: 'quota_rate_limit',
+        messageHi: 'HTTP 429 (API Quota / Rate Limit): बहुत अधिक अनुरोध आए हैं। कृपया कुछ सेकंड रुककर पुनः प्रयास करें।'
+      };
+    }
+    if (status >= 500) {
+      return {
+        error: 'backend_server_error',
+        messageHi: 'HTTP ' + status + ' (Backend Server त्रुटि): AI सर्वर अस्थायी रूप से अनुपलब्ध है। कृपया पुनः प्रयास करें।'
+      };
+    }
+    return {
+      error: 'server_ai_error',
+      messageHi: 'HTTP ' + status + ': AI सेवा से उत्तर प्राप्त नहीं हो सका। कृपया पुनः प्रयास करें।'
+    };
+  }
+
   /**
    * Server-side-only Web AI Veterinary request helper:
    * - Blocks direct client calls to generativelanguage.googleapis.com or client-side API keys.
    * - Sends X-Firebase-AppCheck attestation token to a secure server-side endpoint.
    * - Automatically refreshes App Check token once on HTTP 401 before surfacing diagnostic error.
+   * - Never claims usedGoogleSearch=true when verified sources list is empty.
    */
   async function requestServerSideVetAdvice(endpointUrl, payload, fetchImpl, options) {
     var fetcher = fetchImpl || (typeof fetch === 'function' ? fetch : null);
@@ -203,42 +241,58 @@
           ok: false,
           status: 401,
           error: 'missing_app_check_token',
-          message: 'Firebase App Check token is required for AI Veterinary requests.'
+          message: 'Firebase App Check token is required for AI Veterinary requests.',
+          messageHi: 'HTTP 401 (App Check टोकन अनुपलब्ध): AI सेवा के लिए वैध Firebase App Check टोकन आवश्यक है।'
         };
       }
       var headers = buildFirestoreRequestHeaders({ 'Content-Type': 'application/json' }, token);
-      var res = await fetcher(url, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify(payload || {}),
-        cache: 'no-store'
-      });
+      var res;
+      try {
+        res = await fetcher(url, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(payload || {}),
+          cache: 'no-store'
+        });
+      } catch (networkErr) {
+        return {
+          ok: false,
+          status: 0,
+          error: 'network_error',
+          message: networkErr && networkErr.message ? String(networkErr.message) : 'Network connection failed',
+          messageHi: 'Network Error: इंटरनेट कनेक्शन नहीं मिल रहा है। कृपया नेटवर्क जाँचकर पुनः प्रयास करें।'
+        };
+      }
 
       if (res.status === 401 && attempt === 0) {
         continue;
       }
 
       if (!res.ok) {
+        var classified = classifyWebAiHttpError(res.status);
         return {
           ok: false,
           status: res.status,
-          error: res.status === 401 ? 'app_check_unauthorized' : 'server_ai_error'
+          error: classified.error,
+          messageHi: classified.messageHi
         };
       }
 
       var data = await res.json();
+      var parsedSources = parseGroundedVetSources(data.sources, data.retrievedDate);
       return {
         ok: true,
         status: res.status,
         text: String(data.text || '').trim(),
         modelUsed: String(data.modelUsed || 'gemini-3.8-flash'),
         usedFallbackModel: Boolean(data.usedFallbackModel),
-        usedGoogleSearch: Boolean(data.usedGoogleSearch),
-        sources: parseGroundedVetSources(data.sources, data.retrievedDate)
+        usedGoogleSearch: Boolean(data.usedGoogleSearch) && parsedSources.length > 0,
+        sources: parsedSources
       };
     }
 
-    return { ok: false, status: 401, error: 'app_check_unauthorized' };
+    var finalAuth = classifyWebAiHttpError(401);
+    return { ok: false, status: 401, error: finalAuth.error, messageHi: finalAuth.messageHi };
   }
 
   var I18N = {

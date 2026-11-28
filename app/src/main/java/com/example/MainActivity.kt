@@ -506,6 +506,7 @@ private fun GosalaAuthenticatedShell(
     val notificationsState by gosalaViewModel.notificationsState.collectAsStateWithLifecycle()
     val auditLogsState by gosalaViewModel.auditLogsState.collectAsStateWithLifecycle()
     val aiVetReportsState by gosalaViewModel.aiVetReportsState.collectAsStateWithLifecycle()
+    val adminAiDiagnosticState by aiViewModel.adminDiagnosticState.collectAsStateWithLifecycle()
 
     val cattleList = (cattleState as? DataUiState.Success)?.data.orEmpty()
     val healthList = (healthState as? DataUiState.Success)?.data.orEmpty()
@@ -825,6 +826,16 @@ private fun GosalaAuthenticatedShell(
                                 onQuickAddExpense = {
                                     openAddFinanceOnStart = true
                                     navigateTopTab(Routes.FINANCE)
+                                },
+                                adminDiagnosticState = adminAiDiagnosticState,
+                                onRunAdminAiTest = {
+                                    aiViewModel.runAdminAiConnectionTest(
+                                        session = session,
+                                        language = language
+                                    )
+                                },
+                                onClearAdminAiTest = {
+                                    aiViewModel.clearAdminDiagnosticResult()
                                 }
                             )
                         }

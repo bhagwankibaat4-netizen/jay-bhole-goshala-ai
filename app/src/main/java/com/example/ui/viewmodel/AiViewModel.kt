@@ -14,6 +14,8 @@ import com.example.core.describeAppCheckDiagnostic
 import com.example.core.describeAppCheckProviderForLog
 import com.example.core.isAppCheckTokenError
 import com.example.data.model.*
+import com.example.data.repository.AdminAiDiagnosticRepository
+import com.example.data.repository.AdminAiDiagnosticResult
 import com.example.data.repository.AiWorkPlan
 import com.example.data.repository.GeminiAiRepository
 import com.example.data.repository.VoiceEntryDraft
@@ -33,6 +35,7 @@ sealed interface AiUiState {
         val riskLevel: VetRiskLevel? = null,
         val assessment: VetTriageAssessment? = null,
         val usedGoogleSearch: Boolean = false,
+        val searchAttempted: Boolean = false,
         val modelUsed: String = "",
         val usedFallbackModel: Boolean = false
     ) : AiUiState
@@ -43,6 +46,7 @@ sealed interface AiUiState {
         val riskLevel: VetRiskLevel? = null,
         val assessment: VetTriageAssessment? = null,
         val usedGoogleSearch: Boolean = false,
+        val searchAttempted: Boolean = false,
         val usedCowRecordPhoto: Boolean = false,
         val modelUsed: String = "",
         val usedFallbackModel: Boolean = false
@@ -73,12 +77,20 @@ data class AiChatMessage(
     val riskLevel: VetRiskLevel? = null,
     val requiresImmediateVetCall: Boolean = false,
     val usedGoogleSearch: Boolean = false,
+    val searchAttempted: Boolean = false,
     val modelUsed: String = "",
     val usedFallbackModel: Boolean = false
 )
 
+sealed interface AdminAiDiagnosticUiState {
+    data object Idle : AdminAiDiagnosticUiState
+    data object Loading : AdminAiDiagnosticUiState
+    data class Result(val report: AdminAiDiagnosticResult) : AdminAiDiagnosticUiState
+}
+
 class AiViewModel(
-    private val aiRepository: GeminiAiRepository = GeminiAiRepository()
+    private val aiRepository: GeminiAiRepository = GeminiAiRepository(),
+    private val adminDiagnosticRepository: AdminAiDiagnosticRepository = AdminAiDiagnosticRepository()
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<AiUiState>(AiUiState.Idle)
@@ -95,6 +107,9 @@ class AiViewModel(
 
     private val _workPlanState = MutableStateFlow<AiWorkPlanUiState>(AiWorkPlanUiState.Idle)
     val workPlanState: StateFlow<AiWorkPlanUiState> = _workPlanState.asStateFlow()
+
+    private val _adminDiagnosticState = MutableStateFlow<AdminAiDiagnosticUiState>(AdminAiDiagnosticUiState.Idle)
+    val adminDiagnosticState: StateFlow<AdminAiDiagnosticUiState> = _adminDiagnosticState.asStateFlow()
 
     private var lastSubmittedPrompt: String = ""
     private var lastSubmittedAtMs: Long = 0L
@@ -167,6 +182,7 @@ class AiViewModel(
             var finalRisk: VetRiskLevel? = null
             var finalAssessment: VetTriageAssessment? = null
             var usedSearch = false
+            var searchAttempted = false
             var modelUsed = ""
             var usedFallback = false
             try {
@@ -183,6 +199,7 @@ class AiViewModel(
                     finalRisk = update.riskLevel
                     finalAssessment = update.assessment
                     usedSearch = update.usedGoogleSearch
+                    searchAttempted = update.searchAttempted
                     modelUsed = update.modelUsed
                     usedFallback = update.usedFallbackModel
                     _uiState.value = AiUiState.Streaming(
@@ -191,6 +208,7 @@ class AiViewModel(
                         riskLevel = update.riskLevel,
                         assessment = update.assessment,
                         usedGoogleSearch = update.usedGoogleSearch,
+                        searchAttempted = update.searchAttempted,
                         modelUsed = update.modelUsed,
                         usedFallbackModel = update.usedFallbackModel
                     )
@@ -201,6 +219,7 @@ class AiViewModel(
                     riskLevel = finalRisk,
                     assessment = finalAssessment,
                     usedGoogleSearch = usedSearch,
+                    searchAttempted = searchAttempted,
                     modelUsed = modelUsed,
                     usedFallbackModel = usedFallback
                 )
@@ -213,6 +232,7 @@ class AiViewModel(
                     riskLevel = finalRisk,
                     requiresImmediateVetCall = finalRisk == VetRiskLevel.EMERGENCY,
                     usedGoogleSearch = usedSearch,
+                    searchAttempted = searchAttempted,
                     modelUsed = modelUsed,
                     usedFallbackModel = usedFallback
                 )
@@ -349,6 +369,7 @@ class AiViewModel(
                         riskLevel = report.riskLevel,
                         assessment = report.assessment,
                         usedGoogleSearch = report.usedGoogleSearch,
+                        searchAttempted = report.searchAttempted,
                         usedCowRecordPhoto = loadedFromCowRecord,
                         modelUsed = report.modelUsed,
                         usedFallbackModel = report.usedFallbackModel
@@ -427,6 +448,29 @@ class AiViewModel(
         lastSubmittedAtMs = 0L
     }
 
+    /**
+     * Runs the real server-side `testGeminiConnection` Cloud Function diagnostic (strictly Admin-only).
+     * Never fabricates success results and never logs tokens or secrets.
+     */
+    fun runAdminAiConnectionTest(
+        session: UserSession,
+        language: AppLanguage
+    ) {
+        if (_adminDiagnosticState.value is AdminAiDiagnosticUiState.Loading) return
+        _adminDiagnosticState.value = AdminAiDiagnosticUiState.Loading
+        viewModelScope.launch {
+            val result = adminDiagnosticRepository.testGeminiConnection(
+                session = session,
+                language = language
+            )
+            _adminDiagnosticState.value = AdminAiDiagnosticUiState.Result(result)
+        }
+    }
+
+    fun clearAdminDiagnosticResult() {
+        _adminDiagnosticState.value = AdminAiDiagnosticUiState.Idle
+    }
+
     internal fun buildDiagnosticLog(e: Throwable): String {
         val parts = mutableListOf<String>()
         var cur: Throwable? = e
@@ -455,100 +499,170 @@ class AiViewModel(
             }
         }.lowercase()
 
-        if (isAppCheckTokenError(e)) {
-            val diag = describeAppCheckDiagnostic(language)
-            val base = if (language == AppLanguage.HINDI) {
-                "ऐप सुरक्षा सत्यापन (App Check) में अस्थायी समस्या आई है। कृपया इंटरनेट व समय जांचकर 'पुनः प्रयास करें' दबाएँ या ऐप दोबारा खोलें।"
-            } else {
-                "Temporary App Check verification issue. Please check network/device time and tap Retry, or reopen the app."
-            }
-            return if (diag.isNullOrBlank()) base else "$base\n$diag"
-        }
+        // 1. Network / Connectivity Error
         if (
             rawLower.contains("unable to resolve host") ||
             rawLower.contains("no address associated") ||
             rawLower.contains("unknownhost") ||
+            rawLower.contains("connectexception") ||
             rawLower.contains("network") ||
             rawLower.contains("offline") ||
             rawLower.contains("failed to connect") ||
             rawLower.contains("socket")
         ) {
             return if (language == AppLanguage.HINDI) {
-                "इंटरनेट कनेक्शन नहीं मिल रहा है। कृपया नेटवर्क जांचकर पुनः प्रयास करें।"
+                "Network Error: इंटरनेट कनेक्शन नहीं मिल रहा है। कृपया मोबाइल डेटा / Wi-Fi जाँचें और 'पुनः प्रयास करें' दबाएँ।"
             } else {
-                "No internet connection detected. Please check your network and retry."
+                "Network Error: No internet connection detected. Please check mobile data/Wi-Fi and retry."
             }
         }
+
+        // 2. HTTP 429 — Quota / Rate Limit Error
         if (
             rawLower.contains("429") ||
+            rawLower.contains("quotaexceeded") ||
             rawLower.contains("quota") ||
             rawLower.contains("rate limit") ||
             rawLower.contains("too many requests") ||
+            rawLower.contains("resource_exhausted") ||
             rawLower.contains("resource exhausted")
         ) {
             return if (language == AppLanguage.HINDI) {
-                "अभी AI सेवा पर बहुत अधिक अनुरोध हैं (Rate Limit)। कृपया कुछ सेकंड रुककर पुनः प्रयास करें।"
+                "HTTP 429 (API Quota / Rate Limit): अभी AI सेवा पर बहुत अधिक अनुरोध हैं या दैनिक सीमा पूरी हो गई है। कृपया 30–60 सेकंड रुककर पुनः प्रयास करें।"
             } else {
-                "AI service rate limit reached. Please wait a few seconds and retry."
+                "HTTP 429 (API Quota / Rate Limit): Too many requests or quota exceeded. Please wait 30-60 seconds and retry."
             }
         }
-        if (rawLower.contains("timeout") || rawLower.contains("timed out") || rawLower.contains("समय समाप्त")) {
-            return if (language == AppLanguage.HINDI) {
-                "AI उत्तर आने में समय अधिक लग गया। कृपया इंटरनेट जांचकर पुनः प्रयास करें।"
-            } else {
-                "AI response took too long. Please check your connection and retry."
-            }
-        }
+
+        // 3. HTTP 404 — Wrong Endpoint or Model Not Found
         if (
-            rawLower.contains("api key") ||
-            rawLower.contains("permission") ||
-            rawLower.contains("service_disabled") ||
-            rawLower.contains("not enabled") ||
-            rawLower.contains("unauthorized") ||
-            rawLower.contains("401")
+            rawLower.contains("404") ||
+            rawLower.contains("not_found") ||
+            rawLower.contains("not found") ||
+            rawLower.contains("model is not supported") ||
+            rawLower.contains("unsupported model")
         ) {
             return if (language == AppLanguage.HINDI) {
-                "Firebase AI Logic सेवा की अनुमति (API Permission) में समस्या है। नीचे दिया गया वास्तविक Error Log देखें और पुनः प्रयास करें।"
+                "HTTP 404 (गलत Endpoint या Model त्रुटि): चयनित Gemini मॉडल अभी उपलब्ध नहीं है। कृपया नीचे दिया गया वास्तविक Error Log देखें और पुनः प्रयास करें।"
             } else {
-                "Firebase AI Logic API permission error. Check the real diagnostic log below and retry."
+                "HTTP 404 (Endpoint / Model Error): Requested Gemini model or endpoint was not found. Review the diagnostic log below and retry."
             }
         }
-        if (rawLower.contains("404") || rawLower.contains("not found") || rawLower.contains("model")) {
-            return if (language == AppLanguage.HINDI) {
-                "चयनित Gemini मॉडल अभी उपलब्ध नहीं है। नीचे वास्तविक Error Log देखें और पुनः प्रयास करें।"
+
+        // 4. HTTP 401 — Authentication / Invalid App Check Token / API Key Error
+        if (
+            rawLower.contains("401") ||
+            rawLower.contains("unauthenticated") ||
+            rawLower.contains("unauthorized") ||
+            rawLower.contains("invalidapikey") ||
+            rawLower.contains("api_key_invalid") ||
+            rawLower.contains("firebase app check token is invalid")
+        ) {
+            val diag = describeAppCheckDiagnostic(language)
+            val base = if (language == AppLanguage.HINDI) {
+                "HTTP 401 (Authentication / App Check Token त्रुटि): ऐप सुरक्षा सत्यापन टोकन मान्य नहीं हुआ। कृपया मोबाइल की स्वचालित तारीख-समय (Auto Date & Time) व इंटरनेट जाँचें, ऐप बंद करके दोबारा खोलें और 'पुनः प्रयास करें' दबाएँ।"
             } else {
-                "Requested Gemini model is currently unavailable. Review diagnostic log below and retry."
+                "HTTP 401 (Authentication / App Check Token Error): App verification token was rejected. Check Auto Date & Time and network, reopen the app, and retry."
+            }
+            return if (diag.isNullOrBlank()) base else "$base\n$diag"
+        }
+
+        // 5. HTTP 403 — Permission Denied / API Disabled / App Check Attestation Error
+        if (
+            rawLower.contains("403") ||
+            rawLower.contains("servicedisabled") ||
+            rawLower.contains("service_disabled") ||
+            rawLower.contains("not enabled") ||
+            rawLower.contains("permission_denied") ||
+            rawLower.contains("permission denied") ||
+            rawLower.contains("forbidden") ||
+            rawLower.contains("billing") ||
+            rawLower.contains("api key") ||
+            isAppCheckTokenError(e)
+        ) {
+            val isServiceOrBilling = rawLower.contains("servicedisabled") ||
+                rawLower.contains("service_disabled") ||
+                rawLower.contains("not enabled") ||
+                rawLower.contains("api has not been used") ||
+                rawLower.contains("billing")
+            if (isServiceOrBilling) {
+                return if (language == AppLanguage.HINDI) {
+                    "HTTP 403 (API Permission त्रुटि): Firebase AI Logic सेवा या प्रोजेक्ट अनुमति सक्षम नहीं है। नीचे वास्तविक Error Log देखें और एडमिन से सत्यापित कराएँ।"
+                } else {
+                    "HTTP 403 (API Permission Error): Firebase AI Logic service or project permission is disabled. Review the real diagnostic log below."
+                }
+            }
+            val diag = describeAppCheckDiagnostic(language)
+            val base = if (language == AppLanguage.HINDI) {
+                "HTTP 403 (Permission / App Check सुरक्षा सत्यापन त्रुटि): Firebase App Check सत्यापन अस्वीकृत हुआ। कृपया Google Play Services, इंटरनेट व ऐप का नवीनतम वर्ज़न जाँचकर 'पुनः प्रयास करें' दबाएँ।"
+            } else {
+                "HTTP 403 (Permission / App Check Error): Firebase App Check attestation was rejected. Check Google Play Services, internet, and retry."
+            }
+            return if (diag.isNullOrBlank()) base else "$base\n$diag"
+        }
+
+        // 6. Request Timeout
+        if (
+            rawLower.contains("timeout") ||
+            rawLower.contains("timed out") ||
+            rawLower.contains("requesttimeout") ||
+            rawLower.contains("समय समाप्त")
+        ) {
+            return if (language == AppLanguage.HINDI) {
+                "Timeout Error: AI सर्वर से उत्तर आने में 60 सेकंड से अधिक समय लग गया। कृपया स्थिर इंटरनेट के साथ 'पुनः प्रयास करें' दबाएँ।"
+            } else {
+                "Timeout Error: AI response timed out after 60 seconds. Please check your connection and retry."
             }
         }
-        if (rawLower.contains("safety") || rawLower.contains("blocked")) {
+
+        // 7. HTTP 500 / 503 — Backend / Server Error
+        if (
+            rawLower.contains("500") ||
+            rawLower.contains("502") ||
+            rawLower.contains("503") ||
+            rawLower.contains("504") ||
+            rawLower.contains("serverexception") ||
+            rawLower.contains("internal") ||
+            rawLower.contains("unavailable") ||
+            rawLower.contains("overloaded") ||
+            rawLower.contains("backend")
+        ) {
             return if (language == AppLanguage.HINDI) {
-                "सुरक्षा नीति के कारण AI उत्तर रोक दिया गया। कृपया लक्षण स्पष्ट शब्दों में लिखकर पुनः प्रयास करें।"
+                "HTTP 500/503 (Backend Server त्रुटि): Gemini AI सर्वर अभी व्यस्त या अस्थायी रूप से अनुपलब्ध है। कृपया कुछ सेकंड बाद पुनः प्रयास करें।"
+            } else {
+                "HTTP 500/503 (Backend Server Error): Gemini AI server is temporarily busy or unavailable. Please retry shortly."
+            }
+        }
+
+        // 8. Safety / Content Filter
+        if (
+            rawLower.contains("safety") ||
+            rawLower.contains("blocked") ||
+            rawLower.contains("promptblocked") ||
+            rawLower.contains("responsestopped")
+        ) {
+            return if (language == AppLanguage.HINDI) {
+                "सुरक्षा नीति के कारण AI उत्तर रोक दिया गया। कृपया गाय के लक्षण स्पष्ट और सरल शब्दों में लिखकर पुनः प्रयास करें।"
             } else {
                 "AI output was filtered for safety. Please rephrase symptoms clearly and retry."
             }
         }
-        if (rawLower.contains("500") || rawLower.contains("503") || rawLower.contains("server") || rawLower.contains("overloaded")) {
-            return if (language == AppLanguage.HINDI) {
-                "Gemini सर्वर अभी व्यस्त या अस्थायी रूप से अनुपलब्ध है। कृपया कुछ सेकंड बाद पुनः प्रयास करें।"
-            } else {
-                "Gemini server is temporarily busy or unavailable. Please retry in a few seconds."
-            }
-        }
+
         val cleanCause = e.message?.trim()
-            ?.replace(Regex("AIza[0-9A-Za-z_-]{20,}"), "[REDACTED]")
+            ?.replace(Regex("AIza[0-9A-Za-z_-]{20,}"), "[REDACTED_KEY]")
             ?.take(140)
             .orEmpty()
         return if (language == AppLanguage.HINDI) {
             if (cleanCause.isNotBlank()) {
-                "AI सेवा से उत्तर प्राप्त नहीं हो सका। कारण: $cleanCause"
+                "AI सेवा त्रुटि ($cleanCause) — कृपया नीचे दिया गया वास्तविक Error Log देखें और पुनः प्रयास करें।"
             } else {
-                "AI सेवा से अभी उत्तर प्राप्त नहीं हो सका। कृपया नीचे दिया गया Error Log जांचें और पुनः प्रयास करें।"
+                "AI सेवा से उत्तर प्राप्त नहीं हो सका (${e.javaClass.simpleName})। कृपया नीचे दिया गया वास्तविक Error Log देखें और पुनः प्रयास करें।"
             }
         } else {
             if (cleanCause.isNotBlank()) {
-                "Unable to get an AI response. Cause: $cleanCause"
+                "AI service error ($cleanCause) — review the actual diagnostic log below and retry."
             } else {
-                "Unable to get an AI response right now. Check the diagnostic log below and retry."
+                "Unable to get an AI response (${e.javaClass.simpleName}). Review the diagnostic log below and retry."
             }
         }
     }

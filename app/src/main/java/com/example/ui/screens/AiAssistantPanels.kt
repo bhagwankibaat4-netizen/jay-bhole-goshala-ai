@@ -939,7 +939,8 @@ internal fun PhotoHealthCheckCard(
                             VetSourcesCard(
                                 language = language,
                                 sources = photoState.sources,
-                                usedGoogleSearch = photoState.usedGoogleSearch
+                                usedGoogleSearch = photoState.usedGoogleSearch,
+                                searchAttempted = photoState.searchAttempted
                             )
                             if (canSaveVetReport && selectedCow != null && onSaveVetReport != null) {
                                 Button(
@@ -1271,11 +1272,12 @@ internal fun ChatBubble(
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (message.isUser) Color.White else MaterialTheme.colorScheme.onSurface
                 )
-                if (!message.isUser && (message.sources.isNotEmpty() || message.usedGoogleSearch)) {
+                if (!message.isUser && (message.sources.isNotEmpty() || message.usedGoogleSearch || message.searchAttempted)) {
                     VetSourcesCard(
                         language = language,
                         sources = message.sources,
-                        usedGoogleSearch = message.usedGoogleSearch
+                        usedGoogleSearch = message.usedGoogleSearch,
+                        searchAttempted = message.searchAttempted
                     )
                 }
                 if (!message.isUser && (copyTag != null || shareTag != null)) {
