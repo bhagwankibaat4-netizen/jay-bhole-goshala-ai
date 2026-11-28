@@ -23,6 +23,10 @@ import com.example.data.model.UserSession
 import com.example.ui.screens.CattleManagementScreen
 import com.example.ui.theme.GosalaTheme
 import com.example.ui.viewmodel.DataUiState
+import com.google.zxing.BinaryBitmap
+import com.google.zxing.MultiFormatReader
+import com.google.zxing.RGBLuminanceSource
+import com.google.zxing.common.HybridBinarizer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -312,5 +316,45 @@ class DigitalCowIdCardRobolectricTest {
         composeRule.onNodeWithTag("cattle_detail_export_pdf_btn").assertIsDisplayed()
         composeRule.onNodeWithTag("cattle_detail_whatsapp_share_btn").assertIsDisplayed()
         composeRule.onNodeWithTag("cattle_detail_open_web_card_btn").assertExists()
+    }
+
+    @Test
+    fun `Audit - Cattle QR encodes direct HTTPS Public Profile URL cleanly, decodes identically via ZXing, and preserves existing valid QR without regeneration`() {
+        val validCow625 = approvedCow.copy(
+            id = "doc_jbgs_625",
+            animalCode = "JBGS-G-625",
+            name = "नंदिनी",
+            qrPayload = "https://gen-lang-client-0821187064.web.app/cattle/JBGS-G-625"
+        )
+        // 1. Existing valid QR URL is recognized as valid and preserved unchanged (no regeneration)
+        assertTrue(QrAndExportUtils.isValidPublicCattleQrUrl(validCow625.qrPayload, validCow625.animalCode))
+        val resolvedExisting = QrAndExportUtils.resolvePublicCattleQrUrl(validCow625)
+        assertEquals("https://gen-lang-client-0821187064.web.app/cattle/JBGS-G-625", resolvedExisting)
+
+        // 2. Malformed/empty/trailing-slash/legacy QR URLs are rejected by validator and cleanly normalized
+        assertFalse(QrAndExportUtils.isValidPublicCattleQrUrl("https://gen-lang-client-0821187064.web.app/cattle/", "JBGS-G-625"))
+        assertFalse(QrAndExportUtils.isValidPublicCattleQrUrl("https://gen-lang-client-0821187064.web.app/cattle/JBGS-G-625/", "JBGS-G-625"))
+        assertFalse(QrAndExportUtils.isValidPublicCattleQrUrl("https://gen-lang-client-0821187064.web.app/cattle/JBGS-G-625?ref=redirect", "JBGS-G-625"))
+        assertFalse(QrAndExportUtils.isValidPublicCattleQrUrl("JBGS:CATTLE:doc_jbgs_625:JBGS-G-625", "JBGS-G-625"))
+        assertFalse(QrAndExportUtils.isValidPublicCattleQrUrl("https://gen-lang-client-0821187064.web.app/cattle/JBGS-G-357", "JBGS-G-625"))
+
+        // 3. Distinct cattle IDs always encode distinct direct HTTPS URLs with no redirects
+        val url625 = QrAndExportUtils.resolvePublicCattleQrUrl(validCow625)
+        val url357 = QrAndExportUtils.resolvePublicCattleQrUrl(approvedCow)
+        assertEquals("https://gen-lang-client-0821187064.web.app/cattle/JBGS-G-625", url625)
+        assertEquals("https://gen-lang-client-0821187064.web.app/cattle/JBGS-G-357", url357)
+        assertFalse(url625 == url357)
+
+        // 4. Generate actual QR bitmap and decode it back with ZXing to prove exact URL encoding
+        val qrBitmap = QrAndExportUtils.generateQrBitmap(url625, 512)
+        assertNotNull("Expected valid QR bitmap", qrBitmap)
+        val width = qrBitmap!!.width
+        val height = qrBitmap.height
+        val pixels = IntArray(width * height)
+        qrBitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        val decoded = MultiFormatReader().decode(
+            BinaryBitmap(HybridBinarizer(RGBLuminanceSource(width, height, pixels)))
+        ).text
+        assertEquals("https://gen-lang-client-0821187064.web.app/cattle/JBGS-G-625", decoded)
     }
 }

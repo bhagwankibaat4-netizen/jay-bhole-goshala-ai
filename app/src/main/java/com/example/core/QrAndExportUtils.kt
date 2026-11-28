@@ -27,6 +27,7 @@ import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.GlobalHistogramBinarizer
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -56,6 +57,26 @@ object QrAndExportUtils {
     }
 
     /**
+     * Validates that a QR payload is already a direct, canonical HTTPS Public Profile URL
+     * (e.g. `https://gen-lang-client-0821187064.web.app/cattle/JBGS-G-625`) with no trailing slash,
+     * no query parameters, no fragments, and no redirects.
+     * When [expectedAnimalCode] is supplied and valid, also verifies the encoded ID matches that cow.
+     */
+    fun isValidPublicCattleQrUrl(qrUrl: String?, expectedAnimalCode: String? = null): Boolean {
+        val trimmed = qrUrl?.trim() ?: return false
+        val prefix = "$PUBLIC_HOSTING_BASE_URL/cattle/"
+        if (!trimmed.startsWith(prefix)) return false
+        val encodedId = trimmed.substring(prefix.length)
+        if (encodedId.isBlank() || encodedId.contains("/") || encodedId.contains("?") || encodedId.contains("#")) {
+            return false
+        }
+        val normalizedEncoded = normalizeAnimalCode(encodedId) ?: return false
+        if (encodedId != normalizedEncoded) return false
+        val expectedNorm = normalizeAnimalCode(expectedAnimalCode)
+        return expectedNorm == null || normalizedEncoded == expectedNorm
+    }
+
+    /**
      * Builds the permanent HTTPS Firebase Hosting Digital Cow ID Card URL for Google Lens / web QR scans.
      * Contains ONLY the clean Animal Code — NEVER exposes Firebase Document IDs or sensitive data.
      */
@@ -65,16 +86,18 @@ object QrAndExportUtils {
     }
 
     /**
-     * Resolves the canonical public HTTPS QR URL for any Cattle record (including legacy cows
-     * that previously stored `JBGS:CATTLE:<docId>:<code>` in Firestore).
+     * Resolves the canonical public HTTPS QR URL for any Cattle record.
+     * Preserves an already-valid HTTPS QR URL untouched (no regeneration needed),
+     * while seamlessly upgrading legacy cows (`JBGS:CATTLE:...`) to the direct HTTPS URL.
      */
     fun resolvePublicCattleQrUrl(cattle: Cattle): String {
-        val urlFromCode = buildPublicCattleQrUrl(cattle.animalCode)
-        if (urlFromCode.isNotBlank()) return urlFromCode
         val existing = cattle.qrPayload.trim()
-        if (existing.startsWith("$PUBLIC_HOSTING_BASE_URL/cattle/", ignoreCase = true)) {
+        if (isValidPublicCattleQrUrl(existing, cattle.animalCode)) {
             return existing
         }
+        val urlFromCode = buildPublicCattleQrUrl(cattle.animalCode)
+        if (urlFromCode.isNotBlank()) return urlFromCode
+        if (isValidPublicCattleQrUrl(existing)) return existing
         return buildCattleQrPayload(cattle.id, cattle.animalCode)
     }
 
@@ -454,7 +477,8 @@ object QrAndExportUtils {
         return try {
             val hints = mapOf(
                 EncodeHintType.CHARACTER_SET to "UTF-8",
-                EncodeHintType.MARGIN to 1
+                EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
+                EncodeHintType.MARGIN to 2
             )
             val matrix = QRCodeWriter().encode(payload, BarcodeFormat.QR_CODE, sizePx, sizePx, hints)
             val fgColor = Color.parseColor("#124B32")

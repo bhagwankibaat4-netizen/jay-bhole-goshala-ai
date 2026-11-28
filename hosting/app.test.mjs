@@ -11,31 +11,31 @@ const app = require('./app.js');
 const qr = require('./qrcode.js');
 
 test('Routing: Root URL (/) and /index.html open Home Dashboard, NEVER Invalid QR', () => {
-  assert.deepEqual(app.resolveRoute('/', ''), { view: 'home', animalCode: null });
-  assert.deepEqual(app.resolveRoute('/index.html', ''), { view: 'home', animalCode: null });
-  assert.deepEqual(app.resolveRoute('/', '?utm_source=whatsapp'), { view: 'home', animalCode: null });
+  assert.deepEqual(app.resolveRoute('/', ''), { view: 'home', animalCode: null, cattleId: null });
+  assert.deepEqual(app.resolveRoute('/index.html', ''), { view: 'home', animalCode: null, cattleId: null });
+  assert.deepEqual(app.resolveRoute('/', '?utm_source=whatsapp'), { view: 'home', animalCode: null, cattleId: null });
 });
 
 test('Routing: Valid /cattle/{validCattleId} and query lookup route to Cattle QR validation page', () => {
-  assert.deepEqual(app.resolveRoute('/cattle/JBGS-G-357', ''), { view: 'cattle', animalCode: 'JBGS-G-357' });
-  assert.deepEqual(app.resolveRoute('/cattle/jbgs-g-357/', ''), { view: 'cattle', animalCode: 'JBGS-G-357' });
-  assert.deepEqual(app.resolveRoute('/', '?id=JBGS-G-357'), { view: 'cattle', animalCode: 'JBGS-G-357' });
-  assert.deepEqual(app.resolveRoute('/', '?code=jbgs_01'), { view: 'cattle', animalCode: 'JBGS_01' });
+  assert.deepEqual(app.resolveRoute('/cattle/JBGS-G-357', ''), { view: 'cattle', animalCode: 'JBGS-G-357', cattleId: 'JBGS-G-357' });
+  assert.deepEqual(app.resolveRoute('/cattle/jbgs-g-357/', ''), { view: 'cattle', animalCode: 'JBGS-G-357', cattleId: 'jbgs-g-357' });
+  assert.deepEqual(app.resolveRoute('/', '?id=JBGS-G-357'), { view: 'cattle', animalCode: 'JBGS-G-357', cattleId: 'JBGS-G-357' });
+  assert.deepEqual(app.resolveRoute('/', '?code=jbgs_01'), { view: 'cattle', animalCode: 'JBGS_01', cattleId: 'jbgs_01' });
 });
 
 test('Routing: Invalid QR routes stay strictly separated from Home Dashboard', () => {
-  assert.deepEqual(app.resolveRoute('/cattle', ''), { view: 'invalid_qr', animalCode: null });
-  assert.deepEqual(app.resolveRoute('/cattle/', ''), { view: 'invalid_qr', animalCode: null });
-  assert.deepEqual(app.resolveRoute('/cattle/a b c', ''), { view: 'invalid_qr', animalCode: null });
-  assert.deepEqual(app.resolveRoute('/cattle/../../etc', ''), { view: 'invalid_qr', animalCode: null });
-  assert.deepEqual(app.resolveRoute('/cattle/JBGS-G-357/extra', ''), { view: 'invalid_qr', animalCode: null });
-  assert.deepEqual(app.resolveRoute('/', '?id='), { view: 'invalid_qr', animalCode: null });
-  assert.deepEqual(app.resolveRoute('/', '?id=invalid id'), { view: 'invalid_qr', animalCode: null });
+  assert.deepEqual(app.resolveRoute('/cattle', ''), { view: 'invalid_qr', animalCode: null, cattleId: null });
+  assert.deepEqual(app.resolveRoute('/cattle/', ''), { view: 'invalid_qr', animalCode: null, cattleId: null });
+  assert.deepEqual(app.resolveRoute('/cattle/a b c', ''), { view: 'invalid_qr', animalCode: null, cattleId: null });
+  assert.deepEqual(app.resolveRoute('/cattle/../../etc', ''), { view: 'invalid_qr', animalCode: null, cattleId: null });
+  assert.deepEqual(app.resolveRoute('/cattle/JBGS-G-357/extra', ''), { view: 'invalid_qr', animalCode: null, cattleId: null });
+  assert.deepEqual(app.resolveRoute('/', '?id='), { view: 'invalid_qr', animalCode: null, cattleId: null });
+  assert.deepEqual(app.resolveRoute('/', '?id=invalid id'), { view: 'invalid_qr', animalCode: null, cattleId: null });
 });
 
 test('Routing: Unknown non-QR routes resolve to dedicated Not Found view, not Invalid QR', () => {
-  assert.deepEqual(app.resolveRoute('/other/JBGS-G-357', ''), { view: 'not_found', animalCode: null });
-  assert.deepEqual(app.resolveRoute('/unknown-page', ''), { view: 'not_found', animalCode: null });
+  assert.deepEqual(app.resolveRoute('/other/JBGS-G-357', ''), { view: 'not_found', animalCode: null, cattleId: null });
+  assert.deepEqual(app.resolveRoute('/unknown-page', ''), { view: 'not_found', animalCode: null, cattleId: null });
 });
 
 test('Firebase Hosting config preserves hosting public dir, /cattle/** rewrite, and SPA fallback', () => {
@@ -324,5 +324,72 @@ test('Cattle collection fallback: Queries Firestore cattle collection by animalC
   assert.equal(notFoundRes.status, 'not_found_cattle');
   assert.equal(notFoundRes.card, null);
 });
+
+test('URL path cattleId extraction preserves case-sensitive Firestore document IDs and fetches /cattle/{cattleId}', async () => {
+  assert.equal(app.extractCattleIdFromPath('/cattle/JBGS-G-357', ''), 'JBGS-G-357');
+  assert.equal(app.extractCattleIdFromPath('/cattle/aBcDeFgHiJk12345/', ''), 'aBcDeFgHiJk12345');
+  assert.equal(app.extractCattleIdFromPath('/cattle/', ''), null);
+  assert.equal(app.extractCattleIdFromPath('/cattle/invalid id', ''), null);
+  assert.equal(app.extractCattleIdFromPath('/cattle/a/extra', ''), null);
+
+  const route = app.resolveRoute('/cattle/aBcDeFgHiJk12345', '');
+  assert.equal(route.view, 'cattle');
+  assert.equal(route.cattleId, 'aBcDeFgHiJk12345');
+  assert.equal(route.animalCode, 'ABCDEFGHIJK12345');
+
+  const visitedUrls = [];
+  const mockDirectFetch = async (url, opts) => {
+    visitedUrls.push({ url, method: opts.method });
+    if (url.endsWith('/documents/cattle/aBcDeFgHiJk12345')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          fields: {
+            animalCode: { stringValue: 'JBGS-G-357' },
+            name: { stringValue: 'लक्ष्मी' },
+            category: { stringValue: 'COW' },
+            breed: { stringValue: 'गिर' },
+            sex: { stringValue: 'FEMALE' },
+            healthStatus: { stringValue: 'HEALTHY' },
+            photoUri: { stringValue: 'https://firebasestorage.googleapis.com/v0/b/gen-lang-client-0821187064.firebasestorage.app/o/lakshmi.jpg?alt=media' },
+            publicApproved: { booleanValue: true }
+          }
+        })
+      };
+    }
+    return { ok: false, status: 404 };
+  };
+
+  const res = await app.fetchCattleRecordFromFirestore('aBcDeFgHiJk12345', mockDirectFetch);
+  assert.equal(res.status, 'ok');
+  assert.equal(res.card.name, 'लक्ष्मी');
+  assert.equal(res.card.animalCode, 'JBGS-G-357');
+  assert.ok(visitedUrls.some((c) => c.url.endsWith('/documents/cattle/aBcDeFgHiJk12345')));
+});
+
+test('QR Audit: Zero Hosting redirects, direct HTTPS public profile URL per cow ID, and distinct profile routing', () => {
+  const firebaseJsonPath = path.resolve(__dirname, '..', 'firebase.json');
+  const config = JSON.parse(fs.readFileSync(firebaseJsonPath, 'utf8'));
+  assert.ok(!config.hosting.redirects || config.hosting.redirects.length === 0, 'Hosting must not add extra redirects on /cattle/*');
+  assert.equal(config.hosting.trailingSlash, undefined, 'No trailingSlash redirect should be configured');
+
+  const route625 = app.resolveRoute('/cattle/JBGS-G-625', '');
+  const route357 = app.resolveRoute('/cattle/JBGS-G-357', '');
+  assert.deepEqual(route625, { view: 'cattle', animalCode: 'JBGS-G-625', cattleId: 'JBGS-G-625' });
+  assert.deepEqual(route357, { view: 'cattle', animalCode: 'JBGS-G-357', cattleId: 'JBGS-G-357' });
+
+  const card625 = app.parsePublicCattleDocument({
+    fields: {
+      animalCode: { stringValue: 'JBGS-G-625' },
+      name: { stringValue: 'नंदिनी' },
+      publicApproved: { booleanValue: true }
+    }
+  });
+  assert.ok(card625);
+  assert.equal(card625.qrUrl, 'https://gen-lang-client-0821187064.web.app/cattle/JBGS-G-625');
+  assert.equal(app.buildFirestoreDocumentUrl('JBGS-G-625').endsWith('/publicCattleCards/JBGS-G-625'), true);
+});
+
 
 

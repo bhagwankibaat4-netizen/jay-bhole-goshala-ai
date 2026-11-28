@@ -168,10 +168,11 @@ class GosalaRepository(
         }
         val normalizedCode = QrAndExportUtils.normalizeAnimalCode(code) ?: code
         val existingQr = cattle.qrPayload.trim()
+        val hasValidExistingQr = QrAndExportUtils.isValidPublicCattleQrUrl(existingQr, normalizedCode)
         val qr = when {
-            existingQr.startsWith("${QrAndExportUtils.PUBLIC_HOSTING_BASE_URL}/cattle/", ignoreCase = true) -> existingQr
+            hasValidExistingQr -> existingQr
             normalizedCode.isNotBlank() -> QrAndExportUtils.buildCattleQrPayload(docRef.id, normalizedCode)
-            existingQr.isNotBlank() -> existingQr
+            QrAndExportUtils.isValidPublicCattleQrUrl(existingQr) -> existingQr
             else -> QrAndExportUtils.buildCattleQrPayload(docRef.id, code)
         }.take(300)
 
@@ -226,9 +227,7 @@ class GosalaRepository(
                     "monthlySupportInr" to cattle.monthlySupportInr.coerceIn(0L, 500000L),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
-                if (cattle.qrPayload.isBlank() ||
-                    !cattle.qrPayload.startsWith("${QrAndExportUtils.PUBLIC_HOSTING_BASE_URL}/cattle/", ignoreCase = true)
-                ) {
+                if (!hasValidExistingQr) {
                     updates["qrPayload"] = qr
                 }
                 if (resolvedPhotoUrl != null) {
@@ -335,6 +334,22 @@ class GosalaRepository(
         if (session.role != UserRole.ADMIN && !session.canEdit(AppModule.CATTLE)) return
         val latestFeed = feedLogs.maxByOrNull { it.logDate }
         for (cow in cattleList) {
+            val normalizedCode = QrAndExportUtils.normalizeAnimalCode(cow.animalCode)
+            // Upgrade ONLY missing/legacy qrPayload records to the direct HTTPS URL;
+            // never regenerate or overwrite an already-valid QR URL.
+            if (cow.id.isNotBlank() && normalizedCode != null &&
+                !QrAndExportUtils.isValidPublicCattleQrUrl(cow.qrPayload, normalizedCode)
+            ) {
+                val canonicalUrl = QrAndExportUtils.buildPublicCattleQrUrl(normalizedCode)
+                runCatching {
+                    db.collection("cattle").document(cow.id).update(
+                        mapOf(
+                            "qrPayload" to canonicalUrl,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
+            }
             if (!cow.publicApproved) continue
             syncPublicCattleCardInternal(
                 cattle = cow,

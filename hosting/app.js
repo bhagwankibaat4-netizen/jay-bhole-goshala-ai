@@ -14,6 +14,7 @@
   var FIREBASE_STORAGE_BUCKET = 'gen-lang-client-0821187064.firebasestorage.app';
   var PUBLIC_HOSTING_ORIGIN = 'https://gen-lang-client-0821187064.web.app';
   var ANIMAL_CODE_REGEX = /^[A-Z0-9][A-Z0-9_-]{1,39}$/;
+  var CATTLE_ID_REGEX = /^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$/;
 
   var I18N = {
     hi: {
@@ -269,16 +270,22 @@
   }
 
   /**
-   * Extracts a validated uppercase Animal Code from pathname (/cattle/JBGS-G-357)
-   * or query (?id=JBGS-G-357). Rejects malformed paths or suspicious characters.
+   * Extracts a validated, case-preserved cattleId from pathname (/cattle/<cattleId>)
+   * using path splitting (e.g. pathname.split('/cattle/')[1]) or query (?id=<cattleId>).
+   * Rejects empty IDs, extra path segments, path traversal, or disallowed characters.
    */
-  function extractAnimalCodeFromLocation(pathname, search) {
+  function extractCattleIdFromPath(pathname, search) {
     var path = String(pathname || '').trim();
-    var match = path.match(/^\/cattle\/([^\/?#]+)\/?$/i);
-    if (match && match[1]) {
+    if (/^\/cattle\//i.test(path)) {
+      var afterPrefix = path.split(/\/cattle\//i)[1];
+      if (!afterPrefix) return null;
+      var withoutTrailingSlash = afterPrefix.replace(/\/$/, '');
+      if (!withoutTrailingSlash || withoutTrailingSlash.indexOf('/') !== -1) {
+        return null;
+      }
       try {
-        var decoded = decodeURIComponent(match[1]);
-        return normalizeAnimalCode(decoded);
+        var decoded = decodeURIComponent(withoutTrailingSlash).trim();
+        return CATTLE_ID_REGEX.test(decoded) ? decoded : null;
       } catch (_) {
         return null;
       }
@@ -288,18 +295,28 @@
       var params = new URLSearchParams(search);
       var candidate = params.get('id') || params.get('code');
       if (candidate) {
-        return normalizeAnimalCode(candidate);
+        var trimmed = candidate.trim();
+        return CATTLE_ID_REGEX.test(trimmed) ? trimmed : null;
       }
     }
     return null;
   }
 
   /**
+   * Extracts a validated uppercase Animal Code from pathname (/cattle/JBGS-G-357)
+   * or query (?id=JBGS-G-357). Rejects malformed paths or suspicious characters.
+   */
+  function extractAnimalCodeFromLocation(pathname, search) {
+    var cattleId = extractCattleIdFromPath(pathname, search);
+    return cattleId ? normalizeAnimalCode(cattleId) : null;
+  }
+
+  /**
    * Strictly separates routes:
-   * - '/' or '/index.html' (without id/code query params) -> { view: 'home', animalCode: null }
-   * - '/cattle/<validCode>' or '/?id=<validCode>'         -> { view: 'cattle', animalCode: '<CODE>' }
-   * - '/cattle', '/cattle/', '/cattle/<invalid>', '/?id=' -> { view: 'invalid_qr', animalCode: null }
-   * - Any other path                                      -> { view: 'not_found', animalCode: null }
+   * - '/' or '/index.html' (without id/code query params) -> { view: 'home', animalCode: null, cattleId: null }
+   * - '/cattle/<validId>' or '/?id=<validId>'             -> { view: 'cattle', animalCode: '<CODE|null>', cattleId: '<id>' }
+   * - '/cattle', '/cattle/', '/cattle/<invalid>', '/?id=' -> { view: 'invalid_qr', animalCode: null, cattleId: null }
+   * - Any other path                                      -> { view: 'not_found', animalCode: null, cattleId: null }
    */
   function resolveRoute(pathname, search) {
     var path = String(pathname || '/').trim() || '/';
@@ -307,25 +324,33 @@
     var hasQueryId = Boolean(params && (params.has('id') || params.has('code')));
 
     if (/^\/cattle(\/|$)/i.test(path)) {
-      var codeFromPath = extractAnimalCodeFromLocation(path, '');
-      if (codeFromPath) {
-        return { view: 'cattle', animalCode: codeFromPath };
+      var cattleIdFromPath = extractCattleIdFromPath(path, '');
+      if (cattleIdFromPath) {
+        return {
+          view: 'cattle',
+          animalCode: normalizeAnimalCode(cattleIdFromPath),
+          cattleId: cattleIdFromPath
+        };
       }
-      return { view: 'invalid_qr', animalCode: null };
+      return { view: 'invalid_qr', animalCode: null, cattleId: null };
     }
 
     if (path === '/' || path.toLowerCase() === '/index.html') {
       if (hasQueryId) {
-        var codeFromQuery = extractAnimalCodeFromLocation('/', search);
-        if (codeFromQuery) {
-          return { view: 'cattle', animalCode: codeFromQuery };
+        var cattleIdFromQuery = extractCattleIdFromPath('/', search);
+        if (cattleIdFromQuery) {
+          return {
+            view: 'cattle',
+            animalCode: normalizeAnimalCode(cattleIdFromQuery),
+            cattleId: cattleIdFromQuery
+          };
         }
-        return { view: 'invalid_qr', animalCode: null };
+        return { view: 'invalid_qr', animalCode: null, cattleId: null };
       }
-      return { view: 'home', animalCode: null };
+      return { view: 'home', animalCode: null, cattleId: null };
     }
 
-    return { view: 'not_found', animalCode: null };
+    return { view: 'not_found', animalCode: null, cattleId: null };
   }
 
   function buildFirestoreDocumentsBaseUrl() {
@@ -346,7 +371,7 @@
 
   function buildCattleDocumentUrl(cattleId) {
     var cleanId = String(cattleId || '').trim();
-    if (!/^[A-Za-z0-9_-]{2,128}$/.test(cleanId)) {
+    if (!CATTLE_ID_REGEX.test(cleanId)) {
       throw new Error('Invalid cattle document ID');
     }
     return buildFirestoreDocumentsBaseUrl() + '/cattle/' + encodeURIComponent(cleanId);
@@ -521,13 +546,18 @@
    * Returns null if document is missing publicApproved === true or lacks required identity fields.
    * Never copies internal private fields (notes, costInr, recordedBy, createdBy, phone, doc ID).
    */
-  function parsePublicCattleDocument(docJson) {
+  function parsePublicCattleDocument(docJson, fallbackCattleId) {
     if (!docJson || typeof docJson !== 'object' || !docJson.fields) return null;
     var f = docJson.fields;
     var approved = readFirestoreValue(f.publicApproved);
     if (approved !== true) return null;
 
-    var animalCode = normalizeAnimalCode(readFirestoreValue(f.animalCode) || '');
+    var animalCode =
+      normalizeAnimalCode(readFirestoreValue(f.animalCode) || '') ||
+      normalizeAnimalCode(fallbackCattleId || '') ||
+      (typeof fallbackCattleId === 'string' && CATTLE_ID_REGEX.test(fallbackCattleId.trim())
+        ? fallbackCattleId.trim()
+        : null);
     var name = String(readFirestoreValue(f.name) || '').trim();
     if (!animalCode || !name) return null;
 
@@ -580,73 +610,82 @@
    * Fetches the real cattle profile from Firestore:
    * 1. Primary: GET /publicCattleCards/{animalCode} (public-safe projection with photo, healthHistory & feedSummary).
    * 2. Secondary fallback (on 404): Queries the 'cattle' collection by animalCode + publicApproved == true,
-   *    and if empty, checks direct GET /cattle/{animalCode}, stripping all private fields via parsePublicCattleDocument.
-   * Returns { status: 'ok', card } | { status: 'not_found_cattle' | 'private' | 'general' }.
+   *    and if empty, fetches direct GET /cattle/{rawCattleId} (preserving case-sensitive Firestore doc IDs),
+   *    stripping all private fields via parsePublicCattleDocument.
+   * Returns { status: 'ok', card } | { status: 'not_found_cattle' | 'private' | 'general', card: null }.
    */
-  async function fetchCattleRecordFromFirestore(animalCode, fetchImpl) {
+  async function fetchCattleRecordFromFirestore(cattleId, fetchImpl) {
     var fetcher = fetchImpl || (typeof fetch === 'function' ? fetch : null);
     if (!fetcher) return { status: 'general', card: null };
 
-    // 1. Primary lookup in publicCattleCards/{animalCode}
-    var publicUrl = buildFirestoreDocumentUrl(animalCode);
-    var publicRes = await fetcher(publicUrl, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      cache: 'no-store'
-    });
-
-    if (publicRes.ok) {
-      var publicDoc = await publicRes.json();
-      var parsedPublic = parsePublicCattleDocument(publicDoc);
-      if (parsedPublic) return { status: 'ok', card: parsedPublic };
-      return { status: 'private', card: null };
+    var rawCattleId = String(cattleId || '').trim();
+    if (!CATTLE_ID_REGEX.test(rawCattleId)) {
+      return { status: 'invalid', card: null };
     }
+    var normalizedCode = normalizeAnimalCode(rawCattleId);
 
-    if (publicRes.status === 403) {
-      return { status: 'private', card: null };
-    }
-
-    if (publicRes.status !== 404) {
-      return { status: 'general', card: null };
-    }
-
-    // 2. Fallback lookup in 'cattle' collection (query by animalCode + publicApproved == true)
-    try {
-      var queryRes = await fetcher(buildCattleCollectionQueryUrl(), {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(buildCattleQueryPayload(animalCode)),
+    // 1. Primary lookup in publicCattleCards/{animalCode} when valid Animal Code
+    if (normalizedCode) {
+      var publicUrl = buildFirestoreDocumentUrl(normalizedCode);
+      var publicRes = await fetcher(publicUrl, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
         cache: 'no-store'
       });
 
-      if (queryRes.ok) {
-        var rows = await queryRes.json();
-        if (Array.isArray(rows)) {
-          for (var i = 0; i < rows.length; i++) {
-            if (rows[i] && rows[i].document) {
-              var parsedFromQuery = parsePublicCattleDocument(rows[i].document);
-              if (parsedFromQuery) return { status: 'ok', card: parsedFromQuery };
+      if (publicRes.ok) {
+        var publicDoc = await publicRes.json();
+        var parsedPublic = parsePublicCattleDocument(publicDoc, normalizedCode);
+        if (parsedPublic) return { status: 'ok', card: parsedPublic };
+        return { status: 'private', card: null };
+      }
+
+      if (publicRes.status === 403) {
+        return { status: 'private', card: null };
+      }
+
+      if (publicRes.status !== 404) {
+        return { status: 'general', card: null };
+      }
+
+      // 2. Fallback lookup in 'cattle' collection (query by animalCode + publicApproved == true)
+      try {
+        var queryRes = await fetcher(buildCattleCollectionQueryUrl(), {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(buildCattleQueryPayload(normalizedCode)),
+          cache: 'no-store'
+        });
+
+        if (queryRes.ok) {
+          var rows = await queryRes.json();
+          if (Array.isArray(rows)) {
+            for (var i = 0; i < rows.length; i++) {
+              if (rows[i] && rows[i].document) {
+                var parsedFromQuery = parsePublicCattleDocument(rows[i].document, normalizedCode);
+                if (parsedFromQuery) return { status: 'ok', card: parsedFromQuery };
+              }
             }
           }
         }
+      } catch (_) {
+        // Ignore fallback network/rule rejection and proceed to direct doc check
       }
-    } catch (_) {
-      // Ignore fallback network/rule rejection and proceed to direct doc check
     }
 
-    // 3. Direct document fallback in 'cattle/{id}' (in case ID matches doc key)
+    // 3. Direct document lookup in 'cattle/{cattleId}' (preserves case-sensitive Firestore doc IDs)
     try {
-      var directRes = await fetcher(buildCattleDocumentUrl(animalCode), {
+      var directRes = await fetcher(buildCattleDocumentUrl(rawCattleId), {
         method: 'GET',
         headers: { Accept: 'application/json' },
         cache: 'no-store'
       });
       if (directRes.ok) {
         var directDoc = await directRes.json();
-        var parsedDirect = parsePublicCattleDocument(directDoc);
+        var parsedDirect = parsePublicCattleDocument(directDoc, rawCattleId);
         if (parsedDirect) return { status: 'ok', card: parsedDirect };
         return { status: 'private', card: null };
       }
@@ -682,6 +721,7 @@
     FIREBASE_STORAGE_BUCKET: FIREBASE_STORAGE_BUCKET,
     PUBLIC_HOSTING_ORIGIN: PUBLIC_HOSTING_ORIGIN,
     normalizeAnimalCode: normalizeAnimalCode,
+    extractCattleIdFromPath: extractCattleIdFromPath,
     extractAnimalCodeFromLocation: extractAnimalCodeFromLocation,
     resolveRoute: resolveRoute,
     buildFirestoreDocumentUrl: buildFirestoreDocumentUrl,
@@ -708,6 +748,7 @@
     card: null,
     errorKind: null, // 'invalid' | 'not_found' | 'not_found_cattle' | 'private' | 'offline' | 'general'
     animalCode: null,
+    cattleId: null,
     lookupError: false,
     usingPlaceholderPhoto: true,
     activePhotoSrc: '/assets/default-cow.jpg'
@@ -1044,7 +1085,7 @@
         state.errorKind === 'not_found_cattle';
       el('retryBtn').classList.toggle('hidden', !showRetry);
 
-      var codeLabel = state.animalCode || '--';
+      var codeLabel = state.animalCode || state.cattleId || '--';
       if (state.errorKind === 'invalid') {
         document.title = dict.errInvalidTitle + ' — ' + dict.toolbarBrand;
         setText('errorIcon', '?');
@@ -1210,12 +1251,13 @@
     handleRouteChange();
   }
 
-  async function fetchCattleCard(animalCode) {
+  async function fetchCattleCard(cattleId, animalCode) {
     var reqToken = ++activeRequestToken;
     state.loading = true;
     state.errorKind = null;
     state.card = null;
-    state.animalCode = animalCode;
+    state.cattleId = cattleId;
+    state.animalCode = animalCode || normalizeAnimalCode(cattleId);
     renderUI();
 
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
@@ -1227,7 +1269,7 @@
     }
 
     try {
-      var result = await fetchCattleRecordFromFirestore(animalCode);
+      var result = await fetchCattleRecordFromFirestore(cattleId);
       if (reqToken !== activeRequestToken) return;
 
       if (result.status !== 'ok' || !result.card) {
@@ -1239,6 +1281,7 @@
 
       state.loading = false;
       state.card = result.card;
+      state.animalCode = result.card.animalCode;
       configureCowPhoto(result.card);
       renderQr(result.card);
       renderUI();
@@ -1258,6 +1301,7 @@
     var resolved = resolveRoute(window.location.pathname, window.location.search);
     state.routeView = resolved.view;
     state.animalCode = resolved.animalCode;
+    state.cattleId = resolved.cattleId;
     state.card = null;
     state.loading = false;
 
@@ -1279,8 +1323,8 @@
       return;
     }
 
-    // resolved.view === 'cattle' with validated resolved.animalCode
-    fetchCattleCard(resolved.animalCode);
+    // resolved.view === 'cattle' with validated resolved.cattleId
+    fetchCattleCard(resolved.cattleId, resolved.animalCode);
   }
 
   function bindEvents() {
@@ -1307,16 +1351,18 @@
     el('cattleLookupForm').addEventListener('submit', function (evt) {
       evt.preventDefault();
       var input = el('animalCodeInput');
-      var normalized = normalizeAnimalCode(input ? input.value : '');
-      if (!normalized) {
+      var rawInput = input ? input.value.trim() : '';
+      var normalized = normalizeAnimalCode(rawInput);
+      var targetId = normalized || (CATTLE_ID_REGEX.test(rawInput) ? rawInput : null);
+      if (!targetId) {
         state.lookupError = true;
         renderUI();
         if (input) input.focus();
         return;
       }
       state.lookupError = false;
-      input.value = normalized;
-      navigateTo('/cattle/' + encodeURIComponent(normalized));
+      input.value = targetId;
+      navigateTo('/cattle/' + encodeURIComponent(targetId));
     });
 
     el('animalCodeInput').addEventListener('input', function () {
@@ -1327,15 +1373,15 @@
     });
 
     el('retryBtn').addEventListener('click', function () {
-      if (state.routeView === 'cattle' && state.animalCode) {
-        fetchCattleCard(state.animalCode);
+      if (state.routeView === 'cattle' && (state.cattleId || state.animalCode)) {
+        fetchCattleCard(state.cattleId || state.animalCode, state.animalCode);
       } else {
         handleRouteChange();
       }
     });
     el('offlineRetryBtn').addEventListener('click', function () {
-      if (state.routeView === 'cattle' && state.animalCode) {
-        fetchCattleCard(state.animalCode);
+      if (state.routeView === 'cattle' && (state.cattleId || state.animalCode)) {
+        fetchCattleCard(state.cattleId || state.animalCode, state.animalCode);
       } else {
         updateOfflineBanner();
       }
@@ -1376,8 +1422,8 @@
     window.addEventListener('popstate', handleRouteChange);
     window.addEventListener('online', function () {
       updateOfflineBanner();
-      if (state.routeView === 'cattle' && state.errorKind === 'offline' && state.animalCode) {
-        fetchCattleCard(state.animalCode);
+      if (state.routeView === 'cattle' && state.errorKind === 'offline' && (state.cattleId || state.animalCode)) {
+        fetchCattleCard(state.cattleId || state.animalCode, state.animalCode);
       }
     });
     window.addEventListener('offline', updateOfflineBanner);
