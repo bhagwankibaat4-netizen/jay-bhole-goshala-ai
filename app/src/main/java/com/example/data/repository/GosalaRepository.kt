@@ -722,6 +722,63 @@ class GosalaRepository(
         }
     }
 
+    // --- AI VETERINARY HEALTH REPORTS (LINKED PER COW ID) ---
+    fun observeAiVetReports(session: UserSession): Flow<List<AiVetHealthReport>> {
+        val canRead = session.role == UserRole.ADMIN ||
+            (session.role == UserRole.STAFF && session.staffActive && (
+                session.canView(AppModule.HEALTH) ||
+                    session.canView(AppModule.CATTLE) ||
+                    session.canView(AppModule.AI)
+                ))
+        if (!canRead) return flowOf(emptyList())
+        return db.collection("aiVetReports").limit(150).snapshots().map { snap ->
+            snap.toObjects(AiVetHealthReport::class.java, ServerTimestampBehavior.ESTIMATE)
+                .sortedByDescending { it.createdAt?.seconds ?: 0L }
+        }.flowOn(Dispatchers.Default)
+    }
+
+    suspend fun saveAiVetReport(session: UserSession, report: AiVetHealthReport): Result<Unit> {
+        val canWrite = session.role == UserRole.ADMIN ||
+            (session.role == UserRole.STAFF && session.staffActive && (
+                session.canAdd(AppModule.HEALTH) ||
+                    session.canEdit(AppModule.CATTLE) ||
+                    session.canAdd(AppModule.AI)
+                ))
+        if (!canWrite) {
+            return Result.failure(SecurityException("AI स्वास्थ्य रिपोर्ट सेव करने की अनुमति नहीं है।"))
+        }
+        if (report.cattleId.isBlank() || report.animalCode.isBlank() || report.reportText.isBlank()) {
+            return Result.failure(IllegalArgumentException("कृपया रिपोर्ट सेव करने के लिए पहले गाय चुनें।"))
+        }
+        val uid = requireUid()
+        val docRef = db.collection("aiVetReports").document()
+        val payload = report.copy(
+            recordedBy = uid,
+            recordedByName = session.displayName.ifBlank { session.email }.take(100),
+            dateStr = report.dateStr.ifBlank { QrAndExportUtils.todayIso() }
+        ).toCreateMap()
+        return safeWrite(docRef.path, OperationType.CREATE) {
+            docRef.set(payload).await()
+            logAudit(
+                session = session,
+                action = "CREATE",
+                module = "health",
+                entityId = docRef.id,
+                summary = "AI Vet Report (${report.riskLevel}): ${report.cattleName} [${report.animalCode}]"
+            )
+        }
+    }
+
+    suspend fun deleteAiVetReport(session: UserSession, reportId: String): Result<Unit> {
+        if (session.role != UserRole.ADMIN && !session.canDelete(AppModule.HEALTH)) {
+            return Result.failure(SecurityException("AI स्वास्थ्य रिपोर्ट हटाने की अनुमति नहीं है।"))
+        }
+        return safeWrite("aiVetReports/$reportId", OperationType.DELETE) {
+            db.collection("aiVetReports").document(reportId).delete().await()
+            logAudit(session, "DELETE", "health", reportId, "Deleted AI Vet Report")
+        }
+    }
+
     // --- FEED & DAILY OPERATIONS ---
     fun observeFeedLogs(session: UserSession): Flow<List<FeedAndOperationLog>> {
         if (!session.canView(AppModule.FEED) || session.role == UserRole.PUBLIC) return flowOf(emptyList())

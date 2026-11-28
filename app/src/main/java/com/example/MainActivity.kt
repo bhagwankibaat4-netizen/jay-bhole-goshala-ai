@@ -505,6 +505,7 @@ private fun GosalaAuthenticatedShell(
     val productsState by gosalaViewModel.productsState.collectAsStateWithLifecycle()
     val notificationsState by gosalaViewModel.notificationsState.collectAsStateWithLifecycle()
     val auditLogsState by gosalaViewModel.auditLogsState.collectAsStateWithLifecycle()
+    val aiVetReportsState by gosalaViewModel.aiVetReportsState.collectAsStateWithLifecycle()
 
     val cattleList = (cattleState as? DataUiState.Success)?.data.orEmpty()
     val healthList = (healthState as? DataUiState.Success)?.data.orEmpty()
@@ -520,9 +521,11 @@ private fun GosalaAuthenticatedShell(
     val productOrdersList = (productOrdersState as? DataUiState.Success)?.data.orEmpty()
     val productsList = (productsState as? DataUiState.Success)?.data.orEmpty()
     val notificationsList = (notificationsState as? DataUiState.Success)?.data.orEmpty()
+    val aiVetReportsList = (aiVetReportsState as? DataUiState.Success)?.data.orEmpty()
     val notifPrefs = remember(appContext) { PreferencesManager(appContext) }
     val alertsEnabled by notifPrefs.alertsEnabledFlow.collectAsStateWithLifecycle(initialValue = true)
     val remindersEnabled by notifPrefs.remindersEnabledFlow.collectAsStateWithLifecycle(initialValue = true)
+    val vetPhoneNumber by notifPrefs.vetPhoneFlow.collectAsStateWithLifecycle(initialValue = "")
     val isNotifSubmitting by gosalaViewModel.isSubmitting.collectAsStateWithLifecycle()
     val unreadNotifCount = remember(notificationsList, session, alertsEnabled, remindersEnabled) {
         val todayIso = todayIsoDateString()
@@ -1156,6 +1159,10 @@ private fun GosalaAuthenticatedShell(
                                 donations = donationsList,
                                 products = productsList,
                                 staffAccounts = staffAccountsList,
+                                savedVetReports = aiVetReportsList,
+                                vetPhoneNumber = vetPhoneNumber,
+                                onSaveVetPhone = { phone -> scope.launch { notifPrefs.setVetPhone(phone) } },
+                                onSaveVetReport = { rep -> gosalaViewModel.saveAiVetReport(rep, language) },
                                 aiViewModel = aiViewModel,
                                 initialMode = initialAiMode,
                                 onSaveCattleDraft = { item -> gosalaViewModel.saveCattle(item, false, language) },

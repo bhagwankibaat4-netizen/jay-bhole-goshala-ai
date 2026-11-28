@@ -169,6 +169,49 @@ data class HealthRecord(
 
 @Keep
 @IgnoreExtraProperties
+data class AiVetHealthReport(
+    @DocumentId val id: String = "",
+    val cattleId: String = "",
+    val animalCode: String = "",
+    val cattleName: String = "",
+    val symptoms: String = "",
+    val triageSummary: String = "",
+    val riskLevel: String = "CAUTION",
+    val reportText: String = "",
+    val sourceLinks: List<String> = emptyList(),
+    val usedPhoto: Boolean = false,
+    val dateStr: String = "",
+    val recordedBy: String = "",
+    val recordedByName: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun toCreateMap(): Map<String, Any> {
+        val safeRisk = riskLevel.trim().uppercase().takeIf { it in setOf("NORMAL", "CAUTION", "EMERGENCY") } ?: "CAUTION"
+        val safeAnimalCode = animalCode.trim().take(40)
+        val safeCattleName = cattleName.trim().ifBlank { safeAnimalCode.ifBlank { "गौवंश" } }.take(80)
+        val safeSymptoms = symptoms.trim().ifBlank { "फोटो व लक्षण निरीक्षण" }.take(1000)
+        return mapOf(
+            "cattleId" to cattleId.trim().take(128),
+            "animalCode" to safeAnimalCode,
+            "cattleName" to safeCattleName,
+            "symptoms" to safeSymptoms,
+            "triageSummary" to triageSummary.trim().take(1000),
+            "riskLevel" to safeRisk,
+            "reportText" to reportText.trim().take(12000),
+            "sourceLinks" to sourceLinks.map { it.trim().take(520) }.filter { it.isNotBlank() }.take(12),
+            "usedPhoto" to usedPhoto,
+            "dateStr" to dateStr.trim().ifBlank { todayIsoDateString() }.take(30),
+            "recordedBy" to recordedBy.trim().take(128),
+            "recordedByName" to recordedByName.trim().take(100),
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+    }
+}
+
+@Keep
+@IgnoreExtraProperties
 data class FeedAndOperationLog(
     @DocumentId val id: String = "",
     val logDate: String = "",

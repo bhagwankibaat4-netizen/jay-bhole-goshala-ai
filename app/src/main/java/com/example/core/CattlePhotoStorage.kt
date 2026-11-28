@@ -409,6 +409,59 @@ object CattlePhotoStorage {
     }
 
     /**
+     * Loads a cow's real persisted Firebase photo (Storage HTTPS URL or Firestore fallback)
+     * as a scaled Bitmap suitable for multimodal AI Veterinary analysis.
+     */
+    suspend fun loadCowBitmapForAi(
+        cattleId: String,
+        photoUri: String?,
+        photoStoragePath: String?,
+        maxDim: Int = 960
+    ): Bitmap? {
+        val resolved = resolveCowPhotoUrl(
+            cattleId = cattleId,
+            photoUri = photoUri,
+            photoStoragePath = photoStoragePath
+        ) ?: return null
+
+        if (resolved.startsWith(FIRESTORE_PHOTO_SCHEME, ignoreCase = true)) {
+            return loadFirestorePhotoBitmap(resolved)?.let { scaleBitmapDown(it, maxDim) }
+        }
+
+        if (resolved.startsWith("https://", ignoreCase = true) || resolved.startsWith("http://", ignoreCase = true)) {
+            memoryCache.get(resolved)?.let { return it }
+            return withContext(Dispatchers.IO) {
+                try {
+                    withTimeout(12_000L) {
+                        val conn = java.net.URL(resolved).openConnection() as java.net.HttpURLConnection
+                        conn.connectTimeout = 8_000
+                        conn.readTimeout = 8_000
+                        conn.instanceFollowRedirects = true
+                        try {
+                            if (conn.responseCode in 200..299) {
+                                val bytes = conn.inputStream.use { it.readBytes() }
+                                val raw = decodeBitmapBytes(bytes) ?: return@withTimeout null
+                                val scaled = scaleBitmapDown(raw, maxDim)
+                                if (scaled !== raw) raw.recycle()
+                                memoryCache.put(resolved, scaled)
+                                scaled
+                            } else null
+                        } finally {
+                            conn.disconnect()
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to load cow HTTPS photo for AI ($cattleId): ${e.message}")
+                    null
+                }
+            }
+        }
+        return null
+    }
+
+    /**
      * Best-effort sync of `publicApproved` flag onto `cattlePhotos/{cattleId}` when Admin toggles visibility.
      */
     suspend fun syncPhotoVisibility(db: FirebaseFirestore, cattleId: String, publicApproved: Boolean) {

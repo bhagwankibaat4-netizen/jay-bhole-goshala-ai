@@ -5,12 +5,21 @@ import android.util.Log
 import com.example.core.AppLanguage
 import com.example.core.GosalaBrand
 import com.example.core.QrAndExportUtils
+import com.example.core.VetRiskLevel
+import com.example.core.VetSourceReference
+import com.example.core.VetTriageAnswers
+import com.example.core.VetTriageAssessment
+import com.example.core.VetTriageEngine
 import com.example.core.isAppCheckTokenError
 import com.example.core.refreshAppCheckToken
 import com.example.data.model.*
 import com.google.firebase.Firebase
+import com.google.firebase.ai.GenerativeModel
 import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.GenerateContentResponse
+import com.google.firebase.ai.type.GenerativeBackend
 import com.google.firebase.ai.type.Schema
+import com.google.firebase.ai.type.Tool
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
 import kotlinx.coroutines.CancellationException
@@ -20,21 +29,33 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withTimeout
 
 private const val AI_REPO_TAG = "GeminiAiRepository"
+private const val PRIMARY_MODEL_NAME = "gemini-3.8-flash"
+private const val FALLBACK_LITE_MODEL_NAME = "gemini-3.5-flash-lite"
 
 internal val GOSHALA_SYSTEM_INSTRUCTION = """
-आप Jay Bhole Gosala Samiti (मेहदोरा, पोरसा, मुरैना, मध्य प्रदेश) के AI गौशाला प्रबंधन सहायक हैं।
+आप Jay Bhole Gosala Samiti (मेहदोरा, पोरसा, मुरैना, मध्य प्रदेश) के Advanced AI Veterinary & Goshala Assistant (उन्नत पशु चिकित्सा एवं गौशाला सहायक) हैं।
 आपका कार्य सरल, स्पष्ट और व्यावहारिक हिंदी में चरणबद्ध (Step-by-step) उत्तर देना है ताकि गौशाला के सेवक, कर्मचारी और प्रबंधक आसानी से समझ सकें।
-आप हिंदी (देवनागरी) और Hinglish (जैसे "gay chara nahi kha rahi", "50 gay ke liye kitna bhusa chahiye") दोनों प्रकार के प्रश्न पूरी तरह समझते हैं, और हिंदी मोड में हमेशा सरल देवनागरी हिंदी में उत्तर देते हैं।
-आप गौशाला प्रबंधन, गाय स्वास्थ्य देखभाल, चारा व पानी प्रबंधन, सफाई, टीकाकरण रिकॉर्ड, बीमारी रोकथाम, कर्मचारी जिम्मेदारी, गोबर प्रबंधन, जैविक खाद व गोबर उत्पाद, खर्च नियंत्रण, आय वृद्धि, सरकारी योजना/दस्तावेज मार्गदर्शन और दैनिक/साप्ताहिक/मासिक कार्य योजना में सहायता करेंगे।
+आप हिंदी (देवनागरी) और Hinglish (जैसे "gay chara nahi kha rahi", "gay ka pet phul gaya", "50 gay ke liye kitna bhusa chahiye") दोनों प्रकार के प्रश्न पूरी तरह समझते हैं, और हिंदी मोड में हमेशा सरल देवनागरी हिंदी में उत्तर देते हैं।
+आप गौशाला प्रबंधन, गाय स्वास्थ्य देखभाल, पशु चिकित्सा प्राथमिक मार्गदर्शन, चारा व पानी प्रबंधन, सफाई, टीकाकरण रिकॉर्ड, बीमारी रोकथाम, कर्मचारी जिम्मेदारी, गोबर प्रबंधन, जैविक खाद व गोबर उत्पाद, खर्च नियंत्रण, आय वृद्धि, सरकारी योजना/दस्तावेज मार्गदर्शन और दैनिक/साप्ताहिक/मासिक कार्य योजना में सहायता करेंगे।
 आप केवल सलाह देंगे, किसी डेटाबेस रिकॉर्ड में अपने आप बदलाव नहीं करेंगे।
-गंभीर बीमारी, चोट, रक्तस्राव, सांस लेने में दिक्कत, उठ न पाना, विषाक्तता या प्रसव संबंधी समस्या में हमेशा योग्य पशु चिकित्सक से तुरंत संपर्क करने की सलाह देंगे।
-आप कभी भी बिना पर्याप्त जांच के निश्चित बीमारी की घोषणा नहीं करेंगे, और कभी खतरनाक दवा या निश्चित खुराक तय नहीं करेंगे।
-आप केवल उपलब्ध सही डेटा का ही उपयोग करेंगे और अधूरी जानकारी को कभी गढ़ेंगे नहीं।
 
-अतिरिक्त अनिवार्य नियम:
-- यदि कोई डेटा या रिकॉर्ड उपलब्ध नहीं है, तो स्पष्ट लिखें: "रिकॉर्ड उपलब्ध नहीं है"। कभी अनुमान से आँकड़े न बनाएँ।
-- यदि उपयोगकर्ता की भूमिका PUBLIC है, तो कभी भी आंतरिक वित्त, खर्च, स्टाफ सूची/वेतन, किसान खाता या निजी चिकित्सा रिकॉर्ड न दिखाएँ और न अनुमान लगाएँ।
-- यदि उपयोगकर्ता अंग्रेजी चुने, तो सरल अंग्रेजी में उत्तर दें; अन्यथा हमेशा सरल, सम्मानजनक हिंदी (देवनागरी) में छोटे बुलेट पॉइंट व चरणबद्ध उत्तर दें।
+पशु चिकित्सा जानकारी के विश्वसनीय स्रोत प्राथमिकता (Google Search Grounding Priority):
+- भारत सरकार का पशुपालन एवं डेयरी विभाग (Department of Animal Husbandry & Dairying - DAHD, dahd.nic.in)
+- ICAR (भारतीय कृषि अनुसंधान परिषद) और IVRI (भारतीय पशु चिकित्सा अनुसंधान संस्थान)
+- NDDB (राष्ट्रीय डेयरी विकास बोर्ड)
+- भारत के सरकारी पशु चिकित्सा विश्वविद्यालय (जैसे NDVSU, TANUVAS, GADVASU, DUVASU, RAJUVAS)
+- विश्वसनीय Veterinary Medical Resources (जैसे Merck Veterinary Manual, FAO Animal Health, WOAH)
+
+अनिवार्य पशु चिकित्सा एवं सुरक्षा नियम (STRICT SAFETY RULES):
+1. आप कभी भी केवल फोटो देखकर या बिना पर्याप्त जांच के निश्चित बीमारी की घोषणा नहीं करेंगे — केवल संभावित समस्या बताएँगे।
+2. बिना सही पशु चिकित्सा जांच के कोई भी एंटीबायोटिक (Antibiotic) या इंजेक्शन (Injection) कभी नहीं सुझाएँगे।
+3. बिना गाय के वजन, उम्र, गर्भावस्था (Pregnancy), वास्तविक स्थिति और पशु चिकित्सक के मार्गदर्शन के खतरनाक दवा या निश्चित खुराक (Dosage) कभी तय नहीं करेंगे।
+4. बिना डॉक्टर की सलाह के कोई भी असुरक्षित या खतरनाक घरेलू उपाय नहीं बताएँगे।
+5. गंभीर आपातकालीन संकेत — जैसे गाय का खड़ी न हो पाना, सांस लेने में परेशानी, पेट बहुत फूल जाना (आफरा/Bloat), बेहोश होना, लगातार खाना-पानी दोनों छोड़ना, प्रसव (ब्याने) में परेशानी, खून बहना, गंभीर चोट या विषाक्तता — होने पर स्थिति को तुरंत "आपातकाल (EMERGENCY)" मानेंगे और सामान्य घरेलू सलाह में समय न गँवाकर तुरंत योग्य पशु चिकित्सक को बुलाने का निर्देश देंगे।
+6. जब किसी विशेष गाय का चयन किया गया हो, तो केवल उसी चयनित गाय के रिकॉर्ड का उपयोग करें — कभी किसी अन्य गाय का डेटा न मिलाएँ।
+7. आप केवल उपलब्ध सही डेटा का ही उपयोग करेंगे और अधूरी जानकारी को कभी गढ़ेंगे नहीं। यदि कोई डेटा उपलब्ध नहीं है, तो स्पष्ट लिखें: "रिकॉर्ड उपलब्ध नहीं है"।
+8. यदि उपयोगकर्ता की भूमिका PUBLIC है, तो कभी भी आंतरिक वित्त, खर्च, स्टाफ सूची/वेतन, किसान खाता या निजी चिकित्सा रिकॉर्ड न दिखाएँ और न अनुमान लगाएँ।
+9. यदि उपयोगकर्ता अंग्रेजी चुने, तो सरल अंग्रेजी में उत्तर दें; अन्यथा हमेशा सरल, सम्मानजनक हिंदी (देवनागरी) में छोटे बुलेट पॉइंट व चरणबद्ध उत्तर दें।
 """.trimIndent()
 
 data class VoiceEntryDraft(
@@ -63,6 +84,32 @@ data class AiWorkPlan(
     val planHorizon: String = "DAILY"
 )
 
+data class AiStreamUpdate(
+    val text: String,
+    val sources: List<VetSourceReference> = emptyList(),
+    val riskLevel: VetRiskLevel? = null,
+    val assessment: VetTriageAssessment? = null,
+    val usedGoogleSearch: Boolean = false,
+    val modelUsed: String = PRIMARY_MODEL_NAME,
+    val usedFallbackModel: Boolean = false
+)
+
+data class AiVetReportResult(
+    val text: String,
+    val sources: List<VetSourceReference> = emptyList(),
+    val riskLevel: VetRiskLevel = VetRiskLevel.CAUTION,
+    val assessment: VetTriageAssessment,
+    val usedGoogleSearch: Boolean = false,
+    val modelUsed: String = PRIMARY_MODEL_NAME,
+    val usedFallbackModel: Boolean = false
+)
+
+internal data class ModelCandidateSpec(
+    val modelName: String,
+    val isGrounded: Boolean,
+    val isFallback: Boolean
+)
+
 class GeminiAiRepository {
 
     companion object {
@@ -74,6 +121,9 @@ class GeminiAiRepository {
         internal var testStreamHandler: (suspend (prompt: String, roleContext: String, modeLabel: String) -> List<String>)? = null
 
         @Volatile
+        internal var testGroundedSourcesProvider: (() -> List<VetSourceReference>)? = null
+
+        @Volatile
         internal var testPhotoAnalyzer: (suspend (bitmap: Bitmap, promptText: String) -> String)? = null
 
         @Volatile
@@ -81,6 +131,20 @@ class GeminiAiRepository {
 
         @Volatile
         internal var testWorkPlanGenerator: (suspend (roleContext: String, focusTopic: String) -> AiWorkPlan)? = null
+
+        /**
+         * Optional test hook exercising the REAL model fallback & App Check 401 retry loop
+         * inside streamAssistantUpdates / generateVetHealthReport. Always null in production.
+         */
+        @Volatile
+        internal var testModelAttemptRunner: (suspend (spec: ModelCandidateSpec, attempt: Int, prompt: String) -> Pair<String, List<VetSourceReference>>)? = null
+
+        @Volatile
+        internal var testAppCheckRefreshHandler: (suspend (forceRefresh: Boolean) -> Boolean)? = null
+    }
+
+    private val aiClient by lazy {
+        Firebase.ai(backend = GenerativeBackend.googleAI())
     }
 
     private val systemInstructionContent by lazy {
@@ -88,10 +152,45 @@ class GeminiAiRepository {
     }
 
     private val chatModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
+        aiClient.generativeModel(
+            modelName = PRIMARY_MODEL_NAME,
             systemInstruction = systemInstructionContent
         )
+    }
+
+    private val groundedVetModel by lazy {
+        aiClient.generativeModel(
+            modelName = PRIMARY_MODEL_NAME,
+            tools = listOf(Tool.googleSearch()),
+            systemInstruction = systemInstructionContent
+        )
+    }
+
+    private val groundedFallbackLiteModel by lazy {
+        aiClient.generativeModel(
+            modelName = FALLBACK_LITE_MODEL_NAME,
+            tools = listOf(Tool.googleSearch()),
+            systemInstruction = systemInstructionContent
+        )
+    }
+
+    private val fallbackLiteModel by lazy {
+        aiClient.generativeModel(
+            modelName = FALLBACK_LITE_MODEL_NAME,
+            systemInstruction = systemInstructionContent
+        )
+    }
+
+    private fun resolveCandidateModel(spec: ModelCandidateSpec): GenerativeModel = when {
+        spec.modelName == PRIMARY_MODEL_NAME && spec.isGrounded -> groundedVetModel
+        spec.modelName == FALLBACK_LITE_MODEL_NAME && spec.isGrounded -> groundedFallbackLiteModel
+        spec.modelName == PRIMARY_MODEL_NAME -> chatModel
+        else -> fallbackLiteModel
+    }
+
+    private suspend fun performAppCheckRefresh(forceRefresh: Boolean = true): Boolean {
+        val hook = testAppCheckRefreshHandler
+        return if (hook != null) hook(forceRefresh) else refreshAppCheckToken(forceRefresh)
     }
 
     private val voiceDraftSchema = Schema.obj(
@@ -109,8 +208,19 @@ class GeminiAiRepository {
     )
 
     private val structuredModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
+        aiClient.generativeModel(
+            modelName = PRIMARY_MODEL_NAME,
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = voiceDraftSchema
+            },
+            systemInstruction = systemInstructionContent
+        )
+    }
+
+    private val fallbackStructuredModel by lazy {
+        aiClient.generativeModel(
+            modelName = FALLBACK_LITE_MODEL_NAME,
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = voiceDraftSchema
@@ -143,8 +253,8 @@ class GeminiAiRepository {
     )
 
     private val workPlanModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
+        aiClient.generativeModel(
+            modelName = PRIMARY_MODEL_NAME,
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = workPlanSchema
@@ -153,29 +263,108 @@ class GeminiAiRepository {
         )
     }
 
+    private val fallbackWorkPlanModel by lazy {
+        aiClient.generativeModel(
+            modelName = FALLBACK_LITE_MODEL_NAME,
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = workPlanSchema
+            },
+            systemInstruction = systemInstructionContent
+        )
+    }
+
+    internal fun isModelFallbackEligible(e: Throwable): Boolean {
+        val msg = collectErrorChainLower(e)
+        return msg.contains("404") ||
+            msg.contains("not found") ||
+            msg.contains("not_found") ||
+            msg.contains("model is not supported") ||
+            msg.contains("503") ||
+            msg.contains("500") ||
+            msg.contains("429") ||
+            msg.contains("resource_exhausted") ||
+            msg.contains("quota") ||
+            msg.contains("unavailable") ||
+            msg.contains("overloaded") ||
+            msg.contains("internal")
+    }
+
+    private fun isSearchToolUnsupportedError(e: Throwable): Boolean {
+        val msg = collectErrorChainLower(e)
+        return msg.contains("google_search") ||
+            msg.contains("googlesearch") ||
+            msg.contains("grounding") ||
+            msg.contains("search") && (msg.contains("not supported") || msg.contains("not enabled") || msg.contains("billing") || msg.contains("invalid")) ||
+            msg.contains("invalid_argument") ||
+            msg.contains("failed_precondition") ||
+            msg.contains("400") ||
+            (msg.contains("tool") && (msg.contains("not supported") || msg.contains("invalid")))
+    }
+
+    private fun collectErrorChainLower(e: Throwable?): String = buildString {
+        var cur = e
+        while (cur != null) {
+            append(cur.javaClass.simpleName).append(' ')
+            append(cur.message.orEmpty()).append(' ')
+            cur = cur.cause
+        }
+    }.lowercase()
+
+    internal fun extractGroundingSources(response: GenerateContentResponse): List<VetSourceReference> {
+        val today = todayIsoDateString()
+        val seen = LinkedHashSet<String>()
+        val results = mutableListOf<VetSourceReference>()
+        response.candidates.forEach { candidate ->
+            candidate.groundingMetadata?.groundingChunks?.forEach { chunk ->
+                val web = chunk.web ?: return@forEach
+                val uri = web.uri?.trim().orEmpty()
+                if (uri.isBlank() || (!uri.startsWith("https://", ignoreCase = true) && !uri.startsWith("http://", ignoreCase = true))) {
+                    return@forEach
+                }
+                if (seen.add(uri)) {
+                    val domain = web.domain?.trim().orEmpty().ifBlank { VetSourceReference.extractDomain(uri) }
+                    val title = web.title?.trim().orEmpty().ifBlank { domain.ifBlank { "Veterinary Reference" } }
+                    results.add(
+                        VetSourceReference(
+                            title = title,
+                            url = uri,
+                            domain = domain,
+                            retrievedDate = today
+                        )
+                    )
+                }
+            }
+        }
+        return results
+    }
+
     /**
-     * Builds a strictly read-only summary for a specific cow so AI can answer health/history
-     * questions or combine cow records with photo analysis without ever modifying or inventing records.
+     * Builds a strictly isolated, read-only summary for a specific cow using ONLY its verified ID /
+     * Animal Code so records from different cows are NEVER mixed.
      */
     fun buildSelectedCowContext(
         cow: Cattle,
         healthRecords: List<HealthRecord>,
-        isPublic: Boolean
+        isPublic: Boolean,
+        savedVetReports: List<AiVetHealthReport> = emptyList()
     ): String {
         val sb = StringBuilder()
         val notesText = cow.notes?.trim().orEmpty()
         val hasPregnancyNote = notesText.contains("गर्भवती") ||
             notesText.contains("गर्भावस्था") ||
+            notesText.contains("गाभिन") ||
             notesText.contains("pregnan", ignoreCase = true)
         val hasMilkNote = notesText.contains("दूध") ||
             notesText.contains("लीटर") ||
             notesText.contains("milk", ignoreCase = true)
 
-        sb.appendLine("SELECTED COW RECORD (READ-ONLY — NEVER MODIFY OR FABRICATE):")
+        sb.appendLine("SELECTED COW RECORD (STRICT SINGLE-COW ISOLATION — NEVER MIX WITH ANY OTHER COW, READ-ONLY):")
         sb.appendLine("- Name: ${cow.name.ifBlank { "रिकॉर्ड उपलब्ध नहीं है" }}")
         sb.appendLine("- Cow ID / Animal Code: ${cow.animalCode.ifBlank { cow.id }} (DocID: ${cow.id.ifBlank { "N/A" }})")
         sb.appendLine("- Category: ${cow.category}, Breed: ${cow.breed.ifBlank { "रिकॉर्ड उपलब्ध नहीं है" }}, Age: ${cow.ageText.ifBlank { "रिकॉर्ड उपलब्ध नहीं है" }}, Weight: ${if (cow.weightKg > 0.0) "${cow.weightKg} kg" else "रिकॉर्ड उपलब्ध नहीं है"}")
         sb.appendLine("- Health Status: ${cow.healthStatus}, Shed: ${cow.shedNumber.ifBlank { "रिकॉर्ड उपलब्ध नहीं है" }}, Entry Date: ${cow.entryDate.ifBlank { "रिकॉर्ड उपलब्ध नहीं है" }}")
+        sb.appendLine("- Photo Available in Firebase: ${if (!cow.photoUri.isNullOrBlank() || !cow.photoStoragePath.isNullOrBlank()) "हाँ (Available)" else "रिकॉर्ड उपलब्ध नहीं है"}")
         sb.appendLine("- Vaccination Summary: ${cow.vaccinationSummary?.takeIf { it.isNotBlank() } ?: "रिकॉर्ड उपलब्ध नहीं है"}")
         sb.appendLine("- Pregnancy Status (गर्भावस्था): ${if (hasPregnancyNote) "नोट्स में दर्ज (नीचे देखें)" else "रिकॉर्ड उपलब्ध नहीं है"}")
         sb.appendLine("- Milk Yield Record (दूध उत्पादन): ${if (hasMilkNote) "नोट्स में दर्ज (नीचे देखें)" else "रिकॉर्ड उपलब्ध नहीं है"}")
@@ -189,10 +378,10 @@ class GeminiAiRepository {
             return sb.toString()
         }
 
+        // STRICT ID/AnimalCode isolation: NEVER match loosely by name alone when ID/AnimalCode exists
         val matchingHealth = healthRecords.filter { rec ->
             (cow.id.isNotBlank() && rec.cattleId == cow.id) ||
-                (cow.animalCode.isNotBlank() && rec.animalCode.equals(cow.animalCode, ignoreCase = true)) ||
-                (cow.name.isNotBlank() && rec.cattleName.equals(cow.name, ignoreCase = true))
+                (cow.animalCode.isNotBlank() && rec.animalCode.equals(cow.animalCode, ignoreCase = true))
         }
 
         if (matchingHealth.isEmpty()) {
@@ -217,6 +406,17 @@ class GeminiAiRepository {
                 }
             }
         }
+
+        val matchingSavedAiReports = savedVetReports.filter { rep ->
+            (cow.id.isNotBlank() && rep.cattleId == cow.id) ||
+                (cow.animalCode.isNotBlank() && rep.animalCode.equals(cow.animalCode, ignoreCase = true))
+        }
+        if (matchingSavedAiReports.isNotEmpty()) {
+            sb.appendLine("- Past Saved AI Vet Health Reports for ONLY this cow (${matchingSavedAiReports.size}):")
+            matchingSavedAiReports.take(5).forEach { rep ->
+                sb.appendLine("  * [${rep.dateStr} | Risk: ${rep.riskLevel}] Symptoms: ${rep.symptoms.take(140)} | Summary: ${rep.reportText.take(220).replace('\n', ' ')}")
+            }
+        }
         return sb.toString()
     }
 
@@ -237,7 +437,8 @@ class GeminiAiRepository {
         donations: List<Donation>,
         products: List<GoshalaProduct> = emptyList(),
         selectedCow: Cattle? = null,
-        staffAccounts: List<StaffAccount> = emptyList()
+        staffAccounts: List<StaffAccount> = emptyList(),
+        savedVetReports: List<AiVetHealthReport> = emptyList()
     ): String {
         val sb = StringBuilder()
         val todayIso = QrAndExportUtils.todayIso()
@@ -248,7 +449,14 @@ class GeminiAiRepository {
 
         if (selectedCow != null) {
             sb.appendLine()
-            sb.appendLine(buildSelectedCowContext(selectedCow, health, isPublic = session.role == UserRole.PUBLIC))
+            sb.appendLine(
+                buildSelectedCowContext(
+                    cow = selectedCow,
+                    healthRecords = health,
+                    isPublic = session.role == UserRole.PUBLIC,
+                    savedVetReports = savedVetReports
+                )
+            )
         }
 
         if (session.role == UserRole.PUBLIC) {
@@ -439,26 +647,98 @@ class GeminiAiRepository {
         return sb.toString()
     }
 
-    private fun isHealthSymptomQuestion(modeLabel: String, userPrompt: String): Boolean {
+    internal fun isHealthSymptomQuestion(modeLabel: String, userPrompt: String): Boolean {
         val modeLower = modeLabel.lowercase()
         val promptLower = userPrompt.lowercase()
-        if (modeLower.contains("स्वास्थ्य") || modeLower.contains("health")) return true
+        if (modeLower.contains("स्वास्थ्य") || modeLower.contains("health") || modeLower.contains("vet")) return true
         val healthMarkers = listOf(
             "चारा नहीं", "चारा ठीक से नहीं", "खाना नहीं", "बीमार", "बुखार", "दस्त", "सूजन",
             "घाव", "लंगड़ा", "सुस्त", "उदास", "कमजोरी", "खून", "साँस", "सांस", "प्रसव", "थनैला",
+            "आफरा", "अफारा", "पेट फूल", "खड़ी नहीं", "खड़े न हो", "उठ नहीं", "बेहोश", "टीका", "जुगाली",
             "chara nahi", "khana nahi", "bimar", "bukhar", "dast", "sujan", "ghav", "sust",
-            "not eating", "sick", "fever", "diarrhea", "swelling", "wound", "limping", "symptom"
+            "afara", "aafra", "pet phul", "saans", "khadi nahi", "behosh",
+            "not eating", "sick", "fever", "diarrhea", "swelling", "wound", "limping", "symptom",
+            "bloat", "breathing", "cannot stand", "calving", "mastitis", "vaccine"
         )
         return healthMarkers.any { promptLower.contains(it) }
     }
 
-    fun streamAssistantResponse(
+    private fun buildVetEightSectionRules(
+        assessment: VetTriageAssessment,
+        language: AppLanguage,
+        hasPhoto: Boolean
+    ): String {
+        val emergencyDirective = if (assessment.requiresImmediateVetCall) {
+            """
+            CRITICAL EMERGENCY OVERRIDE DETECTED (${assessment.detectedRedFlagsHi.joinToString("; ")}):
+            - You MUST set Section 3 (खतरे का स्तर) to "आपातकाल (EMERGENCY)".
+            - Do NOT delay with lengthy home advice — instruct calling a qualified veterinarian IMMEDIATELY at the very top of Section 4 & Section 6.
+            """.trimIndent()
+        } else {
+            "Baseline Triage Risk: ${assessment.riskLevel.labelHi} (${assessment.riskLevel.name}). Escalate to आपातकाल (EMERGENCY) if symptoms imply danger."
+        }
+
+        val followUpPrompt = if (assessment.missingQuestionsHi.isNotEmpty()) {
+            val missingList = if (language == AppLanguage.HINDI) {
+                assessment.missingQuestionsHi.take(5).joinToString(" | ")
+            } else {
+                assessment.missingQuestionsEn.take(5).joinToString(" | ")
+            }
+            "Relevant Follow-up Questions to ask caregiver concisely (ONLY what is missing): $missingList"
+        } else {
+            "All key clinical triage questions were already answered."
+        }
+
+        val photoSafetyNote = if (hasPhoto) {
+            "PHOTO SAFETY: State clearly that photo analysis gives only possible observations — NEVER declare a definite/confirmed diagnosis from a photo alone ('यह फोटो आधारित विश्लेषण केवल प्रारंभिक सुझाव है, निश्चित बीमारी की घोषणा नहीं है')."
+        } else {
+            "NO-PHOTO SAFETY: State clearly that symptom analysis is preliminary guidance, not a confirmed medical diagnosis."
+        }
+
+        return """
+            $emergencyDirective
+            $followUpPrompt
+            $photoSafetyNote
+
+            GOOGLE SEARCH GROUNDING REQUIREMENT:
+            Use Google Search to ground veterinary medical information prioritizing:
+            1) Department of Animal Husbandry & Dairying (DAHD, Govt. of India - dahd.nic.in)
+            2) ICAR & IVRI (icar.org.in, ivri.nic.in)
+            3) NDDB (nddb.coop)
+            4) Government Veterinary Universities in India
+            5) Trusted Veterinary Medical Resources (Merck Veterinary Manual, FAO, WOAH)
+
+            MANDATORY 8-SECTION VETERINARY HEALTH REPORT STRUCTURE (INCLUDE ALL 8 CLEAR NUMBERED HEADINGS):
+            1. संभावित समस्या (Possible Problem — list possible conditions only; NEVER declare a definite diagnosis without vet clinical examination)
+            2. इसके संभावित कारण (Possible Causes — practical cattle causes based on symptoms/records)
+            3. खतरे का स्तर: सामान्य / सावधानी / आपातकाल (Risk Level — explicitly write one of: सामान्य / सावधानी / आपातकाल)
+            4. अभी क्या प्राथमिक देखभाल करनी है (Immediate First Aid & Safe Primary Care — rest, shade, clean water/hygiene; if आपातकाल, prioritize calling vet immediately)
+            5. क्या नहीं करना है (What NOT to Do — NEVER suggest antibiotics or injections without proper clinical diagnosis; NEVER set medication dosage without weight, age, pregnancy & vet supervision; NEVER suggest unsafe home remedies or force-feeding)
+            6. पशु चिकित्सक को कब बुलाना है (When to Call Veterinarian — clear urgent signs & timeframe; mention प्रसव समस्या, सांस की तकलीफ, पेट फूलना/आफरा, खड़ी न हो पाना, बेहोशी, खून बहना)
+            7. डॉक्टर से कौन-कौन सी जाँच करवानी चाहिए (Recommended Vet Diagnostic Tests — e.g., rectal temperature, rumen motility/auscultation, blood smear/CBC, dung/urine test, CMT for mastitis, calcium/metabolic check)
+            8. विश्वसनीय जानकारी के स्रोत (Trusted Sources — cite authority name like DAHD/ICAR/IVRI/NDDB/Veterinary University, reference link if grounded, and date ${todayIsoDateString()})
+
+            After Section 8, if important clinical details are still missing, add a brief "पशु की बेहतर जाँच हेतु अगले प्रश्न (Follow-up Questions)" list of 2-4 concise questions from the missing triage items above.
+        """.trimIndent()
+    }
+
+    /**
+     * Rich streaming response returning progressive text + live Google Search grounding citations
+     * + deterministic triage risk level.
+     */
+    fun streamAssistantUpdates(
         userPrompt: String,
         roleContext: String,
         modeLabel: String,
         language: AppLanguage,
-        recentHistory: List<Pair<Boolean, String>> = emptyList()
-    ): Flow<String> = flow {
+        recentHistory: List<Pair<Boolean, String>> = emptyList(),
+        selectedCow: Cattle? = null
+    ): Flow<AiStreamUpdate> = flow {
+        val isHealth = isHealthSymptomQuestion(modeLabel, userPrompt)
+        val assessment = if (isHealth) {
+            VetTriageEngine.evaluate(symptomsText = userPrompt, selectedCow = selectedCow)
+        } else null
+
         val langInstruction = if (language == AppLanguage.HINDI) {
             "हमेशा सरल, स्पष्ट और व्यावहारिक हिंदी (देवनागरी) में उत्तर दें (भले ही प्रश्न Hinglish या रोमन हिंदी में पूछा गया हो) ताकि गौशाला का कर्मचारी भी आसानी से समझ सके। छोटे बुलेट पॉइंट और चरणबद्ध (Step-by-step) तरीका अपनाएँ।"
         } else {
@@ -472,43 +752,26 @@ class GeminiAiRepository {
                     appendLine("- $roleTag: ${text.take(400)}")
                 }
             }
-        } else {
-            ""
-        }
+        } else ""
 
-        val healthStructureInstruction = if (isHealthSymptomQuestion(modeLabel, userPrompt)) {
-            """
-            HEALTH GUIDANCE MANDATORY FORMAT (include ALL 7 clear numbered sections):
-            1. संभावित कारण (Possible Causes — NEVER declare a confirmed/definite diagnosis without veterinary examination)
-            2. लक्षणों की गंभीरता (Severity: कम / मध्यम / गंभीर / आपातकाल)
-            3. तत्काल देखभाल (Immediate Safe Care & Comfort)
-            4. पानी और चारे से संबंधित सावधानी (Water & Fodder Precautions)
-            5. क्या नहीं करना चाहिए (What NOT to Do — never give arbitrary human/strong medicines, exact drug dosages, or force-feed)
-            6. पशु चिकित्सक को कब बुलाना चाहिए (When to Call a Veterinarian)
-            7. आपातकालीन चेतावनी व अस्वीकरण (Emergency Warning for bleeding, breathing trouble, calving issue, inability to stand, poisoning — this is preliminary guidance, not a confirmed diagnosis)
-            """.trimIndent()
-        } else {
-            ""
-        }
+        val vetBlock = if (assessment != null) {
+            buildVetEightSectionRules(assessment, language, hasPhoto = false)
+        } else ""
 
         val fullPrompt = """
             Active Mode: $modeLabel
             $langInstruction
-            $healthStructureInstruction
+            $vetBlock
 
             CORE GOSHALA EXPERTISE AREAS (answer practically & step-by-step):
-            1. 50 गायों या वास्तविक संख्या के अनुसार दैनिक चारा प्रबंधन (हरा चारा, सूखा चारा/भूसा, दाना/खली, खनिज मिश्रण)
+            1. गायों की वास्तविक संख्या के अनुसार दैनिक चारा प्रबंधन (हरा चारा, सूखा चारा/भूसा, दाना/खली, खनिज मिश्रण)
             2. प्रतिदिन स्वच्छ पानी की व्यवस्था व मौसम (गर्मी/सर्दी/बरसात) के अनुसार देखभाल
             3. गोशाला व शेड की नियमित सफाई, नाली प्रबंधन व मक्खी-मच्छर नियंत्रण
             4. टीकाकरण समय-सारणी व स्वास्थ्य रिकॉर्ड प्रबंधन
             5. बीमारी की रोकथाम, बीमार गाय व नवजात बछड़े की देखभाल
             6. कर्मचारियों की जिम्मेदारी, शिफ्ट व कार्य वितरण
-            7. गोबर प्रबंधन व संग्रह व्यवस्था
-            8. जैविक खाद / वर्मीकम्पोस्ट बनाने की सरल विधि
-            9. गोबर के कंडे, गोबर लकड़ी (गौ-काष्ठ), प्राकृतिक धूपबत्ती निर्माण व पैकेजिंग
-            10. गौशाला का खर्च कम करने के व्यावहारिक उपाय व किसान से चारा खरीद प्रबंधन
-            11. गोशाला उत्पादों की बिक्री व आय बढ़ाने की रणनीति
-            12. सरकारी योजना और आवश्यक दस्तावेज मार्गदर्शन (गौशाला पंजीकरण, राज्य/केंद्र पशुपालन विभाग सहायता — हमेशा उल्लेख करें कि नवीनतम पात्रता व आवेदन की पुष्टि स्थानीय पशुपालन विभाग/आधिकारिक पोर्टल से करें)
+            7. गोबर प्रबंधन, जैविक खाद / वर्मीकम्पोस्ट, कंडे, गौ-काष्ठ व धूपबत्ती निर्माण
+            8. गौशाला खर्च कम करने व उत्पाद बिक्री से आय वृद्धि तथा सरकारी योजना मार्गदर्शन
 
             AUTHORIZED CONTEXT (VERIFIED FIREBASE APP DATA):
             $roleContext
@@ -522,10 +785,20 @@ class GeminiAiRepository {
         val hook = testStreamHandler
         if (hook != null) {
             val chunks = hook(userPrompt, roleContext, modeLabel)
+            val testSources = testGroundedSourcesProvider?.invoke().orEmpty()
             val acc = StringBuilder()
             for (c in chunks) {
                 acc.append(c)
-                emit(acc.toString())
+                val finalRisk = assessment?.let { VetTriageEngine.resolveFinalRiskLevel(acc.toString(), it.riskLevel) }
+                emit(
+                    AiStreamUpdate(
+                        text = acc.toString(),
+                        sources = testSources,
+                        riskLevel = finalRisk,
+                        assessment = assessment,
+                        usedGoogleSearch = isHealth || testSources.isNotEmpty()
+                    )
+                )
             }
             if (acc.isBlank()) {
                 throw IllegalStateException("AI मॉडल से कोई उत्तर प्राप्त नहीं हुआ / Empty AI response.")
@@ -533,36 +806,134 @@ class GeminiAiRepository {
             return@flow
         }
 
-        // Live Firebase AI Logic streaming — let SDK use installed App Check provider natively,
-        // and only force-refresh & retry once if an App Check token error occurs.
-        var attempt = 0
-        while (true) {
-            val accumulated = StringBuilder()
-            try {
-                withTimeout(60_000L) {
-                    chatModel.generateContentStream(fullPrompt).collect { chunk ->
-                        val piece = chunk.text.orEmpty()
-                        if (piece.isNotEmpty()) {
-                            accumulated.append(piece)
-                            emit(accumulated.toString())
+        // Choose grounded model for veterinary/health or scheme questions, with automatic graceful fallback
+        val useGroundedFirst = isHealth ||
+            userPrompt.contains("योजना", ignoreCase = true) ||
+            userPrompt.contains("सरकारी", ignoreCase = true) ||
+            userPrompt.contains("scheme", ignoreCase = true) ||
+            userPrompt.contains("vaccine", ignoreCase = true) ||
+            userPrompt.contains("टीका", ignoreCase = true)
+
+        val candidateSpecs: List<ModelCandidateSpec> = if (useGroundedFirst) {
+            listOf(
+                ModelCandidateSpec(PRIMARY_MODEL_NAME, isGrounded = true, isFallback = false),
+                ModelCandidateSpec(FALLBACK_LITE_MODEL_NAME, isGrounded = true, isFallback = true),
+                ModelCandidateSpec(PRIMARY_MODEL_NAME, isGrounded = false, isFallback = false),
+                ModelCandidateSpec(FALLBACK_LITE_MODEL_NAME, isGrounded = false, isFallback = true)
+            )
+        } else {
+            listOf(
+                ModelCandidateSpec(PRIMARY_MODEL_NAME, isGrounded = false, isFallback = false),
+                ModelCandidateSpec(FALLBACK_LITE_MODEL_NAME, isGrounded = false, isFallback = true)
+            )
+        }
+
+        var lastError: Throwable? = null
+        var skipGroundedBecauseUnsupported = false
+        for ((modelIndex, spec) in candidateSpecs.withIndex()) {
+            if (skipGroundedBecauseUnsupported && spec.isGrounded) continue
+            var appCheckRetried = false
+            var attemptNumber = 0
+            while (true) {
+                attemptNumber++
+                val accumulated = StringBuilder()
+                val collectedSources = LinkedHashMap<String, VetSourceReference>()
+                try {
+                    val attemptRunner = testModelAttemptRunner
+                    if (attemptRunner != null) {
+                        val (textResult, srcList) = attemptRunner(spec, attemptNumber, fullPrompt)
+                        srcList.forEach { collectedSources.putIfAbsent(it.url, it) }
+                        accumulated.append(textResult)
+                    } else {
+                        val model = resolveCandidateModel(spec)
+                        withTimeout(60_000L) {
+                            model.generateContentStream(fullPrompt).collect { chunk ->
+                                extractGroundingSources(chunk).forEach { src ->
+                                    collectedSources.putIfAbsent(src.url, src)
+                                }
+                                val piece = chunk.text.orEmpty()
+                                if (piece.isNotEmpty()) {
+                                    accumulated.append(piece)
+                                    val finalRisk = assessment?.let {
+                                        VetTriageEngine.resolveFinalRiskLevel(accumulated.toString(), it.riskLevel)
+                                    }
+                                    emit(
+                                        AiStreamUpdate(
+                                            text = accumulated.toString(),
+                                            sources = collectedSources.values.toList(),
+                                            riskLevel = finalRisk,
+                                            assessment = assessment,
+                                            usedGoogleSearch = spec.isGrounded,
+                                            modelUsed = spec.modelName,
+                                            usedFallbackModel = spec.isFallback
+                                        )
+                                    )
+                                }
+                            }
                         }
                     }
+                    if (accumulated.isBlank()) {
+                        throw IllegalStateException("AI मॉडल से कोई उत्तर प्राप्त नहीं हुआ / Empty AI response.")
+                    }
+                    val finalRisk = assessment?.let {
+                        VetTriageEngine.resolveFinalRiskLevel(accumulated.toString(), it.riskLevel)
+                    }
+                    emit(
+                        AiStreamUpdate(
+                            text = accumulated.toString(),
+                            sources = collectedSources.values.toList(),
+                            riskLevel = finalRisk,
+                            assessment = assessment,
+                            usedGoogleSearch = spec.isGrounded,
+                            modelUsed = spec.modelName,
+                            usedFallbackModel = spec.isFallback
+                        )
+                    )
+                    return@flow
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastError = e
+                    if (!appCheckRetried && accumulated.isEmpty() && isAppCheckTokenError(e)) {
+                        Log.w(AI_REPO_TAG, "App Check token error during stream (model=${spec.modelName}, grounded=${spec.isGrounded}); forcing refresh and retrying once.", e)
+                        performAppCheckRefresh(forceRefresh = true)
+                        appCheckRetried = true
+                        continue
+                    }
+                    val searchUnsupported = spec.isGrounded && isSearchToolUnsupportedError(e)
+                    if (searchUnsupported) {
+                        skipGroundedBecauseUnsupported = true
+                    }
+                    val hasNextModel = candidateSpecs.drop(modelIndex + 1).any { !skipGroundedBecauseUnsupported || !it.isGrounded }
+                    if (accumulated.isEmpty() && hasNextModel && (searchUnsupported || isModelFallbackEligible(e))) {
+                        Log.w(AI_REPO_TAG, "Model/tool fallback triggered from ${spec.modelName} (grounded=${spec.isGrounded}): ${e.javaClass.simpleName}: ${e.message}")
+                        break
+                    }
+                    throw e
                 }
-                if (accumulated.isBlank()) {
-                    throw IllegalStateException("AI मॉडल से कोई उत्तर प्राप्त नहीं हुआ / Empty AI response.")
-                }
-                return@flow
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (attempt == 0 && accumulated.isEmpty() && isAppCheckTokenError(e)) {
-                    Log.w(AI_REPO_TAG, "App Check token error during chat stream; forcing token refresh and retrying once.", e)
-                    refreshAppCheckToken(forceRefresh = true)
-                    attempt++
-                    continue
-                }
-                throw e
             }
+        }
+        throw lastError ?: IllegalStateException("AI मॉडल से उत्तर प्राप्त नहीं हो सका।")
+    }
+
+    /**
+     * Backwards-compatible text-only streaming API.
+     */
+    fun streamAssistantResponse(
+        userPrompt: String,
+        roleContext: String,
+        modeLabel: String,
+        language: AppLanguage,
+        recentHistory: List<Pair<Boolean, String>> = emptyList()
+    ): Flow<String> = flow {
+        streamAssistantUpdates(
+            userPrompt = userPrompt,
+            roleContext = roleContext,
+            modeLabel = modeLabel,
+            language = language,
+            recentHistory = recentHistory
+        ).collect { update ->
+            emit(update.text)
         }
     }
 
@@ -628,92 +999,100 @@ class GeminiAiRepository {
             else -> if (language == AppLanguage.HINDI) "आज की AI गौशाला कार्य योजना" else "Daily AI Goshala Work Plan"
         }
 
-        var attempt = 0
-        while (true) {
-            try {
-                val response = withTimeout(60_000L) {
-                    workPlanModel.generateContent(prompt)
-                }
-                val rawJson = response.text ?: throw IllegalStateException("AI कार्य योजना से कोई उत्तर प्राप्त नहीं हुआ।")
-                val json = org.json.JSONObject(rawJson)
-                val title = json.optString("title", defaultTitle).ifBlank { defaultTitle }
-                val summary = json.optString("summary", "")
-                val tasksArray = json.optJSONArray("tasks")
-                val tasks = buildList {
-                    if (tasksArray != null) {
-                        for (i in 0 until tasksArray.length()) {
-                            val obj = tasksArray.optJSONObject(i) ?: continue
-                            val taskText = obj.optString("task").trim()
-                            if (taskText.isBlank()) continue
-                            add(
-                                AiWorkPlanItem(
-                                    timeSlot = obj.optString("timeSlot", "-").trim(),
-                                    period = obj.optString("period", if (normalizedHorizon == "DAILY") "सुबह" else "चरण ${i + 1}").trim(),
-                                    task = taskText,
-                                    responsiblePerson = obj.optString("responsiblePerson", "गौशाला स्टाफ").trim(),
-                                    priority = obj.optString("priority", "मध्यम").trim(),
-                                    category = obj.optString("category", "प्रबंधन").trim()
+        val workPlanModels = listOf(workPlanModel, fallbackWorkPlanModel)
+        var lastError: Throwable? = null
+        for ((idx, model) in workPlanModels.withIndex()) {
+            var attempt = 0
+            while (true) {
+                try {
+                    val response = withTimeout(60_000L) {
+                        model.generateContent(prompt)
+                    }
+                    val rawJson = response.text ?: throw IllegalStateException("AI कार्य योजना से कोई उत्तर प्राप्त नहीं हुआ।")
+                    val json = org.json.JSONObject(rawJson)
+                    val title = json.optString("title", defaultTitle).ifBlank { defaultTitle }
+                    val summary = json.optString("summary", "")
+                    val tasksArray = json.optJSONArray("tasks")
+                    val tasks = buildList {
+                        if (tasksArray != null) {
+                            for (i in 0 until tasksArray.length()) {
+                                val obj = tasksArray.optJSONObject(i) ?: continue
+                                val taskText = obj.optString("task").trim()
+                                if (taskText.isBlank()) continue
+                                add(
+                                    AiWorkPlanItem(
+                                        timeSlot = obj.optString("timeSlot", "-").trim(),
+                                        period = obj.optString("period", if (normalizedHorizon == "DAILY") "सुबह" else "चरण ${i + 1}").trim(),
+                                        task = taskText,
+                                        responsiblePerson = obj.optString("responsiblePerson", "गौशाला स्टाफ").trim(),
+                                        priority = obj.optString("priority", "मध्यम").trim(),
+                                        category = obj.optString("category", "प्रबंधन").trim()
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
-                }
-                if (tasks.isEmpty()) {
-                    throw IllegalStateException("कार्य योजना में कोई कार्य प्राप्त नहीं हुआ। कृपया पुनः प्रयास करें।")
-                }
-                return Result.success(
-                    AiWorkPlan(
-                        dateLabel = todayIso,
-                        title = title,
-                        summary = summary,
-                        tasks = tasks,
-                        planHorizon = normalizedHorizon
+                    if (tasks.isEmpty()) {
+                        throw IllegalStateException("कार्य योजना में कोई कार्य प्राप्त नहीं हुआ। कृपया पुनः प्रयास करें।")
+                    }
+                    return Result.success(
+                        AiWorkPlan(
+                            dateLabel = todayIso,
+                            title = title,
+                            summary = summary,
+                            tasks = tasks,
+                            planHorizon = normalizedHorizon
+                        )
                     )
-                )
-            } catch (e: TimeoutCancellationException) {
-                return Result.failure(Exception("AI कार्य योजना बनाने में समय समाप्त हो गया (60 सेकंड)। कृपया पुनः प्रयास करें।", e))
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (attempt == 0 && isAppCheckTokenError(e)) {
-                    Log.w(AI_REPO_TAG, "App Check token error during work plan; forcing refresh and retrying once.", e)
-                    refreshAppCheckToken(forceRefresh = true)
-                    attempt++
-                    continue
+                } catch (e: TimeoutCancellationException) {
+                    return Result.failure(Exception("AI कार्य योजना बनाने में समय समाप्त हो गया (60 सेकंड)। कृपया पुनः प्रयास करें।", e))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastError = e
+                    if (attempt == 0 && isAppCheckTokenError(e)) {
+                        Log.w(AI_REPO_TAG, "App Check token error during work plan; forcing refresh and retrying once.", e)
+                        refreshAppCheckToken(forceRefresh = true)
+                        attempt++
+                        continue
+                    }
+                    if (idx < workPlanModels.lastIndex && isModelFallbackEligible(e)) {
+                        Log.w(AI_REPO_TAG, "Work plan falling back to lite model: ${e.message}")
+                        break
+                    }
+                    return Result.failure(e)
                 }
-                return Result.failure(e)
             }
         }
+        return Result.failure(lastError ?: IllegalStateException("AI कार्य योजना प्राप्त नहीं हो सकी।"))
     }
 
     /**
-     * Generates a structured AI Goshala Health Guidance report from either:
-     * 1) Photo + caregiver symptoms + optional selected cow record, OR
-     * 2) Text symptoms alone (e.g., "चारा ठीक से नहीं खा रही है") + optional selected cow record.
+     * Generates a complete 8-section Google-Search-grounded AI Veterinary Health Report
+     * combining: optional cow photo + symptoms + 10-question triage answers + strictly isolated
+     * selected cow Firebase history + deterministic emergency red-flag safety checks.
      */
-    suspend fun analyzeHealthGuidance(
+    suspend fun generateVetHealthReport(
         bitmap: Bitmap?,
         notes: String,
         language: AppLanguage,
         selectedCow: Cattle? = null,
         cowHealthRecords: List<HealthRecord> = emptyList(),
+        savedVetReports: List<AiVetHealthReport> = emptyList(),
+        triageAnswers: VetTriageAnswers = VetTriageAnswers(),
         isPublic: Boolean = false
-    ): Result<String> {
-        if (bitmap != null) {
-            return analyzeCattlePhoto(
-                bitmap = bitmap,
-                notes = notes,
-                language = language,
-                selectedCow = selectedCow,
-                cowHealthRecords = cowHealthRecords,
-                isPublic = isPublic
-            )
+    ): Result<AiVetReportResult> {
+        val cleanNotes = notes.trim()
+        val triageSummary = triageAnswers.toReadableSummary(language)
+        if (bitmap == null && cleanNotes.isBlank() && triageSummary.isBlank()) {
+            return Result.failure(IllegalArgumentException("कृपया गाय के लक्षण लिखें, जाँच बिंदु चुनें या फोटो अपलोड करें।"))
         }
 
-        val cleanNotes = notes.trim()
-        if (cleanNotes.isBlank()) {
-            return Result.failure(IllegalArgumentException("कृपया गाय के लक्षण लिखें या फोटो चुनें।"))
-        }
+        val assessment = VetTriageEngine.evaluate(
+            symptomsText = cleanNotes,
+            triageAnswers = triageAnswers,
+            selectedCow = selectedCow
+        )
 
         val langPrompt = if (language == AppLanguage.HINDI) {
             "पूरा उत्तर सरल, स्पष्ट और आसान हिंदी (देवनागरी) में दें (भले ही लक्षण Hinglish में लिखे हों) ताकि गौशाला कर्मचारी आसानी से समझ सके।"
@@ -721,70 +1100,210 @@ class GeminiAiRepository {
             "Provide the complete report in clear, simple English."
         }
         val cowRecordBlock = if (selectedCow != null) {
-            buildSelectedCowContext(selectedCow, cowHealthRecords, isPublic)
+            buildSelectedCowContext(
+                cow = selectedCow,
+                healthRecords = cowHealthRecords,
+                isPublic = isPublic,
+                savedVetReports = savedVetReports
+            )
         } else {
-            "SELECTED COW RECORD: कोई गाय रिकॉर्ड चयनित नहीं किया गया है (Only caregiver symptoms provided)."
+            "SELECTED COW RECORD: कोई गाय रिकॉर्ड चयनित नहीं किया गया है (Only caregiver symptoms/photo provided)."
         }
+
+        val photoChecklistBlock = if (bitmap != null) {
+            """
+            VISUAL INSPECTION CHECKLIST FOR PROVIDED COW PHOTO:
+            - शरीर की स्थिति व कमजोरी (Body condition / weakness / dehydration)
+            - आँख (Eyes - discharge, redness, sunken eyes, dullness)
+            - नाक व मुँह (Nose & mouth - discharge, frothing, lesions, drooling)
+            - त्वचा व बाल (Skin & coat - lumps, LSD nodules, rashes, ticks, hair loss)
+            - पेट / बायाँ भाग (Abdomen / left flank distension for bloat/आफरा)
+            - घाव या सूजन (Wounds, bleeding, udder/joint/leg swelling)
+            - खड़े होने या चलने की स्थिति (Posture, drooping head/ears, lameness, inability to stand)
+            """.trimIndent()
+        } else ""
+
+        val eightSectionsBlock = buildVetEightSectionRules(
+            assessment = assessment,
+            language = language,
+            hasPhoto = bitmap != null
+        )
+
         val promptText = """
-            You are the AI Goshala Health Assistant for ${GosalaBrand.NAME_EN} (${GosalaBrand.NAME_HI}, मेहदोरा, पोरसा, मुरैना, मध्य प्रदेश).
-            A caregiver has described cattle health symptoms WITHOUT a photo. Provide careful, structured preliminary health guidance.
+            You are the Advanced AI Veterinary Assistant for ${GosalaBrand.NAME_EN} (${GosalaBrand.NAME_HI}, मेहदोरा, पोरसा, मुरैना, मध्य प्रदेश).
             $langPrompt
 
             $cowRecordBlock
 
-            Caregiver Symptoms / Description: $cleanNotes
+            CAREGIVER SYMPTOMS / NOTES:
+            ${cleanNotes.ifBlank { "केवल फोटो / जाँच बिंदु प्रदान किए गए हैं" }}
 
-            REQUIRED OUTPUT STRUCTURE (MUST INCLUDE ALL 7 CLEAR HEADINGS):
-            1. संभावित कारण (Possible Causes — NEVER declare a definite/confirmed diagnosis without clinical examination)
-            2. लक्षणों की गंभीरता (Severity Level): स्पष्ट लिखें — [कम / मध्यम / गंभीर / आपातकाल]
-            3. तत्काल देखभाल (Immediate Safe Care — rest, shade, hygiene, monitoring)
-            4. पानी और चारे से संबंधित सावधानी (Water & Fodder Precautions — clean water, light/safe feed, observing rumination/जुगाली)
-            5. क्या नहीं करना चाहिए (What NOT to Do — NEVER prescribe definite medicines, human drugs, or exact dosages; warn against force-feeding or unverified home remedies)
-            6. पशु चिकित्सक को कब बुलाना चाहिए (When to Call Veterinarian — clear signs & timeframe)
-            7. आपातकालीन चेतावनी व अस्वीकरण (Emergency Warning for severe distress, calving trouble/प्रसव समस्या, breathing difficulty/साँस की तकलीफ, bleeding/खून, inability to stand/उठ न पाना, or poisoning/विषाक्तता; state clearly that this is preliminary AI guidance, NOT a confirmed medical diagnosis, and AI does not edit any records)
+            ${if (triageSummary.isNotBlank()) "CLINICAL TRIAGE ANSWERS:\n$triageSummary" else ""}
+
+            $photoChecklistBlock
+
+            $eightSectionsBlock
         """.trimIndent()
 
-        val hook = testSymptomHealthAnalyzer
-        if (hook != null) {
-            return try {
-                val text = hook(promptText)
-                if (text.isBlank()) Result.failure(IllegalStateException("AI स्वास्थ्य रिपोर्ट से कोई उत्तर प्राप्त नहीं हुआ।"))
-                else Result.success(text)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Result.failure(e)
+        // Test hooks for deterministic Robolectric unit testing
+        if (bitmap != null) {
+            testPhotoAnalyzer?.let { hook ->
+                return try {
+                    val text = hook(bitmap, promptText)
+                    if (text.isBlank()) Result.failure(IllegalStateException("AI returned an empty image analysis."))
+                    else {
+                        val finalRisk = VetTriageEngine.resolveFinalRiskLevel(text, assessment.riskLevel)
+                        Result.success(
+                            AiVetReportResult(
+                                text = text,
+                                sources = testGroundedSourcesProvider?.invoke().orEmpty(),
+                                riskLevel = finalRisk,
+                                assessment = assessment.copy(
+                                    riskLevel = finalRisk,
+                                    requiresImmediateVetCall = finalRisk == VetRiskLevel.EMERGENCY
+                                ),
+                                usedGoogleSearch = true
+                            )
+                        )
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Result.failure(e)
+                }
+            }
+        } else {
+            testSymptomHealthAnalyzer?.let { hook ->
+                return try {
+                    val text = hook(promptText)
+                    if (text.isBlank()) Result.failure(IllegalStateException("AI स्वास्थ्य रिपोर्ट से कोई उत्तर प्राप्त नहीं हुआ।"))
+                    else {
+                        val finalRisk = VetTriageEngine.resolveFinalRiskLevel(text, assessment.riskLevel)
+                        Result.success(
+                            AiVetReportResult(
+                                text = text,
+                                sources = testGroundedSourcesProvider?.invoke().orEmpty(),
+                                riskLevel = finalRisk,
+                                assessment = assessment.copy(
+                                    riskLevel = finalRisk,
+                                    requiresImmediateVetCall = finalRisk == VetRiskLevel.EMERGENCY
+                                ),
+                                usedGoogleSearch = true
+                            )
+                        )
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Result.failure(e)
+                }
             }
         }
 
-        var attempt = 0
-        while (true) {
-            try {
-                val response = withTimeout(60_000L) {
-                    chatModel.generateContent(promptText)
+        // Live Firebase AI Logic call with Google Search Grounding + graceful model/tool/AppCheck fallback
+        val candidateSpecs: List<ModelCandidateSpec> = listOf(
+            ModelCandidateSpec(PRIMARY_MODEL_NAME, isGrounded = true, isFallback = false),
+            ModelCandidateSpec(FALLBACK_LITE_MODEL_NAME, isGrounded = true, isFallback = true),
+            ModelCandidateSpec(PRIMARY_MODEL_NAME, isGrounded = false, isFallback = false),
+            ModelCandidateSpec(FALLBACK_LITE_MODEL_NAME, isGrounded = false, isFallback = true)
+        )
+        var lastError: Throwable? = null
+        var skipGroundedBecauseUnsupported = false
+        for ((idx, spec) in candidateSpecs.withIndex()) {
+            if (skipGroundedBecauseUnsupported && spec.isGrounded) continue
+            var appCheckRetried = false
+            var attemptNumber = 0
+            while (true) {
+                attemptNumber++
+                try {
+                    val attemptRunner = testModelAttemptRunner
+                    val text: String
+                    val sources: List<VetSourceReference>
+                    if (attemptRunner != null) {
+                        val (resText, resSources) = attemptRunner(spec, attemptNumber, promptText)
+                        text = resText
+                        sources = resSources
+                    } else {
+                        val model = resolveCandidateModel(spec)
+                        val response = withTimeout(60_000L) {
+                            if (bitmap != null) {
+                                model.generateContent(
+                                    content {
+                                        image(bitmap)
+                                        text(promptText)
+                                    }
+                                )
+                            } else {
+                                model.generateContent(promptText)
+                            }
+                        }
+                        text = response.text.orEmpty()
+                        sources = extractGroundingSources(response)
+                    }
+                    if (text.isBlank()) {
+                        throw IllegalStateException("AI स्वास्थ्य रिपोर्ट से कोई उत्तर प्राप्त नहीं हुआ।")
+                    }
+                    val finalRisk = VetTriageEngine.resolveFinalRiskLevel(text, assessment.riskLevel)
+                    return Result.success(
+                        AiVetReportResult(
+                            text = text,
+                            sources = sources,
+                            riskLevel = finalRisk,
+                            assessment = assessment.copy(
+                                riskLevel = finalRisk,
+                                requiresImmediateVetCall = finalRisk == VetRiskLevel.EMERGENCY
+                            ),
+                            usedGoogleSearch = spec.isGrounded,
+                            modelUsed = spec.modelName,
+                            usedFallbackModel = spec.isFallback
+                        )
+                    )
+                } catch (e: TimeoutCancellationException) {
+                    return Result.failure(Exception("AI स्वास्थ्य रिपोर्ट तैयार करने में समय समाप्त हो गया (60 सेकंड)। कृपया पुनः प्रयास करें।", e))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastError = e
+                    if (!appCheckRetried && isAppCheckTokenError(e)) {
+                        Log.w(AI_REPO_TAG, "App Check token error during vet report (model=${spec.modelName}); forcing refresh and retrying once.", e)
+                        performAppCheckRefresh(forceRefresh = true)
+                        appCheckRetried = true
+                        continue
+                    }
+                    val searchUnsupported = spec.isGrounded && isSearchToolUnsupportedError(e)
+                    if (searchUnsupported) {
+                        skipGroundedBecauseUnsupported = true
+                    }
+                    val hasNext = candidateSpecs.drop(idx + 1).any { !skipGroundedBecauseUnsupported || !it.isGrounded }
+                    if (hasNext && (searchUnsupported || isModelFallbackEligible(e))) {
+                        Log.w(AI_REPO_TAG, "Vet report model/tool fallback from ${spec.modelName} (grounded=${spec.isGrounded}): ${e.javaClass.simpleName}: ${e.message}")
+                        break
+                    }
+                    return Result.failure(e)
                 }
-                val text = response.text
-                return if (text.isNullOrBlank()) {
-                    Result.failure(IllegalStateException("AI स्वास्थ्य रिपोर्ट से कोई उत्तर प्राप्त नहीं हुआ।"))
-                } else {
-                    Result.success(text)
-                }
-            } catch (e: TimeoutCancellationException) {
-                return Result.failure(Exception("AI स्वास्थ्य रिपोर्ट तैयार करने में समय समाप्त हो गया (60 सेकंड)। कृपया पुनः प्रयास करें।", e))
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (attempt == 0 && isAppCheckTokenError(e)) {
-                    Log.w(AI_REPO_TAG, "App Check token error during text health report; forcing refresh and retrying once.", e)
-                    refreshAppCheckToken(forceRefresh = true)
-                    attempt++
-                    continue
-                }
-                return Result.failure(e)
             }
         }
+        return Result.failure(lastError ?: IllegalStateException("AI स्वास्थ्य रिपोर्ट प्राप्त नहीं हो सकी।"))
     }
 
+    /** Backwards-compatible wrapper returning plain text Result<String>. */
+    suspend fun analyzeHealthGuidance(
+        bitmap: Bitmap?,
+        notes: String,
+        language: AppLanguage,
+        selectedCow: Cattle? = null,
+        cowHealthRecords: List<HealthRecord> = emptyList(),
+        isPublic: Boolean = false
+    ): Result<String> = generateVetHealthReport(
+        bitmap = bitmap,
+        notes = notes,
+        language = language,
+        selectedCow = selectedCow,
+        cowHealthRecords = cowHealthRecords,
+        isPublic = isPublic
+    ).map { it.text }
+
+    /** Backwards-compatible wrapper for photo-based veterinary analysis. */
     suspend fun analyzeCattlePhoto(
         bitmap: Bitmap,
         notes: String,
@@ -792,130 +1311,62 @@ class GeminiAiRepository {
         selectedCow: Cattle? = null,
         cowHealthRecords: List<HealthRecord> = emptyList(),
         isPublic: Boolean = false
-    ): Result<String> {
-        val langPrompt = if (language == AppLanguage.HINDI) {
-            "पूरा उत्तर सरल, स्पष्ट और आसान हिंदी (देवनागरी) में दें ताकि गौशाला कर्मचारी आसानी से समझ सके।"
-        } else {
-            "Provide the complete report in clear, simple English."
-        }
-        val cowRecordBlock = if (selectedCow != null) {
-            buildSelectedCowContext(selectedCow, cowHealthRecords, isPublic)
-        } else {
-            "SELECTED COW RECORD: कोई गाय रिकॉर्ड चयनित नहीं किया गया है (Only photo & caregiver notes provided)."
-        }
-        val promptText = """
-            You are assisting cattle caregivers at ${GosalaBrand.NAME_EN} (${GosalaBrand.NAME_HI}, मेहदोरा, पोरसा, मुरैना, मध्य प्रदेश).
-            Carefully inspect this cow/bull/calf photograph and combine it with the available read-only cow record below.
-            $langPrompt
-
-            $cowRecordBlock
-
-            Caregiver Symptoms / Notes: ${notes.ifBlank { "कोई अतिरिक्त टिप्पणी नहीं दी गई" }}
-
-            ANALYZE THESE VISIBLE AREAS CAREFULLY:
-            - शरीर की स्थिति व कमजोरी (Body condition / weakness)
-            - आँख (Eyes - discharge, redness, dullness)
-            - नाक व मुँह (Nose & mouth - discharge, frothing, lesions)
-            - त्वचा व बाल (Skin & coat - lumps, rashes, ticks, hair loss)
-            - घाव या सूजन (Wounds, bleeding, udder/joint/leg swelling)
-            - खड़े होने या चलने की स्थिति (Posture, drooping head/ears, lameness, inability to stand)
-            - व्यवहार के संकेत (उदासी, सुस्ती, खाना न खाना या असामान्य स्थिति)
-
-            REQUIRED OUTPUT STRUCTURE (USE THESE CLEAR HEADINGS):
-            1. गाय व रिकॉर्ड सारांश व फोटो में दिखाई देने वाले लक्षण (Cow ID/History & Visible Observations)
-            2. संभावित कारण / समस्या (Possible Causes — NEVER declare a definite/confirmed diagnosis from a photo)
-            3. लक्षणों की गंभीरता (Severity): स्पष्ट लिखें — [कम / मध्यम / गंभीर / आपातकाल]
-            4. तत्काल देखभाल व पानी-चारे की सावधानी (Immediate Safe Care, Hygiene, Water & Fodder Precautions)
-            5. क्या नहीं करना चाहिए (What NOT to Do — NEVER prescribe definite medicines or exact drug dosages)
-            6. पशु चिकित्सक को कब बुलाएँ (When to Call Veterinarian — explicitly warn to call a vet IMMEDIATELY for serious illness, calving trouble/प्रसव समस्या, breathing difficulty/साँस की तकलीफ, bleeding/खून, inability to stand/उठ न पाना, or poisoning/विषाक्तता)
-            7. आपातकालीन चेतावनी व अस्वीकरण (Emergency Warning & Mandatory Disclaimer: स्पष्ट लिखें कि "यह फोटो आधारित विश्लेषण केवल प्रारंभिक सुझाव है, निश्चित बीमारी की घोषणा नहीं है। सटीक निदान व उपचार के लिए योग्य पशु चिकित्सक की जाँच आवश्यक है। AI किसी रिकॉर्ड में स्वतः बदलाव नहीं करता।")
-        """.trimIndent()
-
-        // Test hook path for deterministic Robolectric tests
-        val hook = testPhotoAnalyzer
-        if (hook != null) {
-            return try {
-                val text = hook(bitmap, promptText)
-                if (text.isBlank()) Result.failure(IllegalStateException("AI returned an empty image analysis."))
-                else Result.success(text)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
-
-        // Live Firebase AI Logic multimodal analysis with automatic App Check refresh retry
-        var attempt = 0
-        while (true) {
-            try {
-                val response = withTimeout(60_000L) {
-                    chatModel.generateContent(
-                        content {
-                            image(bitmap)
-                            text(promptText)
-                        }
-                    )
-                }
-                val text = response.text
-                return if (text.isNullOrBlank()) {
-                    Result.failure(IllegalStateException("AI से फोटो विश्लेषण का उत्तर प्राप्त नहीं हुआ।"))
-                } else {
-                    Result.success(text)
-                }
-            } catch (e: TimeoutCancellationException) {
-                return Result.failure(Exception("AI फोटो विश्लेषण का समय समाप्त हो गया (60 सेकंड)। कृपया पुनः प्रयास करें।", e))
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (attempt == 0 && isAppCheckTokenError(e)) {
-                    Log.w(AI_REPO_TAG, "App Check token error during photo analysis; forcing refresh and retrying once.", e)
-                    refreshAppCheckToken(forceRefresh = true)
-                    attempt++
-                    continue
-                }
-                return Result.failure(e)
-            }
-        }
-    }
+    ): Result<String> = generateVetHealthReport(
+        bitmap = bitmap,
+        notes = notes,
+        language = language,
+        selectedCow = selectedCow,
+        cowHealthRecords = cowHealthRecords,
+        isPublic = isPublic
+    ).map { it.text }
 
     suspend fun extractVoiceEntryDraft(spokenText: String): Result<VoiceEntryDraft> {
-        var attempt = 0
-        while (true) {
-            try {
-                val prompt = """
-                    Convert this Hindi/English spoken Goshala input into a structured draft JSON.
-                    Do not invent numbers that were not spoken; use 0 if unspecified.
-                    Spoken text: "$spokenText"
-                """.trimIndent()
-                val response = withTimeout(60_000L) {
-                    structuredModel.generateContent(prompt)
-                }
-                val rawJson = response.text ?: throw IllegalStateException("Empty structured response")
-                val json = org.json.JSONObject(rawJson)
-                return Result.success(
-                    VoiceEntryDraft(
-                        draftType = json.optString("draftType", "FEED_LOG"),
-                        title = json.optString("title", spokenText.take(60)),
-                        quantity = json.optDouble("quantity", 0.0),
-                        amountInr = json.optDouble("amountInr", 0.0),
-                        notes = json.optString("notes", spokenText),
-                        searchQuery = json.optString("searchQuery", "")
+        val models = listOf(structuredModel, fallbackStructuredModel)
+        var lastError: Throwable? = null
+        for ((idx, model) in models.withIndex()) {
+            var attempt = 0
+            while (true) {
+                try {
+                    val prompt = """
+                        Convert this Hindi/English spoken Goshala input into a structured draft JSON.
+                        Do not invent numbers that were not spoken; use 0 if unspecified.
+                        Spoken text: "$spokenText"
+                    """.trimIndent()
+                    val response = withTimeout(60_000L) {
+                        model.generateContent(prompt)
+                    }
+                    val rawJson = response.text ?: throw IllegalStateException("Empty structured response")
+                    val json = org.json.JSONObject(rawJson)
+                    return Result.success(
+                        VoiceEntryDraft(
+                            draftType = json.optString("draftType", "FEED_LOG"),
+                            title = json.optString("title", spokenText.take(60)),
+                            quantity = json.optDouble("quantity", 0.0),
+                            amountInr = json.optDouble("amountInr", 0.0),
+                            notes = json.optString("notes", spokenText),
+                            searchQuery = json.optString("searchQuery", "")
+                        )
                     )
-                )
-            } catch (e: TimeoutCancellationException) {
-                return Result.failure(Exception("वॉइस ड्राफ्ट बनाने में समय समाप्त हुआ।", e))
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (attempt == 0 && isAppCheckTokenError(e)) {
-                    Log.w(AI_REPO_TAG, "App Check token error during voice draft; forcing refresh and retrying once.", e)
-                    refreshAppCheckToken(forceRefresh = true)
-                    attempt++
-                    continue
+                } catch (e: TimeoutCancellationException) {
+                    return Result.failure(Exception("वॉइस ड्राफ्ट बनाने में समय समाप्त हुआ।", e))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastError = e
+                    if (attempt == 0 && isAppCheckTokenError(e)) {
+                        Log.w(AI_REPO_TAG, "App Check token error during voice draft; forcing refresh and retrying once.", e)
+                        refreshAppCheckToken(forceRefresh = true)
+                        attempt++
+                        continue
+                    }
+                    if (idx < models.lastIndex && isModelFallbackEligible(e)) {
+                        Log.w(AI_REPO_TAG, "Voice draft falling back to lite model: ${e.message}")
+                        break
+                    }
+                    return Result.failure(e)
                 }
-                return Result.failure(e)
             }
         }
+        return Result.failure(lastError ?: IllegalStateException("वॉइस ड्राफ्ट तैयार नहीं हो सका।"))
     }
 }

@@ -17,6 +17,7 @@ class PreferencesManager(private val context: Context) {
     private val keyTheme = stringPreferencesKey("theme_mode")
     private val keyAlertsEnabled = booleanPreferencesKey("alerts_enabled")
     private val keyRemindersEnabled = booleanPreferencesKey("reminders_enabled")
+    private val keyVetPhone = stringPreferencesKey("vet_phone_number")
 
     val languageFlow: Flow<AppLanguage> = context.gosalaDataStore.data.map { prefs ->
         when (prefs[keyLang]) {
@@ -35,6 +36,10 @@ class PreferencesManager(private val context: Context) {
 
     val remindersEnabledFlow: Flow<Boolean> = context.gosalaDataStore.data.map { prefs ->
         prefs[keyRemindersEnabled] ?: true
+    }
+
+    val vetPhoneFlow: Flow<String> = context.gosalaDataStore.data.map { prefs ->
+        prefs[keyVetPhone].orEmpty()
     }
 
     suspend fun setLanguage(language: AppLanguage) {
@@ -58,6 +63,12 @@ class PreferencesManager(private val context: Context) {
     suspend fun setRemindersEnabled(enabled: Boolean) {
         context.gosalaDataStore.edit { prefs ->
             prefs[keyRemindersEnabled] = enabled
+        }
+    }
+
+    suspend fun setVetPhone(phone: String) {
+        context.gosalaDataStore.edit { prefs ->
+            prefs[keyVetPhone] = phone.trim().take(20)
         }
     }
 }

@@ -253,6 +253,28 @@ service cloud.firestore {
              isValidTimestamp(data.updatedAt);
     }
 
+    function isValidAiVetReport(data) {
+      return data.keys().hasOnly([
+               'cattleId', 'animalCode', 'cattleName', 'symptoms', 'triageSummary',
+               'riskLevel', 'reportText', 'sourceLinks', 'usedPhoto', 'dateStr',
+               'recordedBy', 'recordedByName', 'createdAt', 'updatedAt'
+             ]) &&
+             data.cattleId is string && data.cattleId.size() >= 1 && data.cattleId.size() <= 128 &&
+             data.animalCode is string && data.animalCode.size() >= 1 && data.animalCode.size() <= 40 &&
+             data.cattleName is string && data.cattleName.size() >= 1 && data.cattleName.size() <= 80 &&
+             data.symptoms is string && data.symptoms.size() >= 1 && data.symptoms.size() <= 1000 &&
+             isOptString(data, 'triageSummary', 1000) &&
+             data.riskLevel in ['NORMAL', 'CAUTION', 'EMERGENCY'] &&
+             data.reportText is string && data.reportText.size() >= 1 && data.reportText.size() <= 12000 &&
+             (!('sourceLinks' in data) || (data.sourceLinks is list && data.sourceLinks.size() <= 12 && (data.sourceLinks.size() == 0 || data.sourceLinks[0] is string))) &&
+             data.usedPhoto is bool &&
+             data.dateStr is string && data.dateStr.size() >= 4 && data.dateStr.size() <= 30 &&
+             data.recordedBy is string && data.recordedBy.size() >= 1 && data.recordedBy.size() <= 128 &&
+             isOptString(data, 'recordedByName', 100) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
     function isValidFeedOperation(data) {
       return data.logDate is string && data.logDate.size() >= 4 && data.logDate.size() <= 30 &&
              (data.greenFodderKg is int || data.greenFodderKg is float) && data.greenFodderKg >= 0 && data.greenFodderKg <= 100000 &&
@@ -706,6 +728,33 @@ service cloud.firestore {
                        incoming().createdAt == existing().createdAt &&
                        (isAdmin() || hasStaffPermission('health', 'EDIT'));
       allow delete: if isSignedIn() && isValidId(recordId) && (isAdmin() || hasStaffPermission('health', 'DELETE'));
+    }
+
+    match /aiVetReports/{reportId} {
+      allow get: if isSignedIn() && isValidId(reportId) && (
+        isAdmin() ||
+        hasStaffPermission('health', 'VIEW') ||
+        hasStaffPermission('cattle', 'VIEW') ||
+        hasStaffPermission('ai', 'VIEW')
+      );
+      allow list: if isSignedIn() && (
+        isAdmin() ||
+        hasStaffPermission('health', 'VIEW') ||
+        hasStaffPermission('cattle', 'VIEW') ||
+        hasStaffPermission('ai', 'VIEW')
+      );
+      allow create: if isSignedIn() &&
+                       isValidId(reportId) &&
+                       isValidAiVetReport(incoming()) &&
+                       incoming().recordedBy == request.auth.uid &&
+                       (
+                         isAdmin() ||
+                         hasStaffPermission('health', 'ADD') ||
+                         hasStaffPermission('cattle', 'EDIT') ||
+                         hasStaffPermission('ai', 'ADD')
+                       );
+      allow update: if false;
+      allow delete: if isSignedIn() && isValidId(reportId) && (isAdmin() || hasStaffPermission('health', 'DELETE'));
     }
 
     match /feedAndOperations/{logId} {

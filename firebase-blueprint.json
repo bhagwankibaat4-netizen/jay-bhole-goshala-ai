@@ -467,6 +467,28 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["animalCode", "name", "category", "breed", "sex", "ageText", "colour", "weightKg", "entryDate", "healthStatus", "goshalaNameHi", "goshalaNameEn", "goshalaAddressHi", "goshalaAddressEn", "qrUrl", "publicApproved", "updatedAt"]
+    },
+    "AiVetHealthReport": {
+      "title": "AiVetHealthReport",
+      "description": "Saved AI Veterinary Assistant 8-section health assessment linked to a specific cow ID.",
+      "type": "object",
+      "properties": {
+        "cattleId": { "type": "string" },
+        "animalCode": { "type": "string" },
+        "cattleName": { "type": "string" },
+        "symptoms": { "type": "string" },
+        "triageSummary": { "type": "string" },
+        "riskLevel": { "type": "string", "enum": ["NORMAL", "CAUTION", "EMERGENCY"] },
+        "reportText": { "type": "string" },
+        "sourceLinks": { "type": "array", "items": { "type": "string" } },
+        "usedPhoto": { "type": "boolean" },
+        "dateStr": { "type": "string" },
+        "recordedBy": { "type": "string" },
+        "recordedByName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["cattleId", "animalCode", "cattleName", "symptoms", "riskLevel", "reportText", "usedPhoto", "dateStr", "recordedBy", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -480,6 +502,7 @@
     "/cattlePhotos/{cattleId}": { "schema": "CattlePhoto", "description": "Cloud-persisted cow photo fallback linked to cattle/{cattleId}" },
     "/publicCattleCards/{animalCode}": { "schema": "PublicCattleCard", "description": "Public-safe Digital Cow ID Card projection for Google Lens QR scans" },
     "/healthRecords/{recordId}": { "schema": "HealthRecord", "description": "Health, vaccination, and treatment logs" },
+    "/aiVetReports/{reportId}": { "schema": "AiVetHealthReport", "description": "Saved AI Veterinary health reports linked by cattleId and animalCode" },
     "/feedAndOperations/{logId}": { "schema": "FeedAndOperationLog", "description": "Daily feed, water, cleaning, and task logs" },
     "/staffOperations/{entryId}": { "schema": "StaffOperation", "description": "Staff attendance, salary, and tasks" },
     "/financialTransactions/{txId}": { "schema": "FinancialTransaction", "description": "Goshala income and expense ledger" },

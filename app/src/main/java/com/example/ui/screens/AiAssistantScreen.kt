@@ -42,6 +42,7 @@ import androidx.core.content.ContextCompat
 import com.example.core.AppLanguage
 import com.example.core.CattlePhotoStorage
 import com.example.core.QrAndExportUtils
+import com.example.core.VetTriageAnswers
 import com.example.core.str
 import com.example.data.model.*
 import com.example.ui.theme.*
@@ -80,7 +81,11 @@ fun AiAssistantScreen(
     onSaveHealthDraft: (HealthRecord) -> Unit,
     onNavigateToCattleSearch: () -> Unit,
     products: List<GoshalaProduct> = emptyList(),
-    staffAccounts: List<StaffAccount> = emptyList()
+    staffAccounts: List<StaffAccount> = emptyList(),
+    savedVetReports: List<AiVetHealthReport> = emptyList(),
+    vetPhoneNumber: String = "",
+    onSaveVetPhone: (String) -> Unit = {},
+    onSaveVetReport: (AiVetHealthReport) -> Unit = {}
 ) {
     val context = LocalContext.current
     val listState = rememberLazyListState()
@@ -126,11 +131,33 @@ fun AiAssistantScreen(
     var voiceStatusMessage by remember { mutableStateOf<String?>(null) }
     var isVoiceListening by remember { mutableStateOf(false) }
 
-    // Photo picker & camera capture state for Cow Photo Health Check
+    // Photo picker, camera capture & veterinary clinical triage state
     var selectedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var photoNotes by remember { mutableStateOf("") }
+    var triageAnswers by remember(selectedCow?.id, selectedCow?.animalCode) { mutableStateOf(VetTriageAnswers()) }
+    var voiceTargetIsSymptoms by remember { mutableStateOf(false) }
     var cameraError by remember { mutableStateOf<String?>(null) }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+
+    val canSaveVetReport = remember(session, isPublic) {
+        !isPublic && (
+            session.role == UserRole.ADMIN ||
+                session.canAdd(AppModule.HEALTH) ||
+                session.canAdd(AppModule.AI) ||
+                session.canEdit(AppModule.CATTLE)
+            )
+    }
+
+    val reportsForSelectedCow = remember(savedVetReports, selectedCow) {
+        if (selectedCow == null) {
+            emptyList()
+        } else {
+            savedVetReports.filter { rep ->
+                (selectedCow!!.id.isNotBlank() && rep.cattleId == selectedCow!!.id) ||
+                    (selectedCow!!.animalCode.isNotBlank() && rep.animalCode.equals(selectedCow!!.animalCode, ignoreCase = true))
+            }
+        }
+    }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -205,12 +232,16 @@ fun AiAssistantScreen(
                 voiceInputText = spoken
                 speechError = null
                 voiceStatusMessage = str(language, "आवाज़ से प्राप्त: $spoken", "Captured voice: $spoken")
-                if (selectedMode == AiMode.VOICE_DRAFT) {
+                if (voiceTargetIsSymptoms) {
+                    photoNotes = if (photoNotes.isBlank()) spoken else "$photoNotes, $spoken"
+                    voiceTargetIsSymptoms = false
+                } else if (selectedMode == AiMode.VOICE_DRAFT) {
                     aiViewModel.createVoiceDraft(spoken, language)
                 } else {
                     promptText = spoken
                 }
             } else {
+                voiceTargetIsSymptoms = false
                 voiceStatusMessage = null
                 speechError = str(language, "आवाज़ स्पष्ट नहीं मिली। कृपया दोबारा बोलें या टाइप करें।", "Could not recognize speech. Please try again or type.")
             }
@@ -293,7 +324,8 @@ fun AiAssistantScreen(
             products = products,
             selectedCow = selectedCow,
             isRetry = isRetry,
-            staffAccounts = staffAccounts
+            staffAccounts = staffAccounts,
+            savedVetReports = savedVetReports
         )
     }
 
@@ -404,7 +436,7 @@ fun AiAssistantScreen(
                 }
             }
 
-            // 2. ANIMAL CARE PHOTO HEALTH CHECK PANEL (Camera + Gallery + Selected Cow Record)
+            // 2. ANIMAL CARE ADVANCED AI VETERINARY PANEL (Camera + Gallery + Triage + Saved Cow Reports + Vet Call)
             if (selectedMode == AiMode.ANIMAL_CARE) {
                 item {
                     PhotoHealthCheckCard(
@@ -424,6 +456,7 @@ fun AiAssistantScreen(
                         onClearPhoto = {
                             selectedBitmap = null
                             photoNotes = ""
+                            triageAnswers = VetTriageAnswers()
                             cameraError = null
                             aiViewModel.clearPhotoAnalysis()
                         },
@@ -434,9 +467,41 @@ fun AiAssistantScreen(
                                 language = language,
                                 selectedCow = selectedCow,
                                 cowHealthRecords = health,
-                                isPublic = isPublic
+                                isPublic = isPublic,
+                                triageAnswers = triageAnswers,
+                                savedVetReports = savedVetReports,
+                                useCowSavedPhotoIfAvailable = true
                             )
-                        }
+                        },
+                        triageAnswers = triageAnswers,
+                        onTriageAnswersChange = { triageAnswers = it },
+                        vetPhoneNumber = vetPhoneNumber,
+                        onSaveVetPhone = onSaveVetPhone,
+                        canSaveVetReport = canSaveVetReport,
+                        onSaveVetReport = onSaveVetReport,
+                        onVoiceSymptomClick = {
+                            voiceTargetIsSymptoms = true
+                            onMicClicked()
+                        },
+                        session = session
+                    )
+                }
+                if (!isPublic && selectedCow != null) {
+                    item {
+                        SavedCowVetReportsCard(
+                            language = language,
+                            selectedCow = selectedCow,
+                            reportsForCow = reportsForSelectedCow
+                        )
+                    }
+                }
+                item {
+                    EmergencyVetCallBanner(
+                        language = language,
+                        assessment = null,
+                        vetPhoneNumber = vetPhoneNumber,
+                        onSaveVetPhone = onSaveVetPhone,
+                        showCompactWhenNormal = true
                     )
                 }
             }
@@ -639,7 +704,9 @@ fun AiAssistantScreen(
                     message = msg,
                     language = language,
                     copyTag = if (!msg.isUser) "ai_copy_msg_$idx" else null,
-                    shareTag = if (!msg.isUser) "ai_share_msg_$idx" else null
+                    shareTag = if (!msg.isUser) "ai_share_msg_$idx" else null,
+                    vetPhoneNumber = vetPhoneNumber,
+                    onSaveVetPhone = onSaveVetPhone
                 )
             }
 
@@ -663,12 +730,19 @@ fun AiAssistantScreen(
                     item {
                         Box(modifier = Modifier.testTag("ai_chat_streaming")) {
                             ChatBubble(
-                                AiChatMessage(
+                                message = AiChatMessage(
                                     isUser = false,
                                     text = state.text,
                                     modeLabel = str(language, selectedMode.labelHi, selectedMode.labelEn),
-                                    cowContextLabel = selectedCow?.let { "${it.name} (${it.animalCode})" }.orEmpty()
-                                )
+                                    cowContextLabel = selectedCow?.let { "${it.name} (${it.animalCode})" }.orEmpty(),
+                                    sources = state.sources,
+                                    riskLevel = state.riskLevel,
+                                    requiresImmediateVetCall = state.riskLevel == com.example.core.VetRiskLevel.EMERGENCY,
+                                    usedGoogleSearch = state.usedGoogleSearch
+                                ),
+                                language = language,
+                                vetPhoneNumber = vetPhoneNumber,
+                                onSaveVetPhone = onSaveVetPhone
                             )
                         }
                     }
@@ -695,36 +769,17 @@ fun AiAssistantScreen(
                 }
                 is AiUiState.Error -> {
                     item {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("ai_chat_error")
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.WarningAmber, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        text = state.message,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onErrorContainer,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-                                if (lastSentPrompt.isNotBlank()) {
-                                    OutlinedButton(
-                                        onClick = { sendPrompt(lastSentPrompt, isRetry = true) },
-                                        modifier = Modifier.testTag("ai_chat_retry_btn")
-                                    ) {
-                                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(Modifier.width(6.dp))
-                                        Text(str(language, "पुनः प्रयास करें", "Retry"))
-                                    }
-                                }
-                            }
-                        }
+                        AiDiagnosticErrorCard(
+                            language = language,
+                            message = state.message,
+                            diagnosticDetail = state.diagnosticDetail,
+                            containerTag = "ai_chat_error",
+                            retryTag = if (lastSentPrompt.isNotBlank()) "ai_chat_retry_btn" else null,
+                            retryLabel = str(language, "पुनः प्रयास करें", "Retry"),
+                            onRetry = if (lastSentPrompt.isNotBlank()) {
+                                { sendPrompt(lastSentPrompt, isRetry = true) }
+                            } else null
+                        )
                     }
                 }
                 else -> Unit

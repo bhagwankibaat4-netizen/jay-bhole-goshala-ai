@@ -135,6 +135,7 @@ class AiGoshalaAssistantRobolectricTest {
         GeminiAiRepository.testPhotoAnalyzer = null
         GeminiAiRepository.testSymptomHealthAnalyzer = null
         GeminiAiRepository.testWorkPlanGenerator = null
+        GeminiAiRepository.testGroundedSourcesProvider = null
     }
 
     @After
@@ -143,6 +144,9 @@ class AiGoshalaAssistantRobolectricTest {
         GeminiAiRepository.testPhotoAnalyzer = null
         GeminiAiRepository.testSymptomHealthAnalyzer = null
         GeminiAiRepository.testWorkPlanGenerator = null
+        GeminiAiRepository.testGroundedSourcesProvider = null
+        GeminiAiRepository.testModelAttemptRunner = null
+        GeminiAiRepository.testAppCheckRefreshHandler = null
     }
 
     @Test
@@ -390,7 +394,7 @@ class AiGoshalaAssistantRobolectricTest {
         var capturedPrompt = ""
         GeminiAiRepository.testPhotoAnalyzer = { _, prompt ->
             capturedPrompt = prompt
-            "1. गाय व रिकॉर्ड सारांश: नंदिनी (JBGS-G-001)\n4. गंभीरता स्तर: मध्यम\n7. महत्वपूर्ण अस्वीकरण: पशु चिकित्सक की जाँच आवश्यक है।"
+            "1. संभावित समस्या: सुस्ती व अपच\n3. खतरे का स्तर: सावधानी\n6. पशु चिकित्सक को कब बुलाना है: सुधार न होने पर तुरंत।"
         }
 
         val bmp = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.LTGRAY) }
@@ -408,18 +412,19 @@ class AiGoshalaAssistantRobolectricTest {
         assertTrue(capturedPrompt.contains("नंदिनी"))
         assertTrue(capturedPrompt.contains("FMD खुरपका टीका"))
         assertTrue(capturedPrompt.contains("हल्का बुखार व अपच"))
-        assertTrue(capturedPrompt.contains("कम / मध्यम / गंभीर / आपातकाल"))
-        assertTrue(capturedPrompt.contains("प्रसव समस्या"))
+        assertTrue(capturedPrompt.contains("सामान्य / सावधानी / आपातकाल"))
         assertTrue(capturedPrompt.contains("निश्चित बीमारी की घोषणा नहीं है"))
+        assertTrue(capturedPrompt.contains("प्रसव समस्या"))
+        assertTrue(capturedPrompt.contains("DAHD") || capturedPrompt.contains("ICAR"))
     }
 
     @Test
-    fun `text-only symptom health report works without uploading a photo and enforces all 7 mandatory sections`() = runBlocking {
+    fun `text-only symptom health report works without uploading a photo and enforces all 8 mandatory veterinary sections`() = runBlocking {
         val repo = GeminiAiRepository()
         var capturedPrompt = ""
         GeminiAiRepository.testSymptomHealthAnalyzer = { prompt ->
             capturedPrompt = prompt
-            "1. संभावित कारण: अपच या हल्का तनाव\n2. लक्षणों की गंभीरता: मध्यम\n3. तत्काल देखभाल: छाया व आराम दें\n4. पानी और चारे से संबंधित सावधानी: स्वच्छ ताजा पानी दें\n5. क्या नहीं करना चाहिए: बिना डॉक्टर की सलाह कोई दवा न दें\n6. पशु चिकित्सक को कब बुलाना चाहिए: 12 घंटे में सुधार न होने पर\n7. आपातकालीन चेतावनी: पेट फूलने या बुखार पर तुरंत डॉक्टर बुलाएँ।"
+            "1. संभावित समस्या: भूख कम होना / अपच\n2. इसके संभावित कारण: चारा परिवर्तन या हल्का तनाव\n3. खतरे का स्तर: सावधानी\n4. अभी क्या प्राथमिक देखभाल करनी है: छाया व स्वच्छ पानी दें\n5. क्या नहीं करना है: बिना पशु चिकित्सक जांच एंटीबायोटिक या इंजेक्शन न दें\n6. पशु चिकित्सक को कब बुलाना है: 12 घंटे में सुधार न होने पर\n7. डॉक्टर से कौन-कौन सी जाँच करवानी चाहिए: तापमान, रुमेन गतिशीलता व रक्त जाँच\n8. विश्वसनीय जानकारी के स्रोत: DAHD (https://dahd.nic.in/)"
         }
 
         val result = repo.analyzeHealthGuidance(
@@ -433,13 +438,14 @@ class AiGoshalaAssistantRobolectricTest {
 
         assertTrue(result.isSuccess)
         assertTrue(capturedPrompt.contains("चारा ठीक से नहीं खा रही है"))
-        assertTrue(capturedPrompt.contains("संभावित कारण"))
-        assertTrue(capturedPrompt.contains("लक्षणों की गंभीरता"))
-        assertTrue(capturedPrompt.contains("तत्काल देखभाल"))
-        assertTrue(capturedPrompt.contains("पानी और चारे से संबंधित सावधानी"))
-        assertTrue(capturedPrompt.contains("क्या नहीं करना चाहिए"))
-        assertTrue(capturedPrompt.contains("पशु चिकित्सक को कब बुलाना चाहिए"))
-        assertTrue(capturedPrompt.contains("आपातकालीन चेतावनी"))
+        assertTrue(capturedPrompt.contains("संभावित समस्या"))
+        assertTrue(capturedPrompt.contains("इसके संभावित कारण"))
+        assertTrue(capturedPrompt.contains("खतरे का स्तर"))
+        assertTrue(capturedPrompt.contains("अभी क्या प्राथमिक देखभाल करनी है"))
+        assertTrue(capturedPrompt.contains("क्या नहीं करना है"))
+        assertTrue(capturedPrompt.contains("पशु चिकित्सक को कब बुलाना है"))
+        assertTrue(capturedPrompt.contains("डॉक्टर से कौन-कौन सी जाँच करवानी चाहिए"))
+        assertTrue(capturedPrompt.contains("विश्वसनीय जानकारी के स्रोत"))
     }
 
     @Test
@@ -757,4 +763,517 @@ class AiGoshalaAssistantRobolectricTest {
         assertTrue(vm.messages.value[0].text.contains("50 gay ke liye"))
         assertTrue(vm.messages.value[3].text.contains("सरकारी योजना"))
     }
+
+    @Test
+    fun `all 5 required clinical veterinary scenarios classify exact risk level, enforce emergency rules, and isolate selected cow records`() = runBlocking {
+        // 1. गाय के खड़े न हो पाने की समस्या -> EMERGENCY
+        val scenario1 = VetTriageEngine.evaluate("गाय सुबह से खड़ी नहीं हो पा रही है", selectedCow = sampleCow)
+        assertEquals(VetRiskLevel.EMERGENCY, scenario1.riskLevel)
+        assertTrue(scenario1.requiresImmediateVetCall)
+        assertTrue(scenario1.detectedRedFlagsHi.any { it.contains("खड़ी नहीं") })
+
+        // 2. गाय का चारा नहीं खाना -> CAUTION + asks missing triage follow-ups
+        val scenario2 = VetTriageEngine.evaluate("गाय सुबह से चारा नहीं खा रही है", selectedCow = sampleCow)
+        assertEquals(VetRiskLevel.CAUTION, scenario2.riskLevel)
+        assertFalse(scenario2.requiresImmediateVetCall)
+        assertTrue(scenario2.missingQuestionsHi.any { it.contains("जुगाली") })
+        assertTrue(scenario2.missingQuestionsHi.any { it.contains("पानी") })
+
+        // 3. गाय को बुखार -> CAUTION (and high fever 105.5°F escalates to EMERGENCY)
+        val scenario3 = VetTriageEngine.evaluate("गाय को बुखार है और सुस्त है", selectedCow = sampleCow)
+        assertEquals(VetRiskLevel.CAUTION, scenario3.riskLevel)
+        val scenario3High = VetTriageEngine.evaluate(
+            "गाय को तेज बुखार है",
+            triageAnswers = VetTriageAnswers(temperatureText = "105.5°F"),
+            selectedCow = sampleCow
+        )
+        assertEquals(VetRiskLevel.EMERGENCY, scenario3High.riskLevel)
+
+        // 4. गाय के पेट में सूजन / आफरा -> EMERGENCY
+        val scenario4 = VetTriageEngine.evaluate("गाय के पेट में सूजन और आफरा है", selectedCow = sampleCow)
+        assertEquals(VetRiskLevel.EMERGENCY, scenario4.riskLevel)
+        assertTrue(scenario4.requiresImmediateVetCall)
+        assertTrue(scenario4.detectedRedFlagsHi.any { it.contains("आफरा") || it.contains("सूजन") })
+
+        // 5. गाय की सांस लेने में परेशानी -> EMERGENCY
+        val scenario5 = VetTriageEngine.evaluate("गाय की सांस लेने में परेशानी हो रही है", selectedCow = sampleCow)
+        assertEquals(VetRiskLevel.EMERGENCY, scenario5.riskLevel)
+        assertTrue(scenario5.requiresImmediateVetCall)
+        assertTrue(scenario5.detectedRedFlagsHi.any { it.contains("सांस") })
+
+        // AI text can NEVER downgrade a deterministic EMERGENCY to CAUTION or NORMAL
+        assertEquals(
+            VetRiskLevel.EMERGENCY,
+            VetTriageEngine.resolveFinalRiskLevel("3. खतरे का स्तर: सामान्य", VetRiskLevel.EMERGENCY)
+        )
+
+        // Strict Single-Cow Isolation: another cow's illness & saved report must NEVER leak into selectedCow prompt
+        val otherCow = Cattle(
+            id = "cow_other_999",
+            animalCode = "JBGS-G-999",
+            name = "कपिला",
+            breed = "थारपारकर",
+            healthStatus = "SICK"
+        )
+        val otherCowHealth = HealthRecord(
+            id = "hr_other",
+            cattleId = otherCow.id,
+            animalCode = otherCow.animalCode,
+            cattleName = otherCow.name,
+            recordType = "TREATMENT",
+            title = "OTHER_COW_SECRET_DISEASE_XYZ",
+            medicine = "OTHER_COW_SECRET_MED"
+        )
+        val selectedCowPastReport = AiVetHealthReport(
+            id = "rep_selected",
+            cattleId = sampleCow.id,
+            animalCode = sampleCow.animalCode,
+            cattleName = sampleCow.name,
+            symptoms = "नंदिनी का पुराना हल्का अपच",
+            riskLevel = "CAUTION",
+            dateStr = "2026-11-20"
+        )
+        val otherCowPastReport = AiVetHealthReport(
+            id = "rep_other",
+            cattleId = otherCow.id,
+            animalCode = otherCow.animalCode,
+            cattleName = otherCow.name,
+            symptoms = "OTHER_COW_PAST_REPORT_SECRET",
+            riskLevel = "EMERGENCY",
+            dateStr = "2026-11-21"
+        )
+
+        val repo = GeminiAiRepository()
+        var capturedPrompt = ""
+        GeminiAiRepository.testSymptomHealthAnalyzer = { prompt ->
+            capturedPrompt = prompt
+            "1. संभावित समस्या: तीव्र आफरा (Bloat)\n3. खतरे का स्तर: आपातकाल\n6. पशु चिकित्सक को कब बुलाना है: तुरंत बुलाएँ।"
+        }
+        GeminiAiRepository.testGroundedSourcesProvider = {
+            listOf(
+                VetSourceReference(
+                    title = "DAHD Livestock Health Advisory",
+                    url = "https://dahd.nic.in/",
+                    domain = "dahd.nic.in",
+                    retrievedDate = "2026-11-28"
+                )
+            )
+        }
+
+        val reportRes = repo.generateVetHealthReport(
+            bitmap = null,
+            notes = "गाय के पेट में सूजन और आफरा है",
+            language = AppLanguage.HINDI,
+            selectedCow = sampleCow,
+            cowHealthRecords = sampleHealthRecords + otherCowHealth,
+            savedVetReports = listOf(selectedCowPastReport, otherCowPastReport),
+            triageAnswers = VetTriageAnswers(ruminating = "नहीं", breathingNormal = "तेज / तकलीफ"),
+            isPublic = false
+        )
+        assertTrue(reportRes.isSuccess)
+        val report = reportRes.getOrThrow()
+        assertEquals(VetRiskLevel.EMERGENCY, report.riskLevel)
+        assertTrue(report.sources.any { it.url == "https://dahd.nic.in/" })
+        assertTrue(capturedPrompt.contains("JBGS-G-001"))
+        assertTrue(capturedPrompt.contains("नंदिनी का पुराना हल्का अपच"))
+        assertFalse(capturedPrompt.contains("OTHER_COW_SECRET_DISEASE_XYZ"))
+        assertFalse(capturedPrompt.contains("OTHER_COW_PAST_REPORT_SECRET"))
+    }
+
+    @Test
+    fun `advanced vet UI shows emergency call banner, grounded source links, saves report to cow record, views past reports, and shows real diagnostic error log`() {
+        var failOnce = true
+        val savedReports = mutableListOf<AiVetHealthReport>()
+        val existingPastReport = AiVetHealthReport(
+            id = "rep_old_1",
+            cattleId = sampleCow.id,
+            animalCode = sampleCow.animalCode,
+            cattleName = sampleCow.name,
+            symptoms = "पुराना हल्का बुखार",
+            riskLevel = "CAUTION",
+            reportText = "1. संभावित समस्या: हल्का बुखार\n3. खतरे का स्तर: सावधानी",
+            sourceLinks = listOf("ICAR Cattle Health|https://icar.org.in/|2026-11-20"),
+            dateStr = "2026-11-20",
+            recordedBy = adminSession.uid,
+            recordedByName = adminSession.displayName
+        )
+
+        GeminiAiRepository.testSymptomHealthAnalyzer = {
+            if (failOnce) {
+                failOnce = false
+                throw IllegalStateException("HTTP 503 Vertex backend temporarily unavailable")
+            }
+            "1. संभावित समस्या: तीव्र आफरा (Bloat)\n3. खतरे का स्तर: आपातकाल\n5. क्या नहीं करना है: बिना पशु चिकित्सक की जांच कोई एंटीबायोटिक या इंजेक्शन न दें।\n6. पशु चिकित्सक को कब बुलाना है: तुरंत बुलाएँ।"
+        }
+        GeminiAiRepository.testGroundedSourcesProvider = {
+            listOf(
+                VetSourceReference(
+                    title = "DAHD Govt of India",
+                    url = "https://dahd.nic.in/",
+                    domain = "dahd.nic.in",
+                    retrievedDate = "2026-11-28"
+                ),
+                VetSourceReference(
+                    title = "IVRI Veterinary Research",
+                    url = "https://www.ivri.nic.in/",
+                    domain = "ivri.nic.in",
+                    retrievedDate = "2026-11-28"
+                )
+            )
+        }
+
+        val vm = AiViewModel()
+        composeRule.setContent {
+            GosalaTheme {
+                AiAssistantScreen(
+                    language = AppLanguage.HINDI,
+                    session = adminSession,
+                    summary = PublicSummary(totalCattle = 1, healthyCattle = 0, sickCattle = 1),
+                    cattle = listOf(sampleCow),
+                    health = sampleHealthRecords,
+                    feedLogs = emptyList(),
+                    finance = emptyList(),
+                    farmers = emptyList(),
+                    farmerTx = emptyList(),
+                    compost = emptyList(),
+                    donations = emptyList(),
+                    products = emptyList(),
+                    savedVetReports = listOf(existingPastReport),
+                    vetPhoneNumber = "9876543210",
+                    onSaveVetPhone = {},
+                    onSaveVetReport = { savedReports.add(it) },
+                    aiViewModel = vm,
+                    initialMode = AiMode.ANIMAL_CARE,
+                    onSaveCattleDraft = {},
+                    onSaveFeedDraft = {},
+                    onSaveExpenseDraft = {},
+                    onSaveHealthDraft = {},
+                    onNavigateToCattleSearch = {}
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. Select cow -> Saved past reports card appears and opens cleanly
+        composeRule.onNodeWithTag("ai_select_cow_JBGS-G-001").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("ai_content_list").performScrollToNode(hasTestTag("ai_saved_vet_reports_card"))
+        composeRule.onNodeWithTag("ai_view_past_reports_btn").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("ai_saved_report_item_0").assertExists()
+
+        // 2. Enter emergency bloat symptom -> Immediate Emergency Vet Call Banner appears!
+        composeRule.onNodeWithTag("ai_content_list").performScrollToNode(hasTestTag("ai_photo_health_card"))
+        composeRule.onNodeWithTag("ai_photo_notes_input").performScrollTo().performTextInput("गाय के पेट में सूजन और आफरा है")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("ai_emergency_vet_banner").assertExists()
+
+        // 3. Tap Generate Report -> First call fails -> Real Diagnostic Error Log MUST be visible!
+        composeRule.onNodeWithTag("analyze_cattle_photo_btn").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("ai_photo_error").assertExists()
+        composeRule.onNodeWithTag("ai_error_diagnostic_log").assertExists()
+        val diag = (vm.photoAnalysisState.value as AiUiState.Error).diagnosticDetail.orEmpty()
+        assertTrue(diag.contains("503"))
+
+        // 4. Tap Retry -> Succeeds with EMERGENCY badge, clickable Google Search sources, and Save Report button
+        composeRule.onNodeWithTag("ai_photo_retry_btn").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertTrue(vm.photoAnalysisState.value is AiUiState.Success)
+        composeRule.onNodeWithTag("vet_risk_badge_emergency").assertExists()
+        composeRule.onNodeWithTag("ai_vet_sources_card").assertExists()
+        composeRule.onNodeWithTag("ai_vet_source_0").assertExists()
+
+        // 5. Save Report to Cow Record triggers onSaveVetReport with accurate cow ID & EMERGENCY risk level
+        composeRule.onNodeWithTag("ai_save_vet_report_btn").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertEquals(1, savedReports.size)
+        assertEquals("JBGS-G-001", savedReports.first().animalCode)
+        assertEquals("EMERGENCY", savedReports.first().riskLevel)
+        assertTrue(savedReports.first().sourceLinks.any { it.contains("https://dahd.nic.in/") })
+    }
+
+    @Test
+    fun `Hindi and Hinglish triage, offline and API-disabled error messages, diagnostic redaction, and view-only Staff UI permissions are enforced`() {
+        val repo = GeminiAiRepository()
+        val vm = AiViewModel()
+
+        // 1. Hinglish & Hindi detection + risk classification
+        assertTrue(repo.isHealthSymptomQuestion("गौशाला सवाल-जवाब", "gay ka pet phul gaya hai aur saans lene me taklif hai"))
+        assertTrue(repo.isHealthSymptomQuestion("गौशाला सवाल-जवाब", "gay chara nahi kha rahi aur bukhar hai"))
+        val hinglishEmergency = VetTriageEngine.evaluate("gay khadi nahi ho pa rahi aur pet me sujan hai")
+        assertEquals(VetRiskLevel.EMERGENCY, hinglishEmergency.riskLevel)
+        assertTrue(hinglishEmergency.requiresImmediateVetCall)
+        val hinglishCaution = VetTriageEngine.evaluate("gay chara nahi kha rahi hai aur bukhar hai")
+        assertEquals(VetRiskLevel.CAUTION, hinglishCaution.riskLevel)
+        assertFalse(hinglishCaution.requiresImmediateVetCall)
+
+        // 2. Network offline, API disabled, App Check 401, Quota 429, Timeout error formatting & key redaction
+        val offlineMsg = vm.formatAiErrorMessage(
+            java.net.UnknownHostException("Unable to resolve host \"firebasevertexai.googleapis.com\": No address associated with hostname"),
+            AppLanguage.HINDI
+        )
+        assertTrue(offlineMsg.contains("इंटरनेट"))
+
+        val apiDisabledMsg = vm.formatAiErrorMessage(
+            IllegalStateException("PERMISSION_DENIED: Firebase Vertex AI API has not been used in project or is SERVICE_DISABLED"),
+            AppLanguage.HINDI
+        )
+        assertTrue(apiDisabledMsg.contains("API Permission") || apiDisabledMsg.contains("अनुमति"))
+
+        val appCheck401Msg = vm.formatAiErrorMessage(
+            IllegalStateException("HTTP 401: Firebase App Check token is invalid."),
+            AppLanguage.HINDI
+        )
+        assertTrue(appCheck401Msg.contains("App Check") || appCheck401Msg.contains("सुरक्षा सत्यापन"))
+
+        val redactedLog = vm.buildDiagnosticLog(
+            IllegalStateException("Request failed with AIzaSySecretExampleKey123456789012345 token")
+        )
+        assertFalse(redactedLog.contains("AIzaSySecretExampleKey"))
+        assertTrue(redactedLog.contains("[REDACTED_KEY]"))
+
+        // 3. View-only Staff (cattle:VIEW, ai:VIEW, NO health:ADD / NO ai:ADD / NO cattle:EDIT):
+        //    Can view saved past reports for the selected cow, CANNOT see Save Report button!
+        val cow2 = Cattle(
+            id = "cow_357",
+            animalCode = "JBGS-G-357",
+            name = "लक्ष्मी",
+            breed = "साहीवाल",
+            ageText = "6 वर्ष",
+            healthStatus = "HEALTHY"
+        )
+        val reportCow1 = AiVetHealthReport(
+            id = "r1",
+            cattleId = sampleCow.id,
+            animalCode = sampleCow.animalCode,
+            cattleName = sampleCow.name,
+            symptoms = "नंदिनी का लक्षण",
+            riskLevel = "CAUTION",
+            reportText = "नंदिनी रिपोर्ट",
+            dateStr = "2026-11-28"
+        )
+        val reportCow2 = AiVetHealthReport(
+            id = "r2",
+            cattleId = cow2.id,
+            animalCode = cow2.animalCode,
+            cattleName = cow2.name,
+            symptoms = "लक्ष्मी का लक्षण",
+            riskLevel = "NORMAL",
+            reportText = "लक्ष्मी रिपोर्ट",
+            dateStr = "2026-11-28"
+        )
+        GeminiAiRepository.testSymptomHealthAnalyzer = {
+            "1. संभावित समस्या: हल्का अपच\n3. खतरे का स्तर: सावधानी"
+        }
+
+        composeRule.setContent {
+            GosalaTheme {
+                AiAssistantScreen(
+                    language = AppLanguage.HINDI,
+                    session = limitedStaffSession,
+                    summary = PublicSummary(totalCattle = 2, healthyCattle = 1, sickCattle = 1),
+                    cattle = listOf(sampleCow, cow2),
+                    health = sampleHealthRecords,
+                    feedLogs = emptyList(),
+                    finance = emptyList(),
+                    farmers = emptyList(),
+                    farmerTx = emptyList(),
+                    compost = emptyList(),
+                    donations = emptyList(),
+                    products = emptyList(),
+                    savedVetReports = listOf(reportCow1, reportCow2),
+                    aiViewModel = vm,
+                    initialMode = AiMode.ANIMAL_CARE,
+                    onSaveCattleDraft = {},
+                    onSaveFeedDraft = {},
+                    onSaveExpenseDraft = {},
+                    onSaveHealthDraft = {},
+                    onNavigateToCattleSearch = {}
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // Select लक्ष्मी (JBGS-G-357) -> Past reports show ONLY लक्ष्मी (1), NOT नंदिनी
+        composeRule.onNodeWithTag("ai_select_cow_JBGS-G-357").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("ai_content_list").performScrollToNode(hasTestTag("ai_saved_vet_reports_card"))
+        composeRule.onNodeWithTag("ai_view_past_reports_btn").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("ai_saved_report_item_0").assertExists()
+        composeRule.onNodeWithTag("ai_saved_report_item_1").assertDoesNotExist()
+
+        // Generate report as view-only staff -> report renders, but Save button is strictly hidden
+        composeRule.onNodeWithTag("ai_content_list").performScrollToNode(hasTestTag("ai_photo_health_card"))
+        composeRule.onNodeWithTag("ai_photo_notes_input").performScrollTo().performTextInput("gay chara nahi kha rahi")
+        composeRule.onNodeWithTag("analyze_cattle_photo_btn").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("ai_photo_success_report").assertExists()
+        composeRule.onNodeWithTag("ai_save_vet_report_btn").assertDoesNotExist()
+    }
+
+    @Test
+    fun `App Check HTTP 401 auto-refreshes token and retries, while 403 SERVICE_DISABLED is never misclassified`() = runBlocking {
+        // 1. Exact classification: 401 UNAUTHENTICATED is App Check; 403 SERVICE_DISABLED is NOT App Check
+        assertTrue(isAppCheckTokenError(IllegalStateException("HTTP 401 UNAUTHENTICATED: Firebase App Check token is invalid.")))
+        assertTrue(isAppCheckTokenError(IllegalStateException("HTTP 401 UNAUTHENTICATED")))
+        assertFalse(isAppCheckTokenError(IllegalStateException("HTTP 403 PERMISSION_DENIED: SERVICE_DISABLED API has not been used in project")))
+        assertFalse(isAppCheckTokenError(IllegalStateException("HTTP 403 billing not enabled")))
+
+        // 2. Real retry loop: first attempt fails with HTTP 401 -> refreshAppCheckToken(forceRefresh=true) runs -> second attempt succeeds
+        var refreshCalls = 0
+        val attemptedModels = mutableListOf<String>()
+        GeminiAiRepository.testAppCheckRefreshHandler = { force ->
+            assertTrue(force)
+            refreshCalls++
+            true
+        }
+        GeminiAiRepository.testModelAttemptRunner = { spec, attempt, _ ->
+            attemptedModels.add("${spec.modelName}:grounded=${spec.isGrounded}:attempt=$attempt")
+            if (attempt == 1) {
+                throw IllegalStateException("HTTP 401 UNAUTHENTICATED: Firebase App Check token is invalid.")
+            }
+            "1. संभावित समस्या: हल्का अपच\n3. खतरे का स्तर: सावधानी\n8. विश्वसनीय जानकारी के स्रोत: DAHD" to listOf(
+                VetSourceReference(
+                    title = "DAHD Livestock Health Portal",
+                    url = "https://dahd.nic.in/schemes-programmes/animal-health",
+                    domain = "dahd.nic.in",
+                    retrievedDate = "2026-11-28"
+                )
+            )
+        }
+
+        val repo = GeminiAiRepository()
+        val result = repo.generateVetHealthReport(
+            bitmap = null,
+            notes = "गाय चारा कम खा रही है",
+            language = AppLanguage.HINDI,
+            selectedCow = sampleCow
+        )
+        assertTrue("Expected retry after App Check 401 refresh to succeed", result.isSuccess)
+        val report = result.getOrThrow()
+        assertEquals(1, refreshCalls)
+        assertEquals("gemini-3.8-flash", report.modelUsed)
+        assertFalse(report.usedFallbackModel)
+        assertTrue(report.usedGoogleSearch)
+        assertEquals(1, report.sources.size)
+        assertEquals("https://dahd.nic.in/schemes-programmes/animal-health", report.sources.first().url)
+        assertEquals("2026-11-28", report.sources.first().retrievedDate)
+        assertEquals(
+            listOf(
+                "gemini-3.8-flash:grounded=true:attempt=1",
+                "gemini-3.8-flash:grounded=true:attempt=2"
+            ),
+            attemptedModels
+        )
+    }
+
+    @Test
+    fun `Fallback model gemini-3_5-flash-lite activates on primary 503 failure while preserving Google Search sources and UI badge`() {
+        val attemptedSpecs = mutableListOf<String>()
+        GeminiAiRepository.testModelAttemptRunner = { spec, _, _ ->
+            attemptedSpecs.add("${spec.modelName}:grounded=${spec.isGrounded}:fallback=${spec.isFallback}")
+            if (spec.modelName == "gemini-3.8-flash") {
+                throw IllegalStateException("HTTP 503 Service Unavailable: gemini-3.8-flash temporarily overloaded")
+            }
+            "1. संभावित समस्या: हल्का बुखार व कमजोरी\n3. खतरे का स्तर: सावधानी\n8. विश्वसनीय जानकारी के स्रोत: ICAR-IVRI" to listOf(
+                VetSourceReference(
+                    title = "ICAR-IVRI Cattle Health Advisory",
+                    url = "https://www.ivri.nic.in/advisory/cattle-fever",
+                    domain = "ivri.nic.in",
+                    retrievedDate = "2026-11-28"
+                )
+            )
+        }
+
+        val vm = AiViewModel()
+        composeRule.setContent {
+            GosalaTheme {
+                AiAssistantScreen(
+                    language = AppLanguage.HINDI,
+                    session = adminSession,
+                    summary = PublicSummary(totalCattle = 1, healthyCattle = 0, sickCattle = 1),
+                    cattle = listOf(sampleCow),
+                    health = sampleHealthRecords,
+                    feedLogs = emptyList(),
+                    finance = emptyList(),
+                    farmers = emptyList(),
+                    farmerTx = emptyList(),
+                    compost = emptyList(),
+                    donations = emptyList(),
+                    products = emptyList(),
+                    savedVetReports = emptyList(),
+                    aiViewModel = vm,
+                    initialMode = AiMode.ANIMAL_CARE,
+                    onSaveCattleDraft = {},
+                    onSaveFeedDraft = {},
+                    onSaveExpenseDraft = {},
+                    onSaveHealthDraft = {},
+                    onNavigateToCattleSearch = {}
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("ai_content_list").performScrollToNode(hasTestTag("ai_photo_health_card"))
+        composeRule.onNodeWithTag("ai_photo_notes_input").performScrollTo().performTextInput("gay ko bukhar hai")
+        composeRule.onNodeWithTag("analyze_cattle_photo_btn").performScrollTo().performClick()
+        composeRule.waitForIdle()
+
+        val state = vm.photoAnalysisState.value as? AiUiState.Success
+        assertNotNull("Expected fallback model to produce Success state", state)
+        assertEquals("gemini-3.5-flash-lite", state!!.modelUsed)
+        assertTrue(state.usedFallbackModel)
+        assertTrue(state.usedGoogleSearch)
+        assertEquals(1, state.sources.size)
+        assertEquals("https://www.ivri.nic.in/advisory/cattle-fever", state.sources.first().url)
+        assertEquals("2026-11-28", state.sources.first().retrievedDate)
+
+        // Verify exact fallback sequence: primary grounded -> fallback lite grounded
+        assertEquals(
+            listOf(
+                "gemini-3.8-flash:grounded=true:fallback=false",
+                "gemini-3.5-flash-lite:grounded=true:fallback=true"
+            ),
+            attemptedSpecs
+        )
+
+        // UI displays fallback badge, source URL, and retrieved date
+        composeRule.onNodeWithTag("ai_fallback_model_badge").assertExists()
+        composeRule.onNodeWithTag("ai_vet_sources_card").assertExists()
+        composeRule.onNodeWithText("https://www.ivri.nic.in/advisory/cattle-fever", substring = true).assertExists()
+        composeRule.onNodeWithText("2026-11-28", substring = true).assertExists()
+    }
+
+    @Test
+    fun `Search tool 400 unsupported error gracefully falls back to non-grounded primary model`() = runBlocking {
+        val sequence = mutableListOf<String>()
+        GeminiAiRepository.testModelAttemptRunner = { spec, _, _ ->
+            sequence.add("${spec.modelName}:grounded=${spec.isGrounded}")
+            if (spec.isGrounded) {
+                throw IllegalStateException("HTTP 400 INVALID_ARGUMENT: google_search grounding tool is not enabled for this tier")
+            }
+            "1. संभावित समस्या: सामान्य अपच\n3. खतरे का स्तर: सावधानी" to emptyList()
+        }
+
+        val repo = GeminiAiRepository()
+        val result = repo.generateVetHealthReport(
+            bitmap = null,
+            notes = "गाय सुस्त है",
+            language = AppLanguage.HINDI,
+            selectedCow = sampleCow
+        )
+        assertTrue(result.isSuccess)
+        val report = result.getOrThrow()
+        assertEquals("gemini-3.8-flash", report.modelUsed)
+        assertFalse(report.usedGoogleSearch)
+        // Must skip grounded fallback lite when Search tool itself is unsupported and jump straight to non-grounded primary
+        assertEquals(
+            listOf("gemini-3.8-flash:grounded=true", "gemini-3.8-flash:grounded=false"),
+            sequence
+        )
+    }
 }
+
+

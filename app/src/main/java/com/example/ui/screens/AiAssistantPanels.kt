@@ -30,6 +30,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.core.AppLanguage
+import com.example.core.VetRiskLevel
+import com.example.core.VetTriageAnswers
+import com.example.core.VetTriageEngine
 import com.example.core.str
 import com.example.data.model.*
 import com.example.data.repository.AiWorkPlan
@@ -218,34 +221,15 @@ internal fun WorkPlanPanel(
                     }
                 }
                 is AiWorkPlanUiState.Error -> {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.errorContainer,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("ai_work_plan_error")
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.WarningAmber, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = workPlanState.message,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onErrorContainer,
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                            OutlinedButton(
-                                onClick = { onGeneratePlan(selectedFocus, selectedHorizon) },
-                                modifier = Modifier.testTag("ai_work_plan_retry_btn")
-                            ) {
-                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text(str(language, "पुनः प्रयास करें", "Retry"))
-                            }
-                        }
-                    }
+                    AiDiagnosticErrorCard(
+                        language = language,
+                        message = workPlanState.message,
+                        diagnosticDetail = workPlanState.diagnosticDetail,
+                        containerTag = "ai_work_plan_error",
+                        retryTag = "ai_work_plan_retry_btn",
+                        retryLabel = str(language, "पुनः प्रयास करें", "Retry"),
+                        onRetry = { onGeneratePlan(selectedFocus, selectedHorizon) }
+                    )
                 }
                 is AiWorkPlanUiState.Success -> {
                     val plan = workPlanState.plan
@@ -521,10 +505,19 @@ internal fun PhotoHealthCheckCard(
     onPickPhoto: () -> Unit,
     onCapturePhoto: () -> Unit,
     onClearPhoto: () -> Unit,
-    onAnalyze: () -> Unit
+    onAnalyze: () -> Unit,
+    triageAnswers: VetTriageAnswers = VetTriageAnswers(),
+    onTriageAnswersChange: (VetTriageAnswers) -> Unit = {},
+    vetPhoneNumber: String = "",
+    onSaveVetPhone: (String) -> Unit = {},
+    canSaveVetReport: Boolean = false,
+    onSaveVetReport: ((AiVetHealthReport) -> Unit)? = null,
+    onVoiceSymptomClick: (() -> Unit)? = null,
+    session: UserSession? = null
 ) {
     val context = LocalContext.current
     var reportCopied by remember(photoState) { mutableStateOf(false) }
+    var reportSaved by remember(photoState, selectedCow?.id) { mutableStateOf(false) }
 
     LaunchedEffect(reportCopied) {
         if (reportCopied) {
@@ -533,15 +526,29 @@ internal fun PhotoHealthCheckCard(
         }
     }
 
+    val liveAssessment = remember(notes, triageAnswers, selectedCow) {
+        if (notes.isNotBlank() || triageAnswers.hasAnyAnswer()) {
+            VetTriageEngine.evaluate(notes, triageAnswers, selectedCow)
+        } else {
+            null
+        }
+    }
+
     val quickSymptoms = remember(language) {
         listOf(
+            str(language, "गाय खड़ी नहीं हो पा रही है", "Cow unable to stand"),
             str(language, "चारा ठीक से नहीं खा रही है", "Not eating fodder properly"),
-            str(language, "सुस्त / उदास", "Dull / Lethargic"),
+            str(language, "गाय को बुखार है", "Cow has fever"),
+            str(language, "पेट में सूजन / आफरा है", "Swollen abdomen / Bloat"),
+            str(language, "सांस लेने में परेशानी है", "Difficulty breathing"),
             str(language, "दस्त / कमजोरी", "Diarrhea / Weak"),
             str(language, "घाव / सूजन", "Wound / Swelling"),
             str(language, "लंगड़ा रही है", "Limping")
         )
     }
+
+    val cowHasSavedPhoto = selectedCow != null &&
+        (!selectedCow.photoUri.isNullOrBlank() || !selectedCow.photoStoragePath.isNullOrBlank())
 
     Card(
         modifier = Modifier
@@ -556,7 +563,7 @@ internal fun PhotoHealthCheckCard(
                 Spacer(Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = str(language, "गाय फोटो स्वास्थ्य सहायता (AI)", "Cow Photo Health Check (AI)"),
+                        text = str(language, "एडवांस AI पशु चिकित्सा सहायक", "Advanced AI Veterinary Assistant"),
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold
                     )
@@ -564,20 +571,30 @@ internal fun PhotoHealthCheckCard(
                         text = if (selectedCow != null) {
                             str(
                                 language,
-                                "चयनित गाय: ${selectedCow.name} (${selectedCow.animalCode}) — रिकॉर्ड सहित रिपोर्ट बनेगी",
-                                "Selected Cow: ${selectedCow.name} (${selectedCow.animalCode}) — Report includes record"
+                                "चयनित गाय: ${selectedCow.name} (${selectedCow.animalCode}) — केवल इसी गाय का रिकॉर्ड व फोटो उपयोग होगा",
+                                "Selected Cow: ${selectedCow.name} (${selectedCow.animalCode}) — Strictly isolated record & photo"
                             )
                         } else {
                             str(
                                 language,
-                                "शरीर, आँख, नाक, मुँह, त्वचा, घाव, सूजन व खड़े होने की स्थिति की प्रारंभिक जाँच",
-                                "Preliminary visual check of body, eyes, nose, mouth, skin, wounds & posture"
+                                "Google Search Grounded (DAHD/ICAR/IVRI/NDDB) • फोटो, लक्षण व वॉइस जाँच",
+                                "Google Search Grounded (DAHD/ICAR/IVRI/NDDB) • Photo, symptom & voice triage"
                             )
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+            }
+
+            // Immediate Red-Flag Emergency Alert if live typed/selected symptoms indicate danger
+            if (liveAssessment?.riskLevel == VetRiskLevel.EMERGENCY && photoState !is AiUiState.Success) {
+                EmergencyVetCallBanner(
+                    language = language,
+                    assessment = liveAssessment,
+                    vetPhoneNumber = vetPhoneNumber,
+                    onSaveVetPhone = onSaveVetPhone
+                )
             }
 
             // Camera & Gallery Pick Buttons
@@ -607,6 +624,31 @@ internal fun PhotoHealthCheckCard(
                     Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(str(language, "गैलरी", "Gallery"), maxLines = 1)
+                }
+            }
+
+            if (selectedBitmap == null && cowHasSavedPhoto) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = SoftGreenTint,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.CloudDone, contentDescription = null, tint = ForestGreen, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = str(
+                                language,
+                                "${selectedCow.name} की Firebase में सेव असली फोटो रिपोर्ट में स्वतः उपयोग होगी (या नई फोटो चुनें)।",
+                                "${selectedCow.name}'s saved Firebase photo will be used automatically (or upload a fresh photo)."
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ForestGreen
+                        )
+                    }
                 }
             }
 
@@ -671,21 +713,43 @@ internal fun PhotoHealthCheckCard(
                     Text(
                         str(
                             language,
-                            "लक्षण लिखें (फोटो वैकल्पिक — जैसे: चारा ठीक से नहीं खा रही है, सुस्ती, सूजन)",
-                            "Describe symptoms (photo optional — e.g., not eating fodder, dull, swelling)"
+                            "लक्षण लिखें या बोलें (हिंदी / Hinglish — जैसे: चारा नहीं खा रही, बुखार, आफरा)",
+                            "Describe or speak symptoms (Hindi / Hinglish — e.g., not eating, fever, bloat)"
                         )
                     )
                 },
+                trailingIcon = if (onVoiceSymptomClick != null) {
+                    {
+                        IconButton(
+                            onClick = onVoiceSymptomClick,
+                            modifier = Modifier.testTag("ai_symptom_mic_btn")
+                        ) {
+                            Icon(
+                                Icons.Default.Mic,
+                                contentDescription = str(language, "लक्षण बोलकर दर्ज करें", "Speak symptoms"),
+                                tint = Saffron
+                            )
+                        }
+                    }
+                } else null,
                 minLines = 2,
-                maxLines = 3,
+                maxLines = 4,
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("ai_photo_notes_input")
             )
 
+            // Interactive 10-question clinical triage checklist
+            VetTriageChecklistCard(
+                language = language,
+                answers = triageAnswers,
+                selectedCow = selectedCow,
+                onAnswersChange = onTriageAnswersChange
+            )
+
             Button(
                 onClick = onAnalyze,
-                enabled = (selectedBitmap != null || notes.isNotBlank()) && photoState !is AiUiState.Loading,
+                enabled = (selectedBitmap != null || notes.isNotBlank() || triageAnswers.hasAnyAnswer()) && photoState !is AiUiState.Loading,
                 colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -700,7 +764,7 @@ internal fun PhotoHealthCheckCard(
                 )
             }
 
-            // Mandatory Vet Disclaimer Strip
+            // Mandatory Vet Safety Disclaimer Strip
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 color = SoftSaffronTint,
@@ -715,8 +779,8 @@ internal fun PhotoHealthCheckCard(
                     Text(
                         text = str(
                             language,
-                            "फोटो आधारित सुझाव केवल प्रारंभिक हैं। गंभीर लक्षण, प्रसव समस्या, साँस में तकलीफ, खून या उठ न पाने पर तुरंत पशु चिकित्सक को बुलाएँ।",
-                            "Photo insights are preliminary only. Call a veterinarian immediately for severe illness, calving trouble, bleeding, or breathing issues."
+                            "केवल फोटो देखकर पक्का निदान नहीं किया जाता। बिना पशु चिकित्सक की जांच के एंटीबायोटिक, इंजेक्शन या दवा की खुराक न दें। आपातकाल में तुरंत पशु चिकित्सक को बुलाएँ।",
+                            "A photo alone cannot confirm a diagnosis. Never administer antibiotics, injections, or doses without a veterinarian's exam. Call a vet immediately in emergencies."
                         ),
                         style = MaterialTheme.typography.labelSmall,
                         color = DarkText
@@ -724,7 +788,7 @@ internal fun PhotoHealthCheckCard(
                 }
             }
 
-            // Loading / Success / Error States for Photo Analysis
+            // Loading / Success / Error States for Veterinary Report
             when (photoState) {
                 is AiUiState.Loading -> {
                     Surface(
@@ -741,31 +805,80 @@ internal fun PhotoHealthCheckCard(
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(10.dp))
                             Text(
-                                str(language, "AI जवाब तैयार कर रहा है...", "AI is analyzing cow photo & records..."),
+                                str(language, "AI पशु चिकित्सा रिपोर्ट व विश्वसनीय स्रोत तैयार कर रहा है...", "AI is preparing veterinary report & grounded sources..."),
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
                     }
                 }
                 is AiUiState.Success -> {
+                    val reportRisk = photoState.riskLevel ?: liveAssessment?.riskLevel
+                    val effectiveAssessment = photoState.assessment ?: liveAssessment
+                    if (reportRisk == VetRiskLevel.EMERGENCY && effectiveAssessment != null) {
+                        EmergencyVetCallBanner(
+                            language = language,
+                            assessment = effectiveAssessment.copy(riskLevel = VetRiskLevel.EMERGENCY),
+                            vetPhoneNumber = vetPhoneNumber,
+                            onSaveVetPhone = onSaveVetPhone
+                        )
+                    }
                     Surface(
                         shape = RoundedCornerShape(14.dp),
-                        color = SoftGreenTint,
+                        color = if (reportRisk == VetRiskLevel.EMERGENCY) Color(0xFFFFF8F6) else SoftGreenTint,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .border(1.dp, ForestGreen.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                            .border(
+                                1.2.dp,
+                                if (reportRisk == VetRiskLevel.EMERGENCY) AlertRed.copy(alpha = 0.55f) else ForestGreen.copy(alpha = 0.35f),
+                                RoundedCornerShape(14.dp)
+                            )
                             .testTag("ai_photo_success_report")
                     ) {
-                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = ForestGreen, modifier = Modifier.size(18.dp))
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    if (reportRisk == VetRiskLevel.EMERGENCY) Icons.Default.Emergency else Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = if (reportRisk == VetRiskLevel.EMERGENCY) AlertRed else ForestGreen,
+                                    modifier = Modifier.size(18.dp)
+                                )
                                 Spacer(Modifier.width(6.dp))
                                 Text(
-                                    text = str(language, "प्रारंभिक AI स्वास्थ्य रिपोर्ट तैयार", "Preliminary AI Health Report Ready"),
+                                    text = str(language, "AI पशु चिकित्सा स्वास्थ्य रिपोर्ट तैयार", "AI Veterinary Health Report Ready"),
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.Bold,
-                                    color = ForestGreen,
+                                    color = if (reportRisk == VetRiskLevel.EMERGENCY) AlertRed else ForestGreen,
                                     modifier = Modifier.weight(1f)
+                                )
+                            }
+                            if (reportRisk != null) {
+                                VetRiskBadge(riskLevel = reportRisk, language = language)
+                            }
+                            if (photoState.usedFallbackModel && photoState.modelUsed.isNotBlank()) {
+                                Text(
+                                    text = str(
+                                        language,
+                                        "बैकअप मॉडल सक्रिय: ${photoState.modelUsed}",
+                                        "Fallback Model Active: ${photoState.modelUsed}"
+                                    ),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Saffron,
+                                    modifier = Modifier.testTag("ai_fallback_model_badge")
+                                )
+                            }
+                            if (photoState.usedCowRecordPhoto) {
+                                Text(
+                                    text = str(
+                                        language,
+                                        "चयनित गाय की सेव Firebase फोटो का विश्लेषण शामिल है।",
+                                        "Included visual analysis of selected cow's saved Firebase photo."
+                                    ),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = ForestGreen
                                 )
                             }
                             Row(
@@ -775,7 +888,7 @@ internal fun PhotoHealthCheckCard(
                             ) {
                                 TextButton(
                                     onClick = {
-                                        if (copyTextToClipboard(context, "AI Health Report", photoState.text)) {
+                                        if (copyTextToClipboard(context, "AI Veterinary Health Report", photoState.text)) {
                                             reportCopied = true
                                         }
                                     },
@@ -823,40 +936,71 @@ internal fun PhotoHealthCheckCard(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = DarkText
                             )
-                        }
-                    }
-                }
-                is AiUiState.Error -> {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.errorContainer,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("ai_photo_error")
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.WarningAmber, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = photoState.message,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onErrorContainer,
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                            if (selectedBitmap != null || notes.isNotBlank()) {
-                                OutlinedButton(
-                                    onClick = onAnalyze,
-                                    modifier = Modifier.testTag("ai_photo_retry_btn")
+                            VetSourcesCard(
+                                language = language,
+                                sources = photoState.sources,
+                                usedGoogleSearch = photoState.usedGoogleSearch
+                            )
+                            if (canSaveVetReport && selectedCow != null && onSaveVetReport != null) {
+                                Button(
+                                    onClick = {
+                                        val reportToSave = AiVetHealthReport(
+                                            cattleId = selectedCow.id.ifBlank { selectedCow.animalCode },
+                                            animalCode = selectedCow.animalCode,
+                                            cattleName = selectedCow.name,
+                                            symptoms = notes.trim().ifBlank {
+                                                str(language, "फोटो व लक्षण निरीक्षण", "Photo & symptom inspection")
+                                            },
+                                            triageSummary = triageAnswers.toReadableSummary(language),
+                                            riskLevel = (reportRisk ?: VetRiskLevel.CAUTION).name,
+                                            reportText = photoState.text,
+                                            sourceLinks = photoState.sources.map { it.serialize() },
+                                            usedPhoto = selectedBitmap != null || photoState.usedCowRecordPhoto,
+                                            dateStr = todayIsoDateString(),
+                                            recordedBy = session?.uid.orEmpty(),
+                                            recordedByName = session?.displayName.orEmpty()
+                                        )
+                                        onSaveVetReport(reportToSave)
+                                        reportSaved = true
+                                    },
+                                    enabled = !reportSaved,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (reportSaved) ForestGreen.copy(alpha = 0.6f) else Saffron
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .testTag("ai_save_vet_report_btn")
                                 ) {
-                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(str(language, "पुनः जाँच करें", "Retry Analysis"))
+                                    Icon(
+                                        if (reportSaved) Icons.Default.CheckCircle else Icons.Default.Save,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = if (reportSaved) {
+                                            str(language, "रिपोर्ट गाय के रिकॉर्ड में सेव हो गई", "Report Saved to Cow Record")
+                                        } else {
+                                            str(language, "रिपोर्ट गाय के रिकॉर्ड में सेव करें", "Save Report to Cow Record")
+                                        },
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
                             }
                         }
                     }
+                }
+                is AiUiState.Error -> {
+                    AiDiagnosticErrorCard(
+                        language = language,
+                        message = photoState.message,
+                        diagnosticDetail = photoState.diagnosticDetail,
+                        containerTag = "ai_photo_error",
+                        retryTag = if (selectedBitmap != null || notes.isNotBlank() || triageAnswers.hasAnyAnswer()) "ai_photo_retry_btn" else null,
+                        retryLabel = str(language, "पुनः जाँच करें", "Retry Analysis"),
+                        onRetry = if (selectedBitmap != null || notes.isNotBlank() || triageAnswers.hasAnyAnswer()) onAnalyze else null
+                    )
                 }
                 else -> Unit
             }
@@ -1041,7 +1185,9 @@ internal fun ChatBubble(
     message: AiChatMessage,
     language: AppLanguage = AppLanguage.HINDI,
     copyTag: String? = null,
-    shareTag: String? = null
+    shareTag: String? = null,
+    vetPhoneNumber: String = "",
+    onSaveVetPhone: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     var copied by remember(message.text) { mutableStateOf(false) }
@@ -1066,9 +1212,9 @@ internal fun ChatBubble(
             ),
             color = if (message.isUser) ForestGreen else MaterialTheme.colorScheme.surface,
             tonalElevation = if (message.isUser) 0.dp else 2.dp,
-            modifier = Modifier.widthIn(max = 340.dp)
+            modifier = Modifier.widthIn(max = 350.dp)
         ) {
-            Column(modifier = Modifier.padding(12.dp)) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (!message.isUser && message.modeLabel.isNotBlank()) {
                     Text(
                         text = buildString {
@@ -1082,7 +1228,6 @@ internal fun ChatBubble(
                         color = Saffron,
                         fontWeight = FontWeight.Bold
                     )
-                    Spacer(Modifier.height(3.dp))
                 } else if (message.isUser && message.cowContextLabel.isNotBlank()) {
                     Text(
                         text = message.cowContextLabel,
@@ -1090,15 +1235,50 @@ internal fun ChatBubble(
                         color = Golden,
                         fontWeight = FontWeight.SemiBold
                     )
-                    Spacer(Modifier.height(2.dp))
+                }
+                if (!message.isUser && message.usedFallbackModel && message.modelUsed.isNotBlank()) {
+                    Text(
+                        text = str(
+                            language,
+                            "बैकअप मॉडल: ${message.modelUsed}",
+                            "Fallback Model: ${message.modelUsed}"
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Saffron,
+                        modifier = Modifier.testTag("ai_chat_fallback_badge")
+                    )
+                }
+                if (!message.isUser && message.riskLevel != null) {
+                    VetRiskBadge(riskLevel = message.riskLevel, language = language)
+                }
+                if (!message.isUser && message.requiresImmediateVetCall) {
+                    val emergencyAssessment = remember(message.text) {
+                        VetTriageEngine.evaluate(message.text).copy(
+                            riskLevel = VetRiskLevel.EMERGENCY,
+                            requiresImmediateVetCall = true
+                        )
+                    }
+                    EmergencyVetCallBanner(
+                        language = language,
+                        assessment = emergencyAssessment,
+                        vetPhoneNumber = vetPhoneNumber,
+                        onSaveVetPhone = onSaveVetPhone
+                    )
                 }
                 Text(
                     text = message.text,
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (message.isUser) Color.White else MaterialTheme.colorScheme.onSurface
                 )
+                if (!message.isUser && (message.sources.isNotEmpty() || message.usedGoogleSearch)) {
+                    VetSourcesCard(
+                        language = language,
+                        sources = message.sources,
+                        usedGoogleSearch = message.usedGoogleSearch
+                    )
+                }
                 if (!message.isUser && (copyTag != null || shareTag != null)) {
-                    Spacer(Modifier.height(6.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End

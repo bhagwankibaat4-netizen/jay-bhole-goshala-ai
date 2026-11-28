@@ -64,6 +64,9 @@ class GosalaViewModel(
     val healthState: StateFlow<DataUiState<List<HealthRecord>>> =
         repository.observeHealthRecords(session).toUiStateFlow("healthRecords")
 
+    val aiVetReportsState: StateFlow<DataUiState<List<AiVetHealthReport>>> =
+        repository.observeAiVetReports(session).toUiStateFlow("aiVetReports")
+
     val feedLogsState: StateFlow<DataUiState<List<FeedAndOperationLog>>> =
         repository.observeFeedLogs(session).toUiStateFlow("feedLogs")
 
@@ -271,6 +274,22 @@ class GosalaViewModel(
     fun deleteHealthRecord(id: String, language: AppLanguage) {
         runMutation(language, "स्वास्थ्य रिकॉर्ड हटाया गया।", "Health record deleted.") {
             repository.deleteHealthRecord(session, id)
+        }
+    }
+
+    fun saveAiVetReport(report: AiVetHealthReport, language: AppLanguage) {
+        runMutation(
+            language,
+            "AI पशु चिकित्सा रिपोर्ट गाय के रिकॉर्ड में सहेजी गई।",
+            "AI veterinary health report saved to cow's record."
+        ) {
+            repository.saveAiVetReport(session, report)
+        }
+    }
+
+    fun deleteAiVetReport(id: String, language: AppLanguage) {
+        runMutation(language, "AI स्वास्थ्य रिपोर्ट हटाई गई।", "AI veterinary report deleted.") {
+            repository.deleteAiVetReport(session, id)
         }
     }
 

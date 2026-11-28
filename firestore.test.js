@@ -2123,3 +2123,219 @@ test("14. Public Cattle Profile Cards (/publicCattleCards/{animalCode}): unauth 
   await assertSucceeds(adminDb.collection("publicCattleCards").doc("JBGS-G-357").delete());
   await assertSucceeds(adminDb.collection("publicCattleCards").doc("JBGS-G-999").delete());
 });
+
+test("aiVetReports: cow-linked AI veterinary health reports enforce strict role/permission access and schema validation", async () => {
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID, {
+    email: ADMIN_EMAIL,
+    email_verified: true,
+  }).firestore();
+  const healthStaffUid = "staff_ai_vet_health";
+  const viewOnlyStaffUid = "staff_ai_vet_view";
+  const unrelatedStaffUid = "staff_ai_vet_finance";
+  const publicUid = "public_ai_vet_user";
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("staffAccounts").doc(healthStaffUid).set({
+      uid: healthStaffUid,
+      email: "healthvet@gosala.org",
+      name: "डॉ. सहायक",
+      designation: "पशु स्वास्थ्य सेवक",
+      monthlySalary: 14000,
+      active: true,
+      permissions: { health: ["VIEW", "ADD"], cattle: ["VIEW"], ai: ["VIEW", "ADD"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    await db.collection("staffAccounts").doc(viewOnlyStaffUid).set({
+      uid: viewOnlyStaffUid,
+      email: "viewvet@gosala.org",
+      name: "निरीक्षक",
+      designation: "सेवक",
+      monthlySalary: 9000,
+      active: true,
+      permissions: { cattle: ["VIEW"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    await db.collection("staffAccounts").doc(unrelatedStaffUid).set({
+      uid: unrelatedStaffUid,
+      email: "finvet@gosala.org",
+      name: "लेखाकार",
+      designation: "अकाउंटेंट",
+      monthlySalary: 12000,
+      active: true,
+      permissions: { finance: ["VIEW", "ADD"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+  });
+
+  const healthStaffDb = testEnv.authenticatedContext(healthStaffUid, {
+    email: "healthvet@gosala.org",
+    email_verified: true,
+  }).firestore();
+  const viewOnlyStaffDb = testEnv.authenticatedContext(viewOnlyStaffUid, {
+    email: "viewvet@gosala.org",
+    email_verified: true,
+  }).firestore();
+  const unrelatedStaffDb = testEnv.authenticatedContext(unrelatedStaffUid, {
+    email: "finvet@gosala.org",
+    email_verified: true,
+  }).firestore();
+  const publicDb = testEnv.authenticatedContext(publicUid, {
+    email: "bhakt@example.com",
+    email_verified: true,
+  }).firestore();
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+
+  const validReport = {
+    cattleId: "cow_357",
+    animalCode: "JBGS-G-357",
+    cattleName: "लक्ष्मी",
+    symptoms: "गाय के पेट में सूजन और आफरा है",
+    triageSummary: "• जुगाली: नहीं\n• सांस की स्थिति: तेज",
+    riskLevel: "EMERGENCY",
+    reportText: "1. संभावित समस्या: तीव्र आफरा (Bloat)\n3. खतरे का स्तर: आपातकाल\n6. पशु चिकित्सक को कब बुलाना है: तुरंत।",
+    sourceLinks: [
+      "DAHD Livestock Health|https://dahd.nic.in/|2026-11-28",
+      "IVRI Veterinary Advisory|https://www.ivri.nic.in/|2026-11-28",
+    ],
+    usedPhoto: true,
+    dateStr: "2026-11-28",
+    recordedBy: healthStaffUid,
+    recordedByName: "डॉ. सहायक",
+    createdAt: pastDate(),
+    updatedAt: pastDate(),
+  };
+
+  // 1. Authorized health staff CAN save & read AI vet report for a cow
+  await assertSucceeds(healthStaffDb.collection("aiVetReports").doc("rep_1").set(validReport));
+  await assertSucceeds(healthStaffDb.collection("aiVetReports").doc("rep_1").get());
+
+  // 2. View-only cattle staff CAN read saved reports, CANNOT create or delete
+  await assertSucceeds(viewOnlyStaffDb.collection("aiVetReports").doc("rep_1").get());
+  await assertFails(
+    viewOnlyStaffDb.collection("aiVetReports").doc("rep_bad_perm").set({
+      ...validReport,
+      recordedBy: viewOnlyStaffUid,
+    })
+  );
+  await assertFails(viewOnlyStaffDb.collection("aiVetReports").doc("rep_1").delete());
+
+  // 3. Unrelated finance staff, PUBLIC users, and unauthenticated clients CANNOT read or write aiVetReports
+  await assertFails(unrelatedStaffDb.collection("aiVetReports").doc("rep_1").get());
+  await assertFails(publicDb.collection("aiVetReports").doc("rep_1").get());
+  await assertFails(
+    publicDb.collection("aiVetReports").doc("rep_pub").set({
+      ...validReport,
+      recordedBy: publicUid,
+    })
+  );
+  await assertFails(unauthDb.collection("aiVetReports").doc("rep_1").get());
+
+  // 4. Anti-spoofing & schema validation: wrong recordedBy or invalid riskLevel MUST fail
+  await assertFails(
+    healthStaffDb.collection("aiVetReports").doc("rep_spoof").set({
+      ...validReport,
+      recordedBy: ADMIN_UID,
+    })
+  );
+  await assertFails(
+    healthStaffDb.collection("aiVetReports").doc("rep_bad_risk").set({
+      ...validReport,
+      riskLevel: "SEVERE_UNKNOWN",
+    })
+  );
+
+  // 5. Saved clinical reports are append-only (update denied even for Admin); Admin CAN create & delete
+  await assertFails(
+    adminDb.collection("aiVetReports").doc("rep_1").update({
+      riskLevel: "NORMAL",
+      updatedAt: pastDate(200),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("aiVetReports").doc("rep_admin").set({
+      ...validReport,
+      recordedBy: ADMIN_UID,
+      recordedByName: "गौशाला अध्यक्ष",
+    })
+  );
+  await assertSucceeds(adminDb.collection("aiVetReports").doc("rep_1").delete());
+  await assertSucceeds(adminDb.collection("aiVetReports").doc("rep_admin").delete());
+});
+
+test("aiVetReports E2E save & re-open: persists reports for two different cows and re-opens each cow's report isolated by animalCode", async () => {
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID, {
+    email: ADMIN_EMAIL,
+    email_verified: true,
+  }).firestore();
+
+  const cow1Report = {
+    cattleId: "cow_357",
+    animalCode: "JBGS-G-357",
+    cattleName: "लक्ष्मी",
+    symptoms: "पेट में सूजन और आफरा है",
+    triageSummary: "• जुगाली: नहीं",
+    riskLevel: "EMERGENCY",
+    reportText: "1. संभावित समस्या: तीव्र आफरा\n3. खतरे का स्तर: आपातकाल\n6. पशु चिकित्सक को कब बुलाना है: तुरंत बुलाएँ।",
+    sourceLinks: ["DAHD Govt of India|https://dahd.nic.in/|2026-11-28"],
+    usedPhoto: true,
+    dateStr: "2026-11-28",
+    recordedBy: ADMIN_UID,
+    recordedByName: "गौशाला अध्यक्ष",
+    createdAt: pastDate(2000),
+    updatedAt: pastDate(2000),
+  };
+
+  const cow2Report = {
+    cattleId: "cow_625",
+    animalCode: "JBGS-G-625",
+    cattleName: "नंदिनी",
+    symptoms: "गाय चारा नहीं खा रही और हल्का बुखार है",
+    triageSummary: "• तापमान: हल्का बुखार (103°F)",
+    riskLevel: "CAUTION",
+    reportText: "1. संभावित समस्या: अपच / हल्का बुखार\n3. खतरे का स्तर: सावधानी",
+    sourceLinks: ["ICAR IVRI Advisory|https://www.ivri.nic.in/|2026-11-28"],
+    usedPhoto: false,
+    dateStr: "2026-11-28",
+    recordedBy: ADMIN_UID,
+    recordedByName: "गौशाला अध्यक्ष",
+    createdAt: pastDate(1000),
+    updatedAt: pastDate(1000),
+  };
+
+  // Save both reports to Firestore
+  await assertSucceeds(adminDb.collection("aiVetReports").doc("rep_cow_357").set(cow1Report));
+  await assertSucceeds(adminDb.collection("aiVetReports").doc("rep_cow_625").set(cow2Report));
+
+  // Re-open Cow 1 (JBGS-G-357) reports fresh from Firestore -> ONLY लक्ष्मी's report returned
+  const cow1Query = await assertSucceeds(
+    adminDb.collection("aiVetReports").where("animalCode", "==", "JBGS-G-357").get()
+  );
+  if (cow1Query.size !== 1) throw new Error(`Expected 1 report for JBGS-G-357, got ${cow1Query.size}`);
+  const reopened1 = cow1Query.docs[0].data();
+  if (reopened1.cattleName !== "लक्ष्मी" || reopened1.riskLevel !== "EMERGENCY") {
+    throw new Error("Cow 1 reopened report fields mismatch");
+  }
+  if (!reopened1.sourceLinks.includes("DAHD Govt of India|https://dahd.nic.in/|2026-11-28")) {
+    throw new Error("Cow 1 source link not persisted");
+  }
+
+  // Re-open Cow 2 (JBGS-G-625) reports fresh from Firestore -> ONLY नंदिनी's report returned
+  const cow2Query = await assertSucceeds(
+    adminDb.collection("aiVetReports").where("animalCode", "==", "JBGS-G-625").get()
+  );
+  if (cow2Query.size !== 1) throw new Error(`Expected 1 report for JBGS-G-625, got ${cow2Query.size}`);
+  const reopened2 = cow2Query.docs[0].data();
+  if (reopened2.cattleName !== "नंदिनी" || reopened2.riskLevel !== "CAUTION") {
+    throw new Error("Cow 2 reopened report fields mismatch");
+  }
+
+  // Cleanup
+  await assertSucceeds(adminDb.collection("aiVetReports").doc("rep_cow_357").delete());
+  await assertSucceeds(adminDb.collection("aiVetReports").doc("rep_cow_625").delete());
+});
+
+

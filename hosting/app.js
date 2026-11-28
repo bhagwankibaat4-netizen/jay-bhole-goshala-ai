@@ -16,6 +16,231 @@
   var ANIMAL_CODE_REGEX = /^[A-Z0-9][A-Z0-9_-]{1,39}$/;
   var CATTLE_ID_REGEX = /^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$/;
 
+  /**
+   * Firebase Web App Check Configuration (Zero Client-Side Gemini API Keys).
+   * - Production always enforces reCAPTCHA Enterprise / v3 App Check attestation.
+   * - Localhost debug token is strictly restricted to localhost / 127.0.0.1.
+   * - All Gemini API calls from Web MUST go through a server-side endpoint or Firebase AI Logic
+   *   with X-Firebase-AppCheck attestation — never with a client-embedded Gemini API key.
+   */
+  var WEB_APP_CHECK_CONFIG = Object.freeze({
+    projectId: FIREBASE_PROJECT_ID,
+    provider: 'recaptcha-enterprise',
+    isTokenAutoRefreshEnabled: true,
+    enforceInProduction: true,
+    allowLocalhostDebugToken: true,
+    headerName: 'X-Firebase-AppCheck'
+  });
+
+  var webAppCheckState = {
+    initialized: false,
+    provider: 'none',
+    instance: null,
+    getTokenFn: null,
+    lastError: null
+  };
+
+  function isLocalhostHostname(hostname) {
+    var host = String(hostname || '').trim().toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+  }
+
+  function isValidJwtLikeToken(token) {
+    if (typeof token !== 'string') return false;
+    var clean = token.trim();
+    if (clean.length < 16) return false;
+    return clean.split('.').length >= 3;
+  }
+
+  function initWebAppCheck(firebaseSdk, webConfig, hostnameOverride) {
+    var host =
+      typeof hostnameOverride === 'string'
+        ? hostnameOverride
+        : (typeof window !== 'undefined' && window.location ? window.location.hostname : '');
+    var cfg = webConfig || (root && root.__JBGS_FIREBASE_WEB_CONFIG__) || null;
+
+    // Localhost-only debug token support (NEVER enabled on production web origins)
+    if (cfg && cfg.debugToken && isLocalhostHostname(host) && WEB_APP_CHECK_CONFIG.allowLocalhostDebugToken) {
+      if (typeof self !== 'undefined') {
+        self.FIREBASE_APPCHECK_DEBUG_TOKEN = cfg.debugToken;
+      }
+    }
+
+    if (!firebaseSdk || !cfg || !cfg.recaptchaSiteKey) {
+      webAppCheckState.initialized = false;
+      webAppCheckState.provider = 'unconfigured';
+      webAppCheckState.instance = null;
+      webAppCheckState.getTokenFn = null;
+      webAppCheckState.lastError = !cfg || !cfg.recaptchaSiteKey ? 'missing_web_recaptcha_site_key' : 'missing_sdk';
+      return { initialized: false, provider: webAppCheckState.provider, reason: webAppCheckState.lastError };
+    }
+
+    try {
+      var providerInstance = null;
+      var providerName = 'recaptcha-enterprise';
+      if (typeof firebaseSdk.ReCaptchaEnterpriseProvider === 'function') {
+        providerInstance = new firebaseSdk.ReCaptchaEnterpriseProvider(cfg.recaptchaSiteKey);
+      } else if (typeof firebaseSdk.ReCaptchaV3Provider === 'function') {
+        providerInstance = new firebaseSdk.ReCaptchaV3Provider(cfg.recaptchaSiteKey);
+        providerName = 'recaptcha-v3';
+      } else {
+        throw new Error('No supported Web App Check reCAPTCHA provider available in SDK');
+      }
+
+      var appCheckInstance = firebaseSdk.initializeAppCheck(firebaseSdk.app, {
+        provider: providerInstance,
+        isTokenAutoRefreshEnabled: WEB_APP_CHECK_CONFIG.isTokenAutoRefreshEnabled
+      });
+
+      webAppCheckState.initialized = true;
+      webAppCheckState.provider = providerName;
+      webAppCheckState.instance = appCheckInstance;
+      webAppCheckState.getTokenFn =
+        typeof firebaseSdk.getToken === 'function'
+          ? function (forceRefresh) {
+              return firebaseSdk.getToken(appCheckInstance, Boolean(forceRefresh));
+            }
+          : null;
+      webAppCheckState.lastError = null;
+      return { initialized: true, provider: providerName, reason: null };
+    } catch (err) {
+      webAppCheckState.initialized = false;
+      webAppCheckState.provider = 'error';
+      webAppCheckState.instance = null;
+      webAppCheckState.getTokenFn = null;
+      webAppCheckState.lastError = err && err.message ? String(err.message) : 'app_check_init_failed';
+      return { initialized: false, provider: 'error', reason: webAppCheckState.lastError };
+    }
+  }
+
+  async function getWebAppCheckToken(forceRefresh) {
+    if (!webAppCheckState.initialized || typeof webAppCheckState.getTokenFn !== 'function') {
+      return null;
+    }
+    try {
+      var result = await webAppCheckState.getTokenFn(Boolean(forceRefresh));
+      var token = result && typeof result.token === 'string' ? result.token.trim() : '';
+      return isValidJwtLikeToken(token) ? token : null;
+    } catch (err) {
+      webAppCheckState.lastError = err && err.message ? String(err.message) : 'token_fetch_failed';
+      return null;
+    }
+  }
+
+  function buildFirestoreRequestHeaders(extraHeaders, appCheckToken) {
+    var headers = { Accept: 'application/json' };
+    if (extraHeaders && typeof extraHeaders === 'object') {
+      var keys = Object.keys(extraHeaders);
+      for (var i = 0; i < keys.length; i++) {
+        headers[keys[i]] = extraHeaders[keys[i]];
+      }
+    }
+    if (isValidJwtLikeToken(appCheckToken)) {
+      headers[WEB_APP_CHECK_CONFIG.headerName] = appCheckToken.trim();
+    }
+    return headers;
+  }
+
+  function parseGroundedVetSources(rawSources, fallbackDate) {
+    if (!Array.isArray(rawSources)) return [];
+    var today = String(fallbackDate || new Date().toISOString().slice(0, 10));
+    var out = [];
+    var seen = {};
+    for (var i = 0; i < rawSources.length && out.length < 10; i++) {
+      var item = rawSources[i];
+      if (!item || typeof item !== 'object') continue;
+      var url = String(item.url || item.uri || '').trim();
+      if (!/^https:\/\//i.test(url)) continue;
+      if (seen[url]) continue;
+      seen[url] = true;
+      var domain = String(item.domain || '').trim();
+      if (!domain) {
+        try {
+          domain = new URL(url).hostname.replace(/^www\./i, '');
+        } catch (_) {
+          domain = '';
+        }
+      }
+      out.push({
+        title: String(item.title || domain || 'Veterinary Source').trim(),
+        url: url,
+        domain: domain,
+        retrievedDate: String(item.retrievedDate || item.date || today).trim()
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Server-side-only Web AI Veterinary request helper:
+   * - Blocks direct client calls to generativelanguage.googleapis.com or client-side API keys.
+   * - Sends X-Firebase-AppCheck attestation token to a secure server-side endpoint.
+   * - Automatically refreshes App Check token once on HTTP 401 before surfacing diagnostic error.
+   */
+  async function requestServerSideVetAdvice(endpointUrl, payload, fetchImpl, options) {
+    var fetcher = fetchImpl || (typeof fetch === 'function' ? fetch : null);
+    if (!fetcher) return { ok: false, status: 0, error: 'fetch_unavailable' };
+    var url = String(endpointUrl || '').trim();
+    if (!url || (!/^https:\/\//i.test(url) && !/^\/api\//i.test(url))) {
+      return { ok: false, status: 400, error: 'invalid_server_endpoint' };
+    }
+    if (/generativelanguage\.googleapis\.com/i.test(url) || /[?&]key=/i.test(url)) {
+      return { ok: false, status: 403, error: 'client_side_api_key_forbidden' };
+    }
+
+    var opts = options || {};
+    var tokenProvider =
+      typeof opts.getToken === 'function'
+        ? opts.getToken
+        : function (force) {
+            return opts.appCheckToken && !force ? Promise.resolve(opts.appCheckToken) : getWebAppCheckToken(force);
+          };
+
+    for (var attempt = 0; attempt < 2; attempt++) {
+      var token = await tokenProvider(attempt > 0);
+      if (!isValidJwtLikeToken(token)) {
+        return {
+          ok: false,
+          status: 401,
+          error: 'missing_app_check_token',
+          message: 'Firebase App Check token is required for AI Veterinary requests.'
+        };
+      }
+      var headers = buildFirestoreRequestHeaders({ 'Content-Type': 'application/json' }, token);
+      var res = await fetcher(url, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify(payload || {}),
+        cache: 'no-store'
+      });
+
+      if (res.status === 401 && attempt === 0) {
+        continue;
+      }
+
+      if (!res.ok) {
+        return {
+          ok: false,
+          status: res.status,
+          error: res.status === 401 ? 'app_check_unauthorized' : 'server_ai_error'
+        };
+      }
+
+      var data = await res.json();
+      return {
+        ok: true,
+        status: res.status,
+        text: String(data.text || '').trim(),
+        modelUsed: String(data.modelUsed || 'gemini-3.8-flash'),
+        usedFallbackModel: Boolean(data.usedFallbackModel),
+        usedGoogleSearch: Boolean(data.usedGoogleSearch),
+        sources: parseGroundedVetSources(data.sources, data.retrievedDate)
+      };
+    }
+
+    return { ok: false, status: 401, error: 'app_check_unauthorized' };
+  }
+
   var I18N = {
     hi: {
       homePageTitle: 'जय भोले गौशाला समिति | आधिकारिक डिजिटल पोर्टल',
@@ -614,7 +839,7 @@
    *    stripping all private fields via parsePublicCattleDocument.
    * Returns { status: 'ok', card } | { status: 'not_found_cattle' | 'private' | 'general', card: null }.
    */
-  async function fetchCattleRecordFromFirestore(cattleId, fetchImpl) {
+  async function fetchCattleRecordFromFirestore(cattleId, fetchImpl, options) {
     var fetcher = fetchImpl || (typeof fetch === 'function' ? fetch : null);
     if (!fetcher) return { status: 'general', card: null };
 
@@ -623,21 +848,45 @@
       return { status: 'invalid', card: null };
     }
     var normalizedCode = normalizeAnimalCode(rawCattleId);
+    var opts = options || {};
+    var appCheckToken =
+      typeof opts.appCheckToken === 'string'
+        ? opts.appCheckToken
+        : await getWebAppCheckToken(false);
 
     // 1. Primary lookup in publicCattleCards/{animalCode} when valid Animal Code
     if (normalizedCode) {
       var publicUrl = buildFirestoreDocumentUrl(normalizedCode);
       var publicRes = await fetcher(publicUrl, {
         method: 'GET',
-        headers: { Accept: 'application/json' },
+        headers: buildFirestoreRequestHeaders(null, appCheckToken),
         cache: 'no-store'
       });
+
+      if (publicRes.status === 401) {
+        var refreshedToken =
+          typeof opts.refreshAppCheckToken === 'function'
+            ? await opts.refreshAppCheckToken()
+            : await getWebAppCheckToken(true);
+        if (isValidJwtLikeToken(refreshedToken)) {
+          appCheckToken = refreshedToken;
+          publicRes = await fetcher(publicUrl, {
+            method: 'GET',
+            headers: buildFirestoreRequestHeaders(null, appCheckToken),
+            cache: 'no-store'
+          });
+        }
+      }
 
       if (publicRes.ok) {
         var publicDoc = await publicRes.json();
         var parsedPublic = parsePublicCattleDocument(publicDoc, normalizedCode);
         if (parsedPublic) return { status: 'ok', card: parsedPublic };
         return { status: 'private', card: null };
+      }
+
+      if (publicRes.status === 401) {
+        return { status: 'app_check_required', card: null };
       }
 
       if (publicRes.status === 403) {
@@ -652,10 +901,7 @@
       try {
         var queryRes = await fetcher(buildCattleCollectionQueryUrl(), {
           method: 'POST',
-          headers: {
-            Accept: 'application/json',
-            'Content-Type': 'application/json'
-          },
+          headers: buildFirestoreRequestHeaders({ 'Content-Type': 'application/json' }, appCheckToken),
           body: JSON.stringify(buildCattleQueryPayload(normalizedCode)),
           cache: 'no-store'
         });
@@ -680,7 +926,7 @@
     try {
       var directRes = await fetcher(buildCattleDocumentUrl(rawCattleId), {
         method: 'GET',
-        headers: { Accept: 'application/json' },
+        headers: buildFirestoreRequestHeaders(null, appCheckToken),
         cache: 'no-store'
       });
       if (directRes.ok) {
@@ -720,6 +966,14 @@
     FIRESTORE_DATABASE_ID: FIRESTORE_DATABASE_ID,
     FIREBASE_STORAGE_BUCKET: FIREBASE_STORAGE_BUCKET,
     PUBLIC_HOSTING_ORIGIN: PUBLIC_HOSTING_ORIGIN,
+    WEB_APP_CHECK_CONFIG: WEB_APP_CHECK_CONFIG,
+    isLocalhostHostname: isLocalhostHostname,
+    isValidJwtLikeToken: isValidJwtLikeToken,
+    initWebAppCheck: initWebAppCheck,
+    getWebAppCheckToken: getWebAppCheckToken,
+    buildFirestoreRequestHeaders: buildFirestoreRequestHeaders,
+    parseGroundedVetSources: parseGroundedVetSources,
+    requestServerSideVetAdvice: requestServerSideVetAdvice,
     normalizeAnimalCode: normalizeAnimalCode,
     extractCattleIdFromPath: extractCattleIdFromPath,
     extractAnimalCodeFromLocation: extractAnimalCodeFromLocation,

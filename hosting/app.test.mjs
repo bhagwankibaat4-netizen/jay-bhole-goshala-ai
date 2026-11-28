@@ -391,5 +391,144 @@ test('QR Audit: Zero Hosting redirects, direct HTTPS public profile URL per cow 
   assert.equal(app.buildFirestoreDocumentUrl('JBGS-G-625').endsWith('/publicCattleCards/JBGS-G-625'), true);
 });
 
+test('Web App Check: Enforces reCAPTCHA Enterprise in production, restricts debug token strictly to localhost, and attaches X-Firebase-AppCheck header', async () => {
+  assert.equal(app.WEB_APP_CHECK_CONFIG.enforceInProduction, true);
+  assert.equal(app.WEB_APP_CHECK_CONFIG.provider, 'recaptcha-enterprise');
+  assert.equal(app.WEB_APP_CHECK_CONFIG.isTokenAutoRefreshEnabled, true);
+  assert.equal(app.WEB_APP_CHECK_CONFIG.headerName, 'X-Firebase-AppCheck');
+  assert.equal(app.isLocalhostHostname('localhost'), true);
+  assert.equal(app.isLocalhostHostname('127.0.0.1'), true);
+  assert.equal(app.isLocalhostHostname('gen-lang-client-0821187064.web.app'), false);
+
+  const validJwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3ZWIifQ.signature1234567890';
+  const refreshedJwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3ZWIyIn0.freshsig1234567890';
+
+  // Mock Firebase Web App Check SDK initialization
+  let capturedProviderKey = null;
+  let capturedAutoRefresh = null;
+  const fakeSdk = {
+    app: { name: '[DEFAULT]' },
+    ReCaptchaEnterpriseProvider: function (siteKey) {
+      capturedProviderKey = siteKey;
+      this.siteKey = siteKey;
+    },
+    initializeAppCheck: function (_app, opts) {
+      capturedAutoRefresh = opts.isTokenAutoRefreshEnabled;
+      return { app: _app, provider: opts.provider };
+    },
+    getToken: async function (_inst, forceRefresh) {
+      return { token: forceRefresh ? refreshedJwt : validJwt };
+    }
+  };
+
+  const initRes = app.initWebAppCheck(fakeSdk, { recaptchaSiteKey: '6LcTestWebEnterpriseKey' }, 'gen-lang-client-0821187064.web.app');
+  assert.equal(initRes.initialized, true);
+  assert.equal(initRes.provider, 'recaptcha-enterprise');
+  assert.equal(capturedProviderKey, '6LcTestWebEnterpriseKey');
+  assert.equal(capturedAutoRefresh, true);
+
+  // Firestore fetch attaches X-Firebase-AppCheck header and auto-retries once on HTTP 401 with refreshed token
+  const seenTokens = [];
+  const mockFetch401Then200 = async (_url, opts) => {
+    seenTokens.push(opts.headers['X-Firebase-AppCheck']);
+    if (seenTokens.length === 1) {
+      return { ok: false, status: 401 };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        fields: {
+          animalCode: { stringValue: 'JBGS-G-357' },
+          name: { stringValue: 'लक्ष्मी' },
+          publicApproved: { booleanValue: true }
+        }
+      })
+    };
+  };
+
+  const res = await app.fetchCattleRecordFromFirestore('JBGS-G-357', mockFetch401Then200);
+  assert.equal(res.status, 'ok');
+  assert.equal(res.card.name, 'लक्ष्मी');
+  assert.deepEqual(seenTokens, [validJwt, refreshedJwt]);
+
+  // Reset webAppCheck state cleanly for subsequent tests
+  app.initWebAppCheck(null, null, 'localhost');
+});
+
+test('Web AI Security: Blocks direct client Gemini API keys, enforces X-Firebase-AppCheck on server-side endpoint, and parses Grounding URLs + Date + Fallback Model', async () => {
+  const validJwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3ZWIifQ.signature1234567890';
+  const refreshedJwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3ZWIyIn0.freshsig1234567890';
+
+  // 1. Source files in hosting/ MUST NEVER embed a Gemini API key or direct generativelanguage.googleapis.com call
+  const appJsSrc = fs.readFileSync(path.resolve(__dirname, 'app.js'), 'utf8');
+  const indexHtmlSrc = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf8');
+  assert.equal(/AIza[0-9A-Za-z_-]{20,}/.test(appJsSrc), false, 'hosting/app.js must not hardcode any Google API key');
+  assert.equal(/AIza[0-9A-Za-z_-]{20,}/.test(indexHtmlSrc), false, 'hosting/index.html must not hardcode any Google API key');
+  assert.ok(indexHtmlSrc.includes('name="firebase-appcheck-mode" content="recaptcha-enterprise"'));
+
+  // 2. Direct Gemini API URL with client key is strictly blocked
+  const blockedRes = await app.requestServerSideVetAdvice(
+    'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=FAKE',
+    { prompt: 'test' },
+    async () => { throw new Error('Should never fetch'); },
+    { appCheckToken: validJwt }
+  );
+  assert.equal(blockedRes.ok, false);
+  assert.equal(blockedRes.error, 'client_side_api_key_forbidden');
+
+  // 3. Missing App Check token returns clean 401 without calling server
+  const missingTokenRes = await app.requestServerSideVetAdvice(
+    '/api/vet-assistant',
+    { prompt: 'gay ko bukhar hai' },
+    async () => { throw new Error('Should not call without token'); },
+    { getToken: async () => null }
+  );
+  assert.equal(missingTokenRes.ok, false);
+  assert.equal(missingTokenRes.status, 401);
+  assert.equal(missingTokenRes.error, 'missing_app_check_token');
+
+  // 4. Server-side endpoint 401 -> refreshes App Check token -> succeeds with grounded sources, date, and fallback model
+  const aiHeadersSeen = [];
+  const mockAiFetch = async (_url, opts) => {
+    aiHeadersSeen.push(opts.headers['X-Firebase-AppCheck']);
+    if (aiHeadersSeen.length === 1) {
+      return { ok: false, status: 401 };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        text: '1. संभावित समस्या: हल्का बुखार\n3. खतरे का स्तर: सावधानी',
+        modelUsed: 'gemini-3.5-flash-lite',
+        usedFallbackModel: true,
+        usedGoogleSearch: true,
+        retrievedDate: '2026-11-28',
+        sources: [
+          { title: 'DAHD Advisory', url: 'https://dahd.nic.in/animal-health', retrievedDate: '2026-11-28' },
+          { title: 'Unsafe Link', url: 'javascript:alert(1)' }
+        ]
+      })
+    };
+  };
+
+  const aiRes = await app.requestServerSideVetAdvice(
+    '/api/vet-assistant',
+    { prompt: 'gay ko bukhar hai', animalCode: 'JBGS-G-357' },
+    mockAiFetch,
+    { getToken: async (force) => (force ? refreshedJwt : validJwt) }
+  );
+  assert.equal(aiRes.ok, true);
+  assert.equal(aiRes.modelUsed, 'gemini-3.5-flash-lite');
+  assert.equal(aiRes.usedFallbackModel, true);
+  assert.equal(aiRes.usedGoogleSearch, true);
+  assert.equal(aiRes.sources.length, 1);
+  assert.equal(aiRes.sources[0].url, 'https://dahd.nic.in/animal-health');
+  assert.equal(aiRes.sources[0].domain, 'dahd.nic.in');
+  assert.equal(aiRes.sources[0].retrievedDate, '2026-11-28');
+  assert.deepEqual(aiHeadersSeen, [validJwt, refreshedJwt]);
+});
+
+
 
 

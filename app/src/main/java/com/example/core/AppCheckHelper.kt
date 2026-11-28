@@ -430,23 +430,53 @@ suspend fun refreshAppCheckToken(forceRefresh: Boolean = true): Boolean {
 }
 
 /**
- * Identifies App Check / HTTP 403 attestation token errors so AI calls can recover & retry once
- * and surface an actionable diagnostic message if still rejected.
+ * Returns a safe, secret-free diagnostic summary of the current App Check configuration
+ * (provider kind and build mode) for error logs. Never exposes any token or site key.
+ */
+fun describeAppCheckProviderForLog(): String {
+    val provider = activeAppCheckProviderKind.name
+    val mode = if (BuildConfig.DEBUG) "DEBUG" else "RELEASE"
+    val diag = lastAppCheckDiagnostic?.take(60)
+    return if (diag.isNullOrBlank()) {
+        "AppCheck[mode=$mode,provider=$provider]"
+    } else {
+        "AppCheck[mode=$mode,provider=$provider,note=$diag]"
+    }
+}
+
+/**
+ * Identifies App Check / HTTP 401 / HTTP 403 attestation token errors so AI calls can refresh the
+ * App Check token & retry once, while strictly excluding API-disabled / billing / invalid-key errors.
  */
 fun isAppCheckTokenError(throwable: Throwable?): Boolean {
-    var current = throwable
-    while (current != null) {
-        val msg = current.message.orEmpty().lowercase()
-        if (
-            msg.contains("app check") ||
-            msg.contains("appcheck") ||
-            msg.contains("attestation") ||
-            msg.contains("firebase app check token is invalid") ||
-            msg.contains("403")
-        ) {
-            return true
+    val chainText = buildString {
+        var current = throwable
+        while (current != null) {
+            append(current.javaClass.simpleName).append(' ')
+            append(current.message.orEmpty()).append(' ')
+            current = current.cause
         }
-        current = current.cause
+    }.lowercase()
+
+    if (chainText.isBlank()) return false
+
+    // Never misclassify API-disabled, billing, or invalid-API-key failures as App Check token errors
+    val isExplicitApiOrBillingError =
+        chainText.contains("service_disabled") ||
+            chainText.contains("api has not been used") ||
+            chainText.contains("not enabled") ||
+            chainText.contains("api_key_invalid") ||
+            chainText.contains("billing")
+    if (isExplicitApiOrBillingError && !chainText.contains("app check") && !chainText.contains("appcheck")) {
+        return false
     }
-    return false
+
+    return chainText.contains("app check") ||
+        chainText.contains("appcheck") ||
+        chainText.contains("attestation") ||
+        chainText.contains("firebase app check token is invalid") ||
+        chainText.contains("unauthenticated") ||
+        chainText.contains("401") ||
+        chainText.contains("403")
 }
+
