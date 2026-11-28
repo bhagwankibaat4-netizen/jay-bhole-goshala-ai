@@ -11,6 +11,7 @@
 
   var FIREBASE_PROJECT_ID = 'gen-lang-client-0821187064';
   var FIRESTORE_DATABASE_ID = 'ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917';
+  var FIREBASE_STORAGE_BUCKET = 'gen-lang-client-0821187064.firebasestorage.app';
   var PUBLIC_HOSTING_ORIGIN = 'https://gen-lang-client-0821187064.web.app';
   var ANIMAL_CODE_REGEX = /^[A-Z0-9][A-Z0-9_-]{1,39}$/;
 
@@ -327,16 +328,100 @@
     return { view: 'not_found', animalCode: null };
   }
 
-  function buildFirestoreDocumentUrl(animalCode) {
-    var code = normalizeAnimalCode(animalCode);
-    if (!code) throw new Error('Invalid animal code');
+  function buildFirestoreDocumentsBaseUrl() {
     return (
       'https://firestore.googleapis.com/v1/projects/' +
       encodeURIComponent(FIREBASE_PROJECT_ID) +
       '/databases/' +
       encodeURIComponent(FIRESTORE_DATABASE_ID) +
-      '/documents/publicCattleCards/' +
-      encodeURIComponent(code)
+      '/documents'
+    );
+  }
+
+  function buildFirestoreDocumentUrl(animalCode) {
+    var code = normalizeAnimalCode(animalCode);
+    if (!code) throw new Error('Invalid animal code');
+    return buildFirestoreDocumentsBaseUrl() + '/publicCattleCards/' + encodeURIComponent(code);
+  }
+
+  function buildCattleDocumentUrl(cattleId) {
+    var cleanId = String(cattleId || '').trim();
+    if (!/^[A-Za-z0-9_-]{2,128}$/.test(cleanId)) {
+      throw new Error('Invalid cattle document ID');
+    }
+    return buildFirestoreDocumentsBaseUrl() + '/cattle/' + encodeURIComponent(cleanId);
+  }
+
+  function buildCattleCollectionQueryUrl() {
+    return buildFirestoreDocumentsBaseUrl() + ':runQuery';
+  }
+
+  /**
+   * Builds a Firestore REST structuredQuery targeting the 'cattle' collection
+   * filtered strictly by animalCode AND publicApproved == true.
+   */
+  function buildCattleQueryPayload(animalCode) {
+    var code = normalizeAnimalCode(animalCode);
+    if (!code) throw new Error('Invalid animal code');
+    return {
+      structuredQuery: {
+        from: [{ collectionId: 'cattle' }],
+        where: {
+          compositeFilter: {
+            op: 'AND',
+            filters: [
+              {
+                fieldFilter: {
+                  field: { fieldPath: 'animalCode' },
+                  op: 'EQUAL',
+                  value: { stringValue: code }
+                }
+              },
+              {
+                fieldFilter: {
+                  field: { fieldPath: 'publicApproved' },
+                  op: 'EQUAL',
+                  value: { booleanValue: true }
+                }
+              }
+            ]
+          }
+        },
+        limit: 1
+      }
+    };
+  }
+
+  /**
+   * Converts a Firebase Storage relative object path (e.g. cattle_photos/<id>/photo.jpg)
+   * or gs:// bucket URI into a safe HTTPS Firebase Storage media URL.
+   */
+  function buildFirebaseStorageMediaUrl(storagePath) {
+    if (typeof storagePath !== 'string') return '';
+    var trimmed = storagePath.trim();
+    if (!trimmed) return '';
+
+    var bucket = FIREBASE_STORAGE_BUCKET;
+    var objectPath = '';
+    if (/^gs:\/\//i.test(trimmed)) {
+      var withoutScheme = trimmed.slice(5);
+      var slashIdx = withoutScheme.indexOf('/');
+      if (slashIdx <= 0 || slashIdx >= withoutScheme.length - 1) return '';
+      bucket = withoutScheme.slice(0, slashIdx).trim();
+      objectPath = withoutScheme.slice(slashIdx + 1).trim();
+    } else if (/^cattle_photos\//i.test(trimmed)) {
+      objectPath = trimmed.replace(/^\/+/, '');
+    } else {
+      return '';
+    }
+
+    if (!objectPath || objectPath.indexOf('..') !== -1) return '';
+    return (
+      'https://firebasestorage.googleapis.com/v0/b/' +
+      encodeURIComponent(bucket) +
+      '/o/' +
+      encodeURIComponent(objectPath) +
+      '?alt=media'
     );
   }
 
@@ -431,7 +516,8 @@
   }
 
   /**
-   * Parses Firestore REST document into a sanitized full public cattle profile model.
+   * Parses a Firestore REST document from either `publicCattleCards/{animalCode}` OR `cattle/{docId}`
+   * into a strictly sanitized, public-safe cattle profile model.
    * Returns null if document is missing publicApproved === true or lacks required identity fields.
    * Never copies internal private fields (notes, costInr, recordedBy, createdBy, phone, doc ID).
    */
@@ -445,7 +531,16 @@
     var name = String(readFirestoreValue(f.name) || '').trim();
     if (!animalCode || !name) return null;
 
-    var rawPhotoUrl = String(readFirestoreValue(f.photoUrl) || '').trim();
+    var rawPhotoUrl = String(readFirestoreValue(f.photoUrl) || readFirestoreValue(f.photoUri) || '').trim();
+    var rawStoragePath = String(readFirestoreValue(f.photoStoragePath) || '').trim();
+    var resolvedPhotoUrl = '';
+    if (isSafeHttpOrDataImageUrl(rawPhotoUrl)) {
+      resolvedPhotoUrl = rawPhotoUrl;
+    } else if (rawStoragePath) {
+      var mediaUrl = buildFirebaseStorageMediaUrl(rawStoragePath);
+      if (isSafeHttpOrDataImageUrl(mediaUrl)) resolvedPhotoUrl = mediaUrl;
+    }
+
     var rawPhotoDataUrl = String(readFirestoreValue(f.photoDataUrl) || '').trim();
     var weightVal = Number(readFirestoreValue(f.weightKg) || 0);
     var monthlySupportVal = Number(readFirestoreValue(f.monthlySupportInr) || 0);
@@ -470,7 +565,7 @@
       monthlySupportInr: isFinite(monthlySupportVal) && monthlySupportVal > 0 ? Math.round(monthlySupportVal) : 0,
       healthHistory: parseHealthHistory(f.healthHistory),
       feedSummary: parseFeedSummary(f.feedSummary),
-      photoUrl: isSafeHttpOrDataImageUrl(rawPhotoUrl) ? rawPhotoUrl : '',
+      photoUrl: resolvedPhotoUrl,
       photoDataUrl: isSafeHttpOrDataImageUrl(rawPhotoDataUrl) ? rawPhotoDataUrl : '',
       goshalaNameHi: String(readFirestoreValue(f.goshalaNameHi) || 'जय भोले गौशाला समिति').trim(),
       goshalaNameEn: String(readFirestoreValue(f.goshalaNameEn) || 'Jay Bhole Gosala Samiti').trim(),
@@ -479,6 +574,87 @@
       qrUrl: PUBLIC_HOSTING_ORIGIN + '/cattle/' + encodeURIComponent(animalCode),
       publicApproved: true
     };
+  }
+
+  /**
+   * Fetches the real cattle profile from Firestore:
+   * 1. Primary: GET /publicCattleCards/{animalCode} (public-safe projection with photo, healthHistory & feedSummary).
+   * 2. Secondary fallback (on 404): Queries the 'cattle' collection by animalCode + publicApproved == true,
+   *    and if empty, checks direct GET /cattle/{animalCode}, stripping all private fields via parsePublicCattleDocument.
+   * Returns { status: 'ok', card } | { status: 'not_found_cattle' | 'private' | 'general' }.
+   */
+  async function fetchCattleRecordFromFirestore(animalCode, fetchImpl) {
+    var fetcher = fetchImpl || (typeof fetch === 'function' ? fetch : null);
+    if (!fetcher) return { status: 'general', card: null };
+
+    // 1. Primary lookup in publicCattleCards/{animalCode}
+    var publicUrl = buildFirestoreDocumentUrl(animalCode);
+    var publicRes = await fetcher(publicUrl, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      cache: 'no-store'
+    });
+
+    if (publicRes.ok) {
+      var publicDoc = await publicRes.json();
+      var parsedPublic = parsePublicCattleDocument(publicDoc);
+      if (parsedPublic) return { status: 'ok', card: parsedPublic };
+      return { status: 'private', card: null };
+    }
+
+    if (publicRes.status === 403) {
+      return { status: 'private', card: null };
+    }
+
+    if (publicRes.status !== 404) {
+      return { status: 'general', card: null };
+    }
+
+    // 2. Fallback lookup in 'cattle' collection (query by animalCode + publicApproved == true)
+    try {
+      var queryRes = await fetcher(buildCattleCollectionQueryUrl(), {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(buildCattleQueryPayload(animalCode)),
+        cache: 'no-store'
+      });
+
+      if (queryRes.ok) {
+        var rows = await queryRes.json();
+        if (Array.isArray(rows)) {
+          for (var i = 0; i < rows.length; i++) {
+            if (rows[i] && rows[i].document) {
+              var parsedFromQuery = parsePublicCattleDocument(rows[i].document);
+              if (parsedFromQuery) return { status: 'ok', card: parsedFromQuery };
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // Ignore fallback network/rule rejection and proceed to direct doc check
+    }
+
+    // 3. Direct document fallback in 'cattle/{id}' (in case ID matches doc key)
+    try {
+      var directRes = await fetcher(buildCattleDocumentUrl(animalCode), {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store'
+      });
+      if (directRes.ok) {
+        var directDoc = await directRes.json();
+        var parsedDirect = parsePublicCattleDocument(directDoc);
+        if (parsedDirect) return { status: 'ok', card: parsedDirect };
+        return { status: 'private', card: null };
+      }
+    } catch (_) {
+      // Fall through to clean not_found_cattle result
+    }
+
+    return { status: 'not_found_cattle', card: null };
   }
 
   function buildWhatsAppShareUrl(card, lang) {
@@ -503,12 +679,18 @@
   var helpers = {
     FIREBASE_PROJECT_ID: FIREBASE_PROJECT_ID,
     FIRESTORE_DATABASE_ID: FIRESTORE_DATABASE_ID,
+    FIREBASE_STORAGE_BUCKET: FIREBASE_STORAGE_BUCKET,
     PUBLIC_HOSTING_ORIGIN: PUBLIC_HOSTING_ORIGIN,
     normalizeAnimalCode: normalizeAnimalCode,
     extractAnimalCodeFromLocation: extractAnimalCodeFromLocation,
     resolveRoute: resolveRoute,
     buildFirestoreDocumentUrl: buildFirestoreDocumentUrl,
+    buildCattleDocumentUrl: buildCattleDocumentUrl,
+    buildCattleCollectionQueryUrl: buildCattleCollectionQueryUrl,
+    buildCattleQueryPayload: buildCattleQueryPayload,
+    buildFirebaseStorageMediaUrl: buildFirebaseStorageMediaUrl,
     parsePublicCattleDocument: parsePublicCattleDocument,
+    fetchCattleRecordFromFirestore: fetchCattleRecordFromFirestore,
     buildWhatsAppShareUrl: buildWhatsAppShareUrl,
     isSafeHttpOrDataImageUrl: isSafeHttpOrDataImageUrl
   };
@@ -1045,51 +1227,20 @@
     }
 
     try {
-      var url = buildFirestoreDocumentUrl(animalCode);
-      var response = await fetch(url, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-        cache: 'no-store'
-      });
-
+      var result = await fetchCattleRecordFromFirestore(animalCode);
       if (reqToken !== activeRequestToken) return;
 
-      if (response.status === 404) {
+      if (result.status !== 'ok' || !result.card) {
         state.loading = false;
-        state.errorKind = 'not_found_cattle';
-        renderUI();
-        return;
-      }
-
-      if (response.status === 403) {
-        state.loading = false;
-        state.errorKind = 'private';
-        renderUI();
-        return;
-      }
-
-      if (!response.ok) {
-        state.loading = false;
-        state.errorKind = 'general';
-        renderUI();
-        return;
-      }
-
-      var docJson = await response.json();
-      if (reqToken !== activeRequestToken) return;
-
-      var parsed = parsePublicCattleDocument(docJson);
-      if (!parsed) {
-        state.loading = false;
-        state.errorKind = 'private';
+        state.errorKind = result.status || 'general';
         renderUI();
         return;
       }
 
       state.loading = false;
-      state.card = parsed;
-      configureCowPhoto(parsed);
-      renderQr(parsed);
+      state.card = result.card;
+      configureCowPhoto(result.card);
+      renderQr(result.card);
       renderUI();
     } catch (_) {
       if (reqToken !== activeRequestToken) return;

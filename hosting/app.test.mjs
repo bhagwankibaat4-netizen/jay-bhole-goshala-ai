@@ -248,3 +248,81 @@ test('Full Cattle Profile HTML contains top photo hero, weight/shed/entry/health
   }
 });
 
+test('Cattle collection fallback: Queries Firestore cattle collection by animalCode + publicApproved, resolves photoStoragePath, and strips private notes/createdBy', async () => {
+  const queryPayload = app.buildCattleQueryPayload('jbgs-g-357');
+  assert.equal(queryPayload.structuredQuery.from[0].collectionId, 'cattle');
+  assert.equal(queryPayload.structuredQuery.where.compositeFilter.filters[0].fieldFilter.value.stringValue, 'JBGS-G-357');
+  assert.equal(queryPayload.structuredQuery.where.compositeFilter.filters[1].fieldFilter.value.booleanValue, true);
+
+  const storageHttps = app.buildFirebaseStorageMediaUrl('cattle_photos/cow_doc_1/photo_123.jpg');
+  assert.equal(
+    storageHttps,
+    'https://firebasestorage.googleapis.com/v0/b/gen-lang-client-0821187064.firebasestorage.app/o/cattle_photos%2Fcow_doc_1%2Fphoto_123.jpg?alt=media'
+  );
+
+  // Mock fetch: publicCattleCards returns 404 -> falls back to cattle collection runQuery -> returns real cattle doc
+  const calls = [];
+  const mockFetch = async (url, opts) => {
+    calls.push({ url, method: opts.method });
+    if (url.includes('/publicCattleCards/JBGS-G-357')) {
+      return { ok: false, status: 404 };
+    }
+    if (url.endsWith(':runQuery') && opts.method === 'POST') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [
+          {
+            document: {
+              name: 'projects/gen-lang-client-0821187064/databases/ai-studio-android-5ee9bbf0-cdf7-4202-8155-b40c385da917/documents/cattle/doc_lakshmi',
+              fields: {
+                animalCode: { stringValue: 'JBGS-G-357' },
+                name: { stringValue: 'लक्ष्मी' },
+                category: { stringValue: 'COW' },
+                breed: { stringValue: 'साहीवाल' },
+                sex: { stringValue: 'FEMALE' },
+                ageText: { stringValue: '5 वर्ष' },
+                colour: { stringValue: 'भूरा' },
+                weightKg: { doubleValue: 390 },
+                entryDate: { stringValue: '2024-06-15' },
+                shedNumber: { stringValue: 'Shed-A2' },
+                healthStatus: { stringValue: 'HEALTHY' },
+                photoStoragePath: { stringValue: 'cattle_photos/doc_lakshmi/photo_1700.jpg' },
+                publicApproved: { booleanValue: true },
+                notes: { stringValue: 'PRIVATE_INTERNAL_NOTE_MUST_BE_STRIPPED' },
+                createdBy: { stringValue: 'admin_uid_secret' }
+              }
+            }
+          }
+        ]
+      };
+    }
+    return { ok: false, status: 404 };
+  };
+
+  const result = await app.fetchCattleRecordFromFirestore('JBGS-G-357', mockFetch);
+  assert.equal(result.status, 'ok');
+  assert.ok(result.card);
+  assert.equal(result.card.animalCode, 'JBGS-G-357');
+  assert.equal(result.card.name, 'लक्ष्मी');
+  assert.equal(result.card.shedNumber, 'Shed-A2');
+  assert.equal(result.card.weightKg, 390);
+  assert.equal(
+    result.card.photoUrl,
+    'https://firebasestorage.googleapis.com/v0/b/gen-lang-client-0821187064.firebasestorage.app/o/cattle_photos%2Fdoc_lakshmi%2Fphoto_1700.jpg?alt=media'
+  );
+  assert.equal(result.card.notes, undefined);
+  assert.equal(result.card.createdBy, undefined);
+  assert.equal(calls.length, 2);
+
+  // When publicCattleCards is 404 and cattle collection returns 403 (Zero-Trust locked), returns clean not_found_cattle
+  const lockedFetch = async (url) => {
+    if (url.includes('/publicCattleCards/')) return { ok: false, status: 404 };
+    return { ok: false, status: 403 };
+  };
+  const notFoundRes = await app.fetchCattleRecordFromFirestore('JBGS-G-999', lockedFetch);
+  assert.equal(notFoundRes.status, 'not_found_cattle');
+  assert.equal(notFoundRes.card, null);
+});
+
+
