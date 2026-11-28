@@ -187,10 +187,10 @@
     </section>
 
     <!-- ========================================================= -->
-    <!-- PROFESSIONAL PVC DIGITAL COW ID CARD (/cattle/{id})       -->
+    <!-- FULL DIGITAL CATTLE PROFILE PAGE (/cattle/{id})           -->
     <!-- ========================================================= -->
-    <article id="cowCard" class="pvc-card hidden" aria-label="Digital Cow ID Card">
-      <!-- 1. Goshala Logo, Name & Address Header -->
+    <article id="cowCard" class="pvc-card profile-page hidden" aria-label="Digital Cattle Profile">
+      <!-- 1. Official Goshala Header Band -->
       <div class="pvc-header">
         <div class="pvc-org-group">
           <img
@@ -201,7 +201,7 @@
           />
           <div class="pvc-org-text">
             <h1 id="goshalaName">जय भोले गौशाला समिति</h1>
-            <div id="cardTitleSub" class="pvc-org-subtitle">आधिकारिक डिजिटल गौ पहचान पत्र • Official Digital Cow ID Card</div>
+            <div id="cardTitleSub" class="pvc-org-subtitle">संपूर्ण डिजिटल गौ प्रोफ़ाइल • Official Digital Cattle Profile</div>
             <div id="goshalaAddressHeader" class="pvc-org-address">ग्राम – मेहदोरा, विकासखंड – पोरसा, जिला – मुरैना, मध्य प्रदेश, भारत।</div>
           </div>
         </div>
@@ -211,121 +211,201 @@
         </div>
       </div>
 
-      <!-- Verification & Health Status Ribbon -->
+      <!-- Verification, Sponsorship & Health Status Ribbon -->
       <div class="pvc-ribbon">
         <span class="verified-pill">
           <span class="verified-dot" aria-hidden="true"></span>
           <span id="verifiedText">सत्यापित सार्वजनिक गौ रिकॉर्ड (एडमिन स्वीकृत)</span>
         </span>
-        <span id="healthBadge" class="health-badge health-healthy">--</span>
+        <div class="ribbon-badges">
+          <span id="sponsorRibbonBadge" class="sponsor-pill hidden">--</span>
+          <span id="healthBadge" class="health-badge health-healthy">--</span>
+        </div>
       </div>
 
-      <!-- Main 2-Column PVC Body -->
-      <div class="pvc-body">
-        <!-- Left Column: Cow Photo + Scannable QR Code -->
-        <div class="pvc-left-col">
-          <!-- 2. Large Clear Cow Photo -->
-          <div class="photo-frame">
-            <img
-              id="cowPhoto"
-              src="/assets/default-cow.jpg"
-              alt="गौमाता फोटो"
-            />
-            <div class="photo-caption">
-              <span id="photoCowName" class="photo-caption-name">--</span>
-              <span id="photoCowType" class="photo-caption-type">--</span>
-            </div>
+      <!-- 2. LARGE TOP COW PHOTO HERO -->
+      <section class="profile-hero-wrap" aria-label="Cow Photo">
+        <div id="cowPhotoFrame" class="profile-photo-hero" role="button" tabindex="0" aria-label="पूरा फोटो देखें">
+          <img
+            id="cowPhoto"
+            src="/assets/default-cow.jpg"
+            alt="गौमाता फोटो"
+          />
+          <div id="photoPlaceholderNotice" class="photo-placeholder-badge hidden">
+            फोटो अभी अपलोड नहीं की गई है
           </div>
-
-          <!-- Scannable QR Code + Animal ID -->
-          <div class="qr-stamp-box">
-            <div class="qr-canvas-wrap">
-              <canvas id="qrCanvas" width="120" height="120" aria-label="Digital Cow QR Code"></canvas>
-            </div>
-            <div class="qr-meta">
-              <div id="qrLabel" class="qr-meta-label">सत्यापन QR कोड</div>
-              <div id="qrAnimalCode" class="qr-meta-id">--</div>
-              <div id="qrHint" class="qr-meta-hint">Google Lens या किसी भी QR स्कैनर से सीधे यह पहचान पत्र खोलें।</div>
+          <div id="photoZoomHint" class="photo-zoom-hint no-print">
+            पूरा फोटो देखने के लिए टैप करें
+          </div>
+          <div class="profile-photo-overlay">
+            <div class="profile-photo-title-group">
+              <h2 id="photoCowName" class="profile-hero-name">--</h2>
+              <div class="profile-hero-chips">
+                <span id="photoCowCode" class="hero-id-chip">--</span>
+                <span id="photoCowType" class="photo-caption-type">--</span>
+                <span id="photoCowBreed" class="photo-caption-type">--</span>
+              </div>
             </div>
           </div>
         </div>
+      </section>
 
-        <!-- Right Column: All Official Identity, Health & Care Details -->
-        <div class="pvc-right-col">
+      <!-- 3. FULL PROFILE CONTENT SECTIONS -->
+      <div class="profile-sections">
+        <!-- Core Identity & Physical Details -->
+        <section class="profile-section" aria-labelledby="secIdentity">
           <div class="identity-headline">
-            <h2 id="cowName" class="cow-title-name">--</h2>
+            <div>
+              <div id="secIdentity" class="section-heading">गौवंश संपूर्ण पहचान विवरण</div>
+              <h2 id="cowName" class="cow-title-name">--</h2>
+            </div>
             <span id="cowCodePill" class="cow-title-code">--</span>
           </div>
 
-          <!-- Core Identification Grid -->
-          <div>
-            <div id="secIdentity" class="section-heading">गौवंश पहचान विवरण</div>
-            <div class="details-grid">
+          <div class="profile-details-grid">
+            <div class="detail-cell">
+              <div id="lblAnimalCode" class="detail-label">यूनिक आईडी (Unique ID)</div>
+              <div id="valAnimalCode" class="detail-value">--</div>
+            </div>
+            <div class="detail-cell">
+              <div id="lblCategory" class="detail-label">पशु प्रकार (Category)</div>
+              <div id="valCategory" class="detail-value">--</div>
+            </div>
+            <div class="detail-cell">
+              <div id="lblBreed" class="detail-label">नस्ल (Breed)</div>
+              <div id="valBreed" class="detail-value">--</div>
+            </div>
+            <div class="detail-cell">
+              <div id="lblAgeDob" class="detail-label">आयु / जन्म तिथि</div>
+              <div id="valAgeDob" class="detail-value">--</div>
+            </div>
+            <div class="detail-cell">
+              <div id="lblSex" class="detail-label">लिंग (Sex)</div>
+              <div id="valSex" class="detail-value">--</div>
+            </div>
+            <div class="detail-cell">
+              <div id="lblColour" class="detail-label">रंग (Colour)</div>
+              <div id="valColour" class="detail-value">--</div>
+            </div>
+            <div class="detail-cell">
+              <div id="lblWeight" class="detail-label">वज़न (Weight)</div>
+              <div id="valWeight" class="detail-value">--</div>
+            </div>
+            <div class="detail-cell">
+              <div id="lblEntryDate" class="detail-label">पंजीकरण / प्रवेश तिथि</div>
+              <div id="valEntryDate" class="detail-value">--</div>
+            </div>
+            <div class="detail-cell">
+              <div id="lblShedNumber" class="detail-label">शेड क्रमांक (Shed No.)</div>
+              <div id="valShedNumber" class="detail-value">--</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Health, Vaccination, Illness & Treatment Record -->
+        <section class="health-panel profile-section" aria-labelledby="secHealth">
+          <div id="secHealth" class="section-heading">स्वास्थ्य, टीकाकरण, बीमारी एवं उपचार रिकॉर्ड</div>
+          <div class="profile-details-grid">
+            <div class="detail-cell">
+              <div id="lblHealthStatus" class="detail-label">वर्तमान स्वास्थ्य स्थिति</div>
+              <div id="valHealthStatus" class="detail-value">--</div>
+            </div>
+            <div class="detail-cell">
+              <div id="lblLastCheckup" class="detail-label">अंतिम स्वास्थ्य जांच</div>
+              <div id="valLastCheckup" class="detail-value">--</div>
+            </div>
+            <div class="detail-cell full-span">
+              <div id="lblVaccination" class="detail-label">टीकाकरण विवरण (Vaccination)</div>
+              <div id="valVaccination" class="detail-value">--</div>
+            </div>
+          </div>
+
+          <div class="timeline-block">
+            <div id="lblHealthTimeline" class="timeline-heading">बीमारी, उपचार एवं चिकित्सा इतिहास</div>
+            <div id="healthHistoryList" class="health-timeline-list"></div>
+            <p id="healthHistoryEmpty" class="empty-record-note hidden">अभी कोई अतिरिक्त बीमारी या उपचार रिकॉर्ड दर्ज नहीं है।</p>
+          </div>
+        </section>
+
+        <!-- Fodder, Feed & Daily Care Record -->
+        <section id="feedSummarySection" class="feed-panel profile-section" aria-labelledby="secFeed">
+          <div class="feed-header-row">
+            <div id="secFeed" class="section-heading">चारा, दाना एवं दैनिक देखभाल रिकॉर्ड</div>
+            <span id="valFeedDate" class="feed-date-chip hidden">--</span>
+          </div>
+          <div id="feedMetricsGrid" class="feed-metrics-grid hidden">
+            <div class="feed-metric-card">
+              <div id="lblGreenFodder" class="detail-label">हरा चारा</div>
+              <div id="valGreenFodder" class="feed-metric-value">--</div>
+            </div>
+            <div class="feed-metric-card">
+              <div id="lblDryFodder" class="detail-label">सूखा चारा / भूसा</div>
+              <div id="valDryFodder" class="feed-metric-value">--</div>
+            </div>
+            <div class="feed-metric-card">
+              <div id="lblConcentrate" class="detail-label">दाना / खली</div>
+              <div id="valConcentrate" class="feed-metric-value">--</div>
+            </div>
+            <div class="feed-metric-card">
+              <div id="lblWaterLiters" class="detail-label">स्वच्छ पानी</div>
+              <div id="valWaterLiters" class="feed-metric-value">--</div>
+            </div>
+            <div class="feed-metric-card">
+              <div id="lblShedCleaned" class="detail-label">शेड स्वच्छता</div>
+              <div id="valShedCleaned" class="feed-metric-value">--</div>
+            </div>
+          </div>
+          <p id="feedEmptyMsg" class="empty-record-note">चारा व दैनिक देखभाल का नवीनतम रिकॉर्ड अभी उपलब्ध नहीं है।</p>
+        </section>
+
+        <!-- Additional Details, Sponsorship, Goshala Info & Verification QR -->
+        <section class="profile-bottom-grid" aria-label="Additional Details and QR Code">
+          <div class="care-panel">
+            <div id="secCare" class="section-heading">विशेष पहचान, गौ-सेवा एवं गौशाला विवरण</div>
+            <div class="care-stack">
               <div class="detail-cell">
-                <div id="lblCategory" class="detail-label">पशु प्रकार</div>
-                <div id="valCategory" class="detail-value">--</div>
+                <div class="detail-label" id="lblIdentMarks">पहचान चिन्ह / विशेष देखभाल जानकारी</div>
+                <div id="valIdentMarks" class="detail-value">--</div>
               </div>
               <div class="detail-cell">
-                <div id="lblBreed" class="detail-label">नस्ल</div>
-                <div id="valBreed" class="detail-value">--</div>
+                <div class="detail-label" id="lblSponsorship">गौ-सेवा / गोद सहायता (Sponsorship)</div>
+                <div id="valSponsorship" class="detail-value">--</div>
               </div>
               <div class="detail-cell">
-                <div id="lblAgeDob" class="detail-label">आयु / जन्म तिथि</div>
-                <div id="valAgeDob" class="detail-value">--</div>
-              </div>
-              <div class="detail-cell">
-                <div id="lblColour" class="detail-label">रंग</div>
-                <div id="valColour" class="detail-value">--</div>
-              </div>
-              <div class="detail-cell">
-                <div id="lblSex" class="detail-label">लिंग</div>
-                <div id="valSex" class="detail-value">--</div>
-              </div>
-              <div class="detail-cell">
-                <div id="lblEntryDate" class="detail-label">पंजीकरण तिथि</div>
-                <div id="valEntryDate" class="detail-value">--</div>
-              </div>
-              <div class="detail-cell full-span">
                 <div id="lblGoshalaFull" class="detail-label">गौशाला नाम एवं पता</div>
                 <div id="valGoshalaFull" class="detail-value">--</div>
               </div>
             </div>
           </div>
 
-          <!-- Health & Vaccination Panel -->
-          <div class="health-panel">
-            <div id="secHealth" class="section-heading">स्वास्थ्य एवं टीकाकरण रिकॉर्ड</div>
-            <div class="details-grid">
-              <div class="detail-cell">
-                <div id="lblHealthStatus" class="detail-label">वर्तमान स्वास्थ्य स्थिति</div>
-                <div id="valHealthStatus" class="detail-value">--</div>
-              </div>
-              <div class="detail-cell">
-                <div id="lblLastCheckup" class="detail-label">अंतिम स्वास्थ्य जांच</div>
-                <div id="valLastCheckup" class="detail-value">--</div>
-              </div>
-              <div class="detail-cell full-span">
-                <div id="lblVaccination" class="detail-label">टीकाकरण विवरण</div>
-                <div id="valVaccination" class="detail-value">--</div>
-              </div>
+          <div class="qr-stamp-box qr-profile-box">
+            <div class="qr-canvas-wrap">
+              <canvas id="qrCanvas" width="140" height="140" aria-label="Digital Cow QR Code"></canvas>
+            </div>
+            <div class="qr-meta">
+              <div id="qrLabel" class="qr-meta-label">सत्यापन QR कोड</div>
+              <div id="qrAnimalCode" class="qr-meta-id">--</div>
+              <div id="qrHint" class="qr-meta-hint">Google Lens या किसी भी QR स्कैनर से सीधे यह प्रोफ़ाइल खोलें।</div>
             </div>
           </div>
-
-          <!-- Identification Marks & Special Care -->
-          <div class="care-panel">
-            <div id="secCare" class="section-heading">विशेष पहचान एवं देखभाल</div>
-            <div class="detail-label" id="lblIdentMarks">पहचान चिन्ह / विशेष देखभाल जानकारी</div>
-            <div id="valIdentMarks" class="detail-value">--</div>
-          </div>
-        </div>
+        </section>
       </div>
 
-      <!-- PVC Footer -->
+      <!-- Profile Footer -->
       <div class="pvc-footer">
         <span id="footerVerified"><strong>जय भोले गौशाला समिति</strong> — सुरक्षित डिजिटल गौवंश पहचान प्रणाली</span>
         <span id="footerUrl"></span>
       </div>
     </article>
+
+    <!-- Full-Screen Cow Photo Lightbox -->
+    <div id="photoLightbox" class="lightbox-backdrop hidden no-print" role="dialog" aria-modal="true" aria-label="Cow Full Photo">
+      <div class="lightbox-content">
+        <button id="lightboxCloseBtn" type="button" class="lightbox-close" aria-label="बंद करें">✕</button>
+        <img id="lightboxImg" src="/assets/default-cow.jpg" alt="गौमाता पूरा फोटो" />
+        <div id="lightboxCaption" class="lightbox-caption"></div>
+      </div>
+    </div>
 
     <!-- Interactive Action Buttons (Print, PDF, WhatsApp Share) -->
     <div id="actionBar" class="action-bar hidden no-print">

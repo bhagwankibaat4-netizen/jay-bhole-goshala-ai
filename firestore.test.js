@@ -1924,8 +1924,202 @@ test("13. Notifications & Reminders RBAC: Admin full control, Public published-o
   await assertSucceeds(adminDb.collection("notifications").doc("notif_admin_only").delete());
 });
 
+test("14. Public Cattle Profile Cards (/publicCattleCards/{animalCode}): unauth single-doc GET (200/404/403), no list/write, private key block, Admin & Staff sync", async () => {
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID, {
+    email: ADMIN_EMAIL,
+    email_verified: true,
+  }).firestore();
+  const publicDb = testEnv.authenticatedContext(PUBLIC_UID, {
+    email: PUBLIC_EMAIL,
+    email_verified: true,
+  }).firestore();
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
 
+  const healthStaffUid = "staff_health_card_1";
+  const feedStaffUid = "staff_feed_card_1";
 
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("staffAccounts").doc(healthStaffUid).set({
+      uid: healthStaffUid,
+      email: "vetstaff@gosala.org",
+      name: "स्वास्थ्य सेवक",
+      designation: "पशु चिकित्सक सहायक",
+      monthlySalary: 14000,
+      active: true,
+      permissions: { health: ["VIEW", "ADD", "EDIT"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    await db.collection("staffAccounts").doc(feedStaffUid).set({
+      uid: feedStaffUid,
+      email: "feedstaff@gosala.org",
+      name: "चारा सेवक",
+      designation: "गौ सेवक",
+      monthlySalary: 11000,
+      active: true,
+      permissions: { feed: ["VIEW", "ADD", "EDIT"] },
+      createdAt: pastDate(),
+      updatedAt: pastDate(),
+    });
+    // Seed an unapproved card directly to verify 403 rejection on public GET
+    await db.collection("publicCattleCards").doc("JBGS-G-999").set({
+      animalCode: "JBGS-G-999",
+      name: "निजी गाय",
+      category: "COW",
+      breed: "गिर",
+      sex: "FEMALE",
+      healthStatus: "HEALTHY",
+      goshalaNameHi: "जय भोले गौशाला समिति",
+      goshalaNameEn: "Jay Bhole Gosala Samiti",
+      goshalaAddressHi: "ग्राम – मेहदोरा, पोरसा, मुरैना",
+      goshalaAddressEn: "Mehdora, Porsa, Morena",
+      qrUrl: "https://gen-lang-client-0821187064.web.app/cattle/JBGS-G-999",
+      publicApproved: false,
+      updatedAt: pastDate(),
+    });
+  });
 
+  const healthStaffDb = testEnv.authenticatedContext(healthStaffUid, {
+    email: "vetstaff@gosala.org",
+    email_verified: true,
+  }).firestore();
+  const feedStaffDb = testEnv.authenticatedContext(feedStaffUid, {
+    email: "feedstaff@gosala.org",
+    email_verified: true,
+  }).firestore();
 
+  const fullProfileCard = {
+    animalCode: "JBGS-G-357",
+    name: "कामधेनु गौमाता",
+    category: "COW",
+    breed: "गिर (Gir)",
+    sex: "FEMALE",
+    ageText: "4 वर्ष",
+    birthDate: "2022-03-18",
+    colour: "सफेद-लाल",
+    weightKg: 410.5,
+    entryDate: "2024-01-10",
+    shedNumber: "Shed-A1",
+    healthStatus: "HEALTHY",
+    vaccinationSummary: "FMD व HS टीका पूर्ण",
+    lastHealthCheckup: "नियमित जांच • 2026-11-20",
+    identificationMarks: "माथे पर सफेद तिलक",
+    sponsorshipAvailable: true,
+    monthlySupportInr: 2100,
+    healthHistory: [
+      {
+        recordType: "VACCINATION",
+        title: "FMD वार्षिक टीका",
+        medicine: "FMD Vaccine",
+        vetName: "डॉ. वर्मा",
+        weightKg: 410.5,
+        nextFollowUpDate: "2027-05-01",
+        dateStr: "2026-11-20",
+      },
+    ],
+    feedSummary: {
+      logDate: "2026-11-27",
+      greenFodderKg: 150,
+      dryFodderBhusaKg: 200,
+      concentrateKg: 40,
+      waterLiters: 800,
+      shedCleaned: true,
+    },
+    photoUrl: "https://firebasestorage.googleapis.com/v0/b/gen-lang-client-0821187064.firebasestorage.app/o/cattle_photos%2Fcow.jpg?alt=media",
+    photoDataUrl: "",
+    goshalaNameHi: "जय भोले गौशाला समिति",
+    goshalaNameEn: "Jay Bhole Gosala Samiti",
+    goshalaAddressHi: "ग्राम – मेहदोरा, विकासखंड – पोरसा, जिला – मुरैना, मध्य प्रदेश, भारत।",
+    goshalaAddressEn: "Village – Mehdora, Block – Porsa, District – Morena, Madhya Pradesh, India.",
+    qrUrl: "https://gen-lang-client-0821187064.web.app/cattle/JBGS-G-357",
+    publicApproved: true,
+    updatedAt: pastDate(),
+  };
 
+  // 1. Admin creates full public cattle profile card
+  await assertSucceeds(
+    adminDb.collection("publicCattleCards").doc("JBGS-G-357").set(fullProfileCard)
+  );
+
+  // 2. Private internal fields (notes, costInr, createdBy) MUST be rejected even for Admin
+  await assertFails(
+    adminDb.collection("publicCattleCards").doc("JBGS-G-358").set({
+      ...fullProfileCard,
+      animalCode: "JBGS-G-358",
+      notes: "PRIVATE_PHONE_9876543210",
+    })
+  );
+
+  // 3. Unauthenticated QR scanner CAN get approved profile AND gets clean exists=false (404) for missing ID
+  const approvedSnap = await assertSucceeds(
+    unauthDb.collection("publicCattleCards").doc("JBGS-G-357").get()
+  );
+  if (!approvedSnap.exists) throw new Error("Expected approved profile to exist");
+
+  const missingSnap = await assertSucceeds(
+    unauthDb.collection("publicCattleCards").doc("JBGS-G-404").get()
+  );
+  if (missingSnap.exists) throw new Error("Expected missing profile to not exist");
+
+  // 4. Unauthenticated QR scanner CANNOT read unapproved card (403), CANNOT list collection, CANNOT write/delete
+  await assertFails(unauthDb.collection("publicCattleCards").doc("JBGS-G-999").get());
+  await assertFails(unauthDb.collection("publicCattleCards").get());
+  await assertFails(unauthDb.collection("publicCattleCards").doc("JBGS-G-357").update({ name: "Hacked" }));
+  await assertFails(unauthDb.collection("publicCattleCards").doc("JBGS-G-357").delete());
+
+  // 5. Public logged-in user CANNOT create, update, or delete publicCattleCards
+  await assertFails(publicDb.collection("publicCattleCards").doc("JBGS-G-357").update({ name: "Hacked" }));
+  await assertFails(publicDb.collection("publicCattleCards").doc("JBGS-G-357").delete());
+
+  // 6. Health staff CAN update healthHistory/lastHealthCheckup/vaccinationSummary; CANNOT edit name
+  await assertSucceeds(
+    healthStaffDb.collection("publicCattleCards").doc("JBGS-G-357").update({
+      lastHealthCheckup: "उपचार • 2026-11-28",
+      healthHistory: [
+        ...fullProfileCard.healthHistory,
+        {
+          recordType: "TREATMENT",
+          title: "हल्का बुखार उपचार",
+          medicine: "पैरासिटामोल बोलस",
+          vetName: "डॉ. वर्मा",
+          weightKg: 412,
+          nextFollowUpDate: "2026-12-01",
+          dateStr: "2026-11-28",
+        },
+      ],
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertFails(
+    healthStaffDb.collection("publicCattleCards").doc("JBGS-G-357").update({
+      name: "Unauthorized Rename",
+      updatedAt: pastDate(400),
+    })
+  );
+
+  // 7. Feed staff CAN update feedSummary; CANNOT edit healthStatus or name
+  await assertSucceeds(
+    feedStaffDb.collection("publicCattleCards").doc("JBGS-G-357").update({
+      feedSummary: {
+        logDate: "2026-11-28",
+        greenFodderKg: 170,
+        dryFodderBhusaKg: 210,
+        concentrateKg: 45,
+        waterLiters: 850,
+        shedCleaned: true,
+      },
+      updatedAt: pastDate(300),
+    })
+  );
+  await assertFails(
+    feedStaffDb.collection("publicCattleCards").doc("JBGS-G-357").update({
+      healthStatus: "SICK",
+      updatedAt: pastDate(200),
+    })
+  );
+
+  // 8. Admin can delete cleanly
+  await assertSucceeds(adminDb.collection("publicCattleCards").doc("JBGS-G-357").delete());
+  await assertSucceeds(adminDb.collection("publicCattleCards").doc("JBGS-G-999").delete());
+});

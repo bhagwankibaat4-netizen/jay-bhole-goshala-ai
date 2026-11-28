@@ -301,22 +301,55 @@ class GosalaRepository(
     }
 
     /**
-     * Best-effort synchronization of an Admin-approved cow's public-safe Digital Cow ID Card
+     * Best-effort synchronization of an Admin-approved cow's public-safe Cattle Profile
      * into `/publicCattleCards/{animalCode}` so Google Lens / browser QR scans immediately display
-     * the latest details without login. Never writes private internal `notes` or unapproved cows.
+     * the latest photo, details, health/vaccination records, and fodder summary without login.
+     * Never writes private internal `notes`, `costInr`, or unapproved cows.
      */
     suspend fun syncPublicCattleCard(
         session: UserSession,
         cattle: Cattle,
-        lastHealthCheckup: String? = null
+        lastHealthCheckup: String? = null,
+        healthRecords: List<HealthRecord>? = null,
+        latestFeedLog: FeedAndOperationLog? = null
     ) {
         if (!session.canEdit(AppModule.CATTLE) && !session.canAdd(AppModule.CATTLE)) return
-        syncPublicCattleCardInternal(cattle, lastHealthCheckup)
+        syncPublicCattleCardInternal(
+            cattle = cattle,
+            lastHealthCheckup = lastHealthCheckup,
+            prefetchedHealthRecords = healthRecords,
+            prefetchedLatestFeedLog = latestFeedLog
+        )
+    }
+
+    /**
+     * Background batch sync for all pre-existing Admin-approved cattle (such as JBGS-G-357)
+     * so every approved cow's public QR web profile stays populated with live photo, health, and feed data.
+     */
+    suspend fun syncAllApprovedPublicCattleCards(
+        session: UserSession,
+        cattleList: List<Cattle>,
+        healthRecords: List<HealthRecord> = emptyList(),
+        feedLogs: List<FeedAndOperationLog> = emptyList()
+    ) {
+        if (session.role != UserRole.ADMIN && !session.canEdit(AppModule.CATTLE)) return
+        val latestFeed = feedLogs.maxByOrNull { it.logDate }
+        for (cow in cattleList) {
+            if (!cow.publicApproved) continue
+            syncPublicCattleCardInternal(
+                cattle = cow,
+                lastHealthCheckup = null,
+                prefetchedHealthRecords = healthRecords,
+                prefetchedLatestFeedLog = latestFeed
+            )
+        }
     }
 
     private suspend fun syncPublicCattleCardInternal(
         cattle: Cattle,
-        lastHealthCheckup: String?
+        lastHealthCheckup: String?,
+        prefetchedHealthRecords: List<HealthRecord>? = null,
+        prefetchedLatestFeedLog: FeedAndOperationLog? = null
     ) {
         val normalizedCode = QrAndExportUtils.normalizeAnimalCode(cattle.animalCode) ?: return
         val cardDocRef = db.collection("publicCattleCards").document(normalizedCode)
@@ -330,10 +363,21 @@ class GosalaRepository(
             var httpsPhotoUrl: String? = resolvedPhoto?.takeIf {
                 it.startsWith("https://", ignoreCase = true)
             }
+            // If photoUri was not HTTPS yet (e.g., storage path or folder upload), try Firebase Storage directly
+            if (httpsPhotoUrl.isNullOrBlank() && cattle.id.isNotBlank()) {
+                val storageResolved = CattlePhotoStorage.resolveCowPhotoUrl(
+                    cattleId = cattle.id,
+                    photoUri = null,
+                    photoStoragePath = cattle.photoStoragePath
+                )
+                if (storageResolved?.startsWith("https://", ignoreCase = true) == true) {
+                    httpsPhotoUrl = storageResolved
+                }
+            }
             var photoDataUrl: String? = null
 
             // If cow photo is stored in Firestore fallback (`cattlePhotos/{cattleId}`), embed compact
-            // JPEG data URL so public Google Lens viewers see the real cow photo even without Storage bucket activation.
+            // JPEG data URL so public Google Lens viewers see the real cow photo even if Storage URL is absent.
             if (httpsPhotoUrl.isNullOrBlank() && cattle.id.isNotBlank()) {
                 val fallbackSnap = runCatching {
                     withTimeout(6_000L) {
@@ -349,11 +393,52 @@ class GosalaRepository(
                 }
             }
 
+            // Fetch cow's real health records if not supplied
+            val healthList: List<HealthRecord> = prefetchedHealthRecords ?: run {
+                val byCode = runCatching {
+                    withTimeout(6_000L) {
+                        db.collection("healthRecords")
+                            .whereEqualTo("animalCode", normalizedCode)
+                            .limit(15)
+                            .get()
+                            .await()
+                            .toObjects(HealthRecord::class.java, ServerTimestampBehavior.ESTIMATE)
+                    }
+                }.getOrDefault(emptyList())
+                val byId = if (cattle.id.isNotBlank()) {
+                    runCatching {
+                        withTimeout(6_000L) {
+                            db.collection("healthRecords")
+                                .whereEqualTo("cattleId", cattle.id)
+                                .limit(15)
+                                .get()
+                                .await()
+                                .toObjects(HealthRecord::class.java, ServerTimestampBehavior.ESTIMATE)
+                        }
+                    }.getOrDefault(emptyList())
+                } else emptyList()
+                (byCode + byId).distinctBy { it.id }
+            }
+
+            // Fetch latest Goshala feed log if not supplied
+            val latestFeed: FeedAndOperationLog? = prefetchedLatestFeedLog ?: runCatching {
+                withTimeout(5_000L) {
+                    db.collection("feedAndOperations")
+                        .limit(20)
+                        .get()
+                        .await()
+                        .toObjects(FeedAndOperationLog::class.java, ServerTimestampBehavior.ESTIMATE)
+                        .maxByOrNull { it.logDate }
+                }
+            }.getOrNull()
+
             val cardMap = QrAndExportUtils.buildPublicCattleCardMap(
                 cattle = enriched.copy(animalCode = normalizedCode),
                 resolvedPhotoUrl = httpsPhotoUrl,
                 photoDataUrl = photoDataUrl,
                 lastHealthCheckup = lastHealthCheckup,
+                healthRecords = healthList,
+                latestFeedLog = latestFeed,
                 useServerTimestamp = true
             ) ?: return
 
@@ -557,10 +642,36 @@ class GosalaRepository(
                     append(" • ")
                     append(QrAndExportUtils.todayIso())
                 }.take(120)
+                val updatedHistory = runCatching {
+                    val byCode = withTimeout(5_000L) {
+                        db.collection("healthRecords")
+                            .whereEqualTo("animalCode", normalizedCode)
+                            .limit(15)
+                            .get()
+                            .await()
+                            .toObjects(HealthRecord::class.java, ServerTimestampBehavior.ESTIMATE)
+                    }
+                    val dateFmt = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                    byCode.sortedByDescending { it.createdAt?.seconds ?: 0L }.take(15).map { rec ->
+                        val entry = mutableMapOf<String, Any>(
+                            "recordType" to rec.recordType.trim().uppercase(java.util.Locale.US),
+                            "title" to rec.title.trim().take(120)
+                        )
+                        rec.medicine.trim().takeIf { it.isNotBlank() }?.let { entry["medicine"] = it.take(160) }
+                        rec.vetName.trim().takeIf { it.isNotBlank() }?.let { entry["vetName"] = it.take(100) }
+                        if (rec.weightKg > 0.0) entry["weightKg"] = rec.weightKg.coerceIn(0.0, 2000.0)
+                        rec.nextFollowUpDate.trim().takeIf { it.isNotBlank() }?.let { entry["nextFollowUpDate"] = it.take(30) }
+                        rec.createdAt?.toDate()?.let { entry["dateStr"] = dateFmt.format(it) }
+                        entry
+                    }
+                }.getOrNull()
                 val publicHealthUpdates = mutableMapOf<String, Any>(
                     "lastHealthCheckup" to checkupText,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
+                if (!updatedHistory.isNullOrEmpty()) {
+                    publicHealthUpdates["healthHistory"] = updatedHistory
+                }
                 if (record.recordType.equals("VACCINATION", ignoreCase = true)) {
                     val summary = buildString {
                         append(record.title.trim())

@@ -15,6 +15,8 @@ import android.net.Uri
 import androidx.core.content.FileProvider
 import com.example.R
 import com.example.data.model.Cattle
+import com.example.data.model.FeedAndOperationLog
+import com.example.data.model.HealthRecord
 import com.google.firebase.firestore.FieldValue
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
@@ -94,13 +96,15 @@ object QrAndExportUtils {
     /**
      * Builds the strictly whitelisted public-safe Firestore map for `/publicCattleCards/{animalCode}`.
      * Returns null if the cow is not Admin-approved (`publicApproved != true`) or lacks a valid Animal Code.
-     * NEVER includes internal `notes`, Firebase `cattleId`, phone numbers, private addresses, or `createdBy`.
+     * NEVER includes internal `notes`, `costInr`, Firebase `cattleId`, phone numbers, private addresses, or `createdBy`.
      */
     fun buildPublicCattleCardMap(
         cattle: Cattle,
         resolvedPhotoUrl: String? = cattle.photoUri,
         photoDataUrl: String? = null,
         lastHealthCheckup: String? = null,
+        healthRecords: List<HealthRecord> = emptyList(),
+        latestFeedLog: FeedAndOperationLog? = null,
         useServerTimestamp: Boolean = true
     ): Map<String, Any>? {
         if (!cattle.publicApproved) return null
@@ -112,6 +116,39 @@ object QrAndExportUtils {
         val safeDataUrl = photoDataUrl?.trim()?.takeIf {
             it.startsWith("data:image/", ignoreCase = true) && it.length <= 260_000
         }
+
+        val matchingHealth = healthRecords
+            .filter { rec ->
+                (cattle.id.isNotBlank() && rec.cattleId == cattle.id) ||
+                    rec.animalCode.equals(normalizedCode, ignoreCase = true)
+            }
+            .sortedByDescending { it.createdAt?.seconds ?: 0L }
+            .take(15)
+
+        val dateFormatter = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        val sanitizedHealthHistory: List<Map<String, Any>> = matchingHealth.map { rec ->
+            val recDate = rec.createdAt?.toDate()?.let { dateFormatter.format(it) }.orEmpty()
+            val entry = mutableMapOf<String, Any>(
+                "recordType" to rec.recordType.trim().uppercase(Locale.US).takeIf {
+                    it in setOf("VACCINATION", "TREATMENT", "VET_VISIT", "WEIGHT_CHECK")
+                }.orEmpty().ifBlank { "VET_VISIT" },
+                "title" to rec.title.trim().take(120)
+            )
+            rec.medicine.trim().takeIf { it.isNotBlank() }?.let { entry["medicine"] = it.take(160) }
+            rec.vetName.trim().takeIf { it.isNotBlank() }?.let { entry["vetName"] = it.take(100) }
+            if (rec.weightKg > 0.0) entry["weightKg"] = rec.weightKg.coerceIn(0.0, 2000.0)
+            rec.nextFollowUpDate.trim().takeIf { it.isNotBlank() }?.let { entry["nextFollowUpDate"] = it.take(30) }
+            if (recDate.isNotBlank()) entry["dateStr"] = recDate
+            entry
+        }
+
+        val derivedLastCheckup = lastHealthCheckup?.trim()?.takeIf { it.isNotBlank() }
+            ?: matchingHealth.firstOrNull()?.let { rec ->
+                val recDate = rec.createdAt?.toDate()?.let { dateFormatter.format(it) }.orEmpty()
+                listOf(rec.title.trim().ifBlank { rec.recordType }, recDate.takeIf { it.isNotBlank() })
+                    .filterNotNull()
+                    .joinToString(" • ")
+            }
 
         val map = mutableMapOf<String, Any>(
             "animalCode" to normalizedCode,
@@ -128,10 +165,13 @@ object QrAndExportUtils {
             "colour" to cattle.colour.trim().ifBlank { "-" }.take(40),
             "weightKg" to cattle.weightKg.coerceIn(0.0, 2000.0),
             "entryDate" to cattle.entryDate.trim().ifBlank { "-" }.take(30),
+            "shedNumber" to cattle.shedNumber.trim().take(30),
             "healthStatus" to cattle.healthStatus.trim().uppercase(Locale.US).takeIf {
                 it in setOf("HEALTHY", "SICK", "UNDER_TREATMENT", "RECOVERING")
             }.orEmpty().ifBlank { "HEALTHY" },
             "identificationMarks" to cattle.identificationMarks.trim().take(200),
+            "sponsorshipAvailable" to cattle.sponsorshipAvailable,
+            "monthlySupportInr" to cattle.monthlySupportInr.coerceIn(0L, 500_000L),
             "goshalaNameHi" to GosalaBrand.NAME_HI,
             "goshalaNameEn" to GosalaBrand.NAME_EN,
             "goshalaAddressHi" to GosalaBrand.ADDRESS_HI,
@@ -143,8 +183,21 @@ object QrAndExportUtils {
         cattle.vaccinationSummary?.trim()?.takeIf { it.isNotBlank() }?.let {
             map["vaccinationSummary"] = it.take(500)
         }
-        lastHealthCheckup?.trim()?.takeIf { it.isNotBlank() }?.let {
+        derivedLastCheckup?.takeIf { it.isNotBlank() }?.let {
             map["lastHealthCheckup"] = it.take(120)
+        }
+        if (sanitizedHealthHistory.isNotEmpty()) {
+            map["healthHistory"] = sanitizedHealthHistory
+        }
+        if (latestFeedLog != null && latestFeedLog.logDate.isNotBlank()) {
+            map["feedSummary"] = mapOf(
+                "logDate" to latestFeedLog.logDate.trim().take(30),
+                "greenFodderKg" to latestFeedLog.greenFodderKg.coerceIn(0.0, 100_000.0),
+                "dryFodderBhusaKg" to latestFeedLog.dryFodderBhusaKg.coerceIn(0.0, 100_000.0),
+                "concentrateKg" to latestFeedLog.concentrateKg.coerceIn(0.0, 50_000.0),
+                "waterLiters" to latestFeedLog.waterLiters.coerceIn(0.0, 500_000.0),
+                "shedCleaned" to latestFeedLog.shedCleaned
+            )
         }
         if (!httpsPhoto.isNullOrBlank()) {
             map["photoUrl"] = httpsPhoto

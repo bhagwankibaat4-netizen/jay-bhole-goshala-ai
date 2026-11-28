@@ -1021,6 +1021,416 @@ html, body {
   color: var(--forest-mid);
 }
 
+/* ========================================================= */
+/* Full Digital Cattle Profile Page (/cattle/{id})           */
+/* ========================================================= */
+.ribbon-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sponsor-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 11px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  background: var(--saffron-soft);
+  color: var(--saffron);
+  border: 1px solid rgba(217, 107, 24, 0.32);
+}
+
+.profile-hero-wrap {
+  padding: 18px 18px 0;
+}
+
+@media (min-width: 740px) {
+  .profile-hero-wrap {
+    padding: 22px 24px 0;
+  }
+}
+
+.profile-photo-hero {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  max-height: 480px;
+  border-radius: 20px;
+  overflow: hidden;
+  border: 2.5px solid var(--gold);
+  background: linear-gradient(135deg, #efe7d7, #e1ede6);
+  box-shadow: 0 12px 28px rgba(18, 75, 50, 0.16);
+  cursor: pointer;
+}
+
+@media (min-width: 740px) {
+  .profile-photo-hero {
+    aspect-ratio: 16 / 10;
+  }
+}
+
+.profile-photo-hero img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  display: block;
+  transition: transform 0.25s ease;
+}
+
+.profile-photo-hero:hover img {
+  transform: scale(1.015);
+}
+
+.photo-placeholder-badge {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  background: rgba(154, 52, 18, 0.92);
+  color: #ffffff;
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 999px;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.photo-zoom-hint {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  background: rgba(13, 45, 29, 0.78);
+  color: #ffffff;
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 999px;
+  backdrop-filter: blur(4px);
+}
+
+.profile-photo-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 28px 18px 16px;
+  background: linear-gradient(180deg, rgba(13, 45, 29, 0) 0%, rgba(13, 45, 29, 0.88) 72%, rgba(13, 45, 29, 0.95) 100%);
+  color: #ffffff;
+}
+
+.profile-hero-name {
+  font-size: 1.55rem;
+  font-weight: 800;
+  line-height: 1.18;
+  margin-bottom: 6px;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+@media (min-width: 740px) {
+  .profile-hero-name {
+    font-size: 1.9rem;
+  }
+}
+
+.profile-hero-chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hero-id-chip {
+  font-size: 0.8rem;
+  font-weight: 800;
+  background: var(--gold);
+  color: #16231c;
+  padding: 3px 10px;
+  border-radius: 999px;
+  letter-spacing: 0.03em;
+}
+
+.profile-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 20px 18px 24px;
+}
+
+@media (min-width: 740px) {
+  .profile-sections {
+    gap: 20px;
+    padding: 24px 24px 26px;
+  }
+}
+
+.profile-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.profile-details-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (min-width: 740px) {
+  .profile-details-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+}
+
+@media (max-width: 440px) {
+  .profile-details-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Health, Illness & Treatment Timeline */
+.timeline-block {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px dashed #b9dac7;
+}
+
+.timeline-heading {
+  font-size: 0.84rem;
+  font-weight: 800;
+  color: var(--forest-deep);
+  margin-bottom: 10px;
+}
+
+.health-timeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.timeline-item {
+  background: #ffffff;
+  border: 1px solid #d5e8dc;
+  border-left: 4px solid var(--forest-deep);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.timeline-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.record-type-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.type-vaccine {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.type-treatment {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.type-checkup {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.type-weight {
+  background: #f3e8ff;
+  color: #6b21a8;
+}
+
+.timeline-date {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--ink-secondary);
+}
+
+.timeline-title {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--ink-primary);
+}
+
+.timeline-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.timeline-meta-chip {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink-secondary);
+  background: #f6f8f7;
+  border: 1px solid #e2ebe6;
+  border-radius: 8px;
+  padding: 3px 8px;
+}
+
+.empty-record-note {
+  font-size: 0.86rem;
+  color: var(--ink-secondary);
+  font-style: italic;
+}
+
+/* Fodder & Daily Care Panel */
+.feed-panel {
+  background: #fdf9f1;
+  border: 1px solid #e7d9bc;
+  border-radius: 16px;
+  padding: 14px 16px;
+}
+
+.feed-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.feed-header-row .section-heading {
+  margin-bottom: 0;
+}
+
+.feed-date-chip {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--forest-deep);
+  background: var(--forest-soft);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.feed-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (min-width: 740px) {
+  .feed-metrics-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+.feed-metric-card {
+  background: #ffffff;
+  border: 1px solid #eadfcd;
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.feed-metric-value {
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--forest-deep);
+  margin-top: 2px;
+}
+
+/* Bottom Details + QR Grid */
+.profile-bottom-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (min-width: 740px) {
+  .profile-bottom-grid {
+    grid-template-columns: 1.45fr 1fr;
+  }
+}
+
+.care-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.qr-profile-box {
+  height: 100%;
+  flex-direction: row;
+  align-items: center;
+}
+
+/* Full-screen Photo Lightbox */
+.lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(10, 22, 16, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.lightbox-content {
+  position: relative;
+  max-width: 960px;
+  width: 100%;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.lightbox-content img {
+  max-width: 100%;
+  max-height: 80vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 14px;
+  border: 2px solid var(--gold-light);
+  background: #0d1a13;
+}
+
+.lightbox-close {
+  position: absolute;
+  top: -12px;
+  right: -4px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.45);
+  background: rgba(18, 75, 50, 0.92);
+  color: #ffffff;
+  font-size: 1.15rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.lightbox-caption {
+  color: #f6e7c1;
+  font-size: 0.96rem;
+  font-weight: 700;
+  text-align: center;
+}
+
 /* Dedicated clean Print / PDF layout */
 @media print {
   @page {
@@ -1046,13 +1456,17 @@ html, body {
   .pvc-card {
     box-shadow: none !important;
     border: 2px solid #cfa349 !important;
-    page-break-inside: avoid;
-    break-inside: avoid;
   }
 
-  .pvc-body {
-    grid-template-columns: 245px 1fr !important;
-    gap: 16px !important;
-    padding: 16px !important;
+  .profile-photo-hero {
+    max-height: 290px !important;
+  }
+
+  .profile-details-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .profile-bottom-grid {
+    grid-template-columns: 1.45fr 1fr !important;
   }
 }

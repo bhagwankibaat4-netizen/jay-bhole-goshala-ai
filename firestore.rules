@@ -182,11 +182,26 @@ service cloud.firestore {
              code.matches('^[A-Z0-9][A-Z0-9_-]{1,39}$');
     }
 
+    function isValidPublicFeedSummary(feed) {
+      return feed is map &&
+             feed.keys().hasOnly([
+               'logDate', 'greenFodderKg', 'dryFodderBhusaKg',
+               'concentrateKg', 'waterLiters', 'shedCleaned'
+             ]) &&
+             isOptString(feed, 'logDate', 30) &&
+             (!('greenFodderKg' in feed) || ((feed.greenFodderKg is int || feed.greenFodderKg is float) && feed.greenFodderKg >= 0 && feed.greenFodderKg <= 100000)) &&
+             (!('dryFodderBhusaKg' in feed) || ((feed.dryFodderBhusaKg is int || feed.dryFodderBhusaKg is float) && feed.dryFodderBhusaKg >= 0 && feed.dryFodderBhusaKg <= 100000)) &&
+             (!('concentrateKg' in feed) || ((feed.concentrateKg is int || feed.concentrateKg is float) && feed.concentrateKg >= 0 && feed.concentrateKg <= 50000)) &&
+             (!('waterLiters' in feed) || ((feed.waterLiters is int || feed.waterLiters is float) && feed.waterLiters >= 0 && feed.waterLiters <= 500000)) &&
+             (!('shedCleaned' in feed) || feed.shedCleaned is bool);
+    }
+
     function isValidPublicCattleCard(data) {
       return data.keys().hasOnly([
                'animalCode', 'name', 'category', 'breed', 'sex', 'ageText', 'birthDate',
-               'colour', 'weightKg', 'entryDate', 'healthStatus', 'vaccinationSummary',
-               'lastHealthCheckup', 'identificationMarks', 'photoUrl', 'photoDataUrl',
+               'colour', 'weightKg', 'entryDate', 'shedNumber', 'healthStatus', 'vaccinationSummary',
+               'lastHealthCheckup', 'identificationMarks', 'sponsorshipAvailable', 'monthlySupportInr',
+               'healthHistory', 'feedSummary', 'photoUrl', 'photoDataUrl',
                'goshalaNameHi', 'goshalaNameEn', 'goshalaAddressHi', 'goshalaAddressEn',
                'qrUrl', 'publicApproved', 'updatedAt'
              ]) &&
@@ -200,10 +215,15 @@ service cloud.firestore {
              data.colour is string && data.colour.size() >= 1 && data.colour.size() <= 40 &&
              (data.weightKg is int || data.weightKg is float) && data.weightKg >= 0 && data.weightKg <= 2000 &&
              data.entryDate is string && data.entryDate.size() >= 1 && data.entryDate.size() <= 30 &&
+             isOptString(data, 'shedNumber', 30) &&
              data.healthStatus in ['HEALTHY', 'SICK', 'UNDER_TREATMENT', 'RECOVERING'] &&
              isOptString(data, 'vaccinationSummary', 500) &&
              isOptString(data, 'lastHealthCheckup', 120) &&
              isOptString(data, 'identificationMarks', 200) &&
+             (!('sponsorshipAvailable' in data) || data.sponsorshipAvailable is bool) &&
+             (!('monthlySupportInr' in data) || (data.monthlySupportInr is int && data.monthlySupportInr >= 0 && data.monthlySupportInr <= 500000)) &&
+             (!('healthHistory' in data) || (data.healthHistory is list && data.healthHistory.size() <= 15)) &&
+             (!('feedSummary' in data) || isValidPublicFeedSummary(data.feedSummary)) &&
              isOptString(data, 'photoUrl', 2000) &&
              isOptString(data, 'photoDataUrl', 260000) &&
              data.goshalaNameHi is string && data.goshalaNameHi.size() >= 1 && data.goshalaNameHi.size() <= 120 &&
@@ -633,29 +653,39 @@ service cloud.firestore {
       allow delete: if isSignedIn() && isValidId(cattleId) && (isAdmin() || hasStaffPermission('cattle', 'DELETE'));
     }
 
+    function canStaffPermsWritePublicCattleCard(perms) {
+      return ('cattle' in perms && perms['cattle'].hasAny(['ADD', 'EDIT'])) ||
+             (
+               resource != null &&
+               existing().publicApproved == true &&
+               incoming().diff(existing()).affectedKeys().hasOnly(['vaccinationSummary', 'lastHealthCheckup', 'healthHistory', 'updatedAt']) &&
+               'health' in perms &&
+               perms['health'].hasAny(['ADD', 'EDIT'])
+             ) ||
+             (
+               resource != null &&
+               existing().publicApproved == true &&
+               incoming().diff(existing()).affectedKeys().hasOnly(['feedSummary', 'updatedAt']) &&
+               'feed' in perms &&
+               perms['feed'].hasAny(['ADD', 'EDIT'])
+             );
+    }
+
     // Public-safe Digital Cow ID Card projection for Google Lens / web QR scans.
     // Strictly single-document GET without login ONLY when publicApproved == true.
     // Directory listing is Admin-only; never exposes internal notes, mobile numbers, or Firebase doc IDs.
     match /publicCattleCards/{animalCode} {
       allow get: if isValidPublicAnimalCode(animalCode) &&
-                    existing().publicApproved == true;
+                    (resource == null || existing().publicApproved == true);
       allow list: if isAdmin();
       allow create, update: if isSignedIn() &&
-                               isValidPublicAnimalCode(animalCode) && (
-                                 (
-                                   isValidPublicCattleCard(incoming()) &&
-                                   incoming().animalCode == animalCode &&
-                                   (isAdmin() || hasStaffPermission('cattle', 'ADD') || hasStaffPermission('cattle', 'EDIT'))
-                                 ) ||
-                                 (
-                                   resource != null &&
-                                   existing().publicApproved == true &&
-                                   isValidPublicCattleCard(incoming()) &&
-                                   incoming().animalCode == animalCode &&
-                                   incoming().diff(existing()).affectedKeys().hasOnly(['vaccinationSummary', 'lastHealthCheckup', 'updatedAt']) &&
-                                   (isAdmin() || hasStaffPermission('health', 'ADD') || hasStaffPermission('health', 'EDIT'))
-                                 )
-                               );
+                               isValidPublicAnimalCode(animalCode) &&
+                               incoming().animalCode == animalCode &&
+                               (
+                                 isAdmin() ||
+                                 (isActiveStaff() && canStaffPermsWritePublicCattleCard(staffData().permissions))
+                               ) &&
+                               isValidPublicCattleCard(incoming());
       allow delete: if isSignedIn() &&
                        isValidPublicAnimalCode(animalCode) &&
                        (isAdmin() || hasStaffPermission('cattle', 'EDIT') || hasStaffPermission('cattle', 'DELETE'));

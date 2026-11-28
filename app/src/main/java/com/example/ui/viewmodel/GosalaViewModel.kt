@@ -175,11 +175,53 @@ class GosalaViewModel(
         }
     }
 
+    private val syncedPublicCardSignatures = mutableSetOf<String>()
+
+    init {
+        if (session.role == UserRole.ADMIN || session.canEdit(AppModule.CATTLE)) {
+            viewModelScope.launch {
+                combine(cattleState, healthState, feedLogsState) { cState, hState, fState ->
+                    val cattle = (cState as? DataUiState.Success)?.data ?: return@combine null
+                    val health = (hState as? DataUiState.Success)?.data.orEmpty()
+                    val feeds = (fState as? DataUiState.Success)?.data.orEmpty()
+                    Triple(cattle, health, feeds)
+                }
+                    .filterNotNull()
+                    .collectLatest { (cattle, health, feeds) ->
+                        val latestFeed = feeds.maxByOrNull { it.logDate }
+                        val approvedToSync = cattle.filter { cow ->
+                            if (!cow.publicApproved) return@filter false
+                            val sig = "${cow.animalCode}|${cow.photoUri.orEmpty()}|${cow.weightKg}|${cow.healthStatus}|${cow.vaccinationSummary.orEmpty()}|${health.count { it.cattleId == cow.id || it.animalCode.equals(cow.animalCode, ignoreCase = true) }}|${latestFeed?.logDate.orEmpty()}"
+                            syncedPublicCardSignatures.add(sig)
+                        }
+                        if (approvedToSync.isNotEmpty()) {
+                            runCatching {
+                                repository.syncAllApprovedPublicCattleCards(
+                                    session = session,
+                                    cattleList = approvedToSync,
+                                    healthRecords = health,
+                                    feedLogs = feeds
+                                )
+                            }
+                        }
+                    }
+            }
+        }
+    }
+
     fun syncPublicCattleCardIfAuthorized(cattle: Cattle, lastHealthCheckup: String? = null) {
         if (!session.canEdit(AppModule.CATTLE) && !session.canAdd(AppModule.CATTLE)) return
+        val health = (healthState.value as? DataUiState.Success)?.data
+        val latestFeed = (feedLogsState.value as? DataUiState.Success)?.data?.maxByOrNull { it.logDate }
         viewModelScope.launch {
             runCatching {
-                repository.syncPublicCattleCard(session, cattle, lastHealthCheckup)
+                repository.syncPublicCattleCard(
+                    session = session,
+                    cattle = cattle,
+                    lastHealthCheckup = lastHealthCheckup,
+                    healthRecords = health,
+                    latestFeedLog = latestFeed
+                )
             }
         }
     }

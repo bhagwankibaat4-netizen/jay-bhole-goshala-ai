@@ -139,3 +139,112 @@ test('Scenario 10: Builds bilingual WhatsApp share URL and valid QR code matrix'
   assert.equal(mat.modules[0][mat.size - 1], 1, 'Top-right finder corner must be dark');
   assert.equal(mat.modules[mat.size - 1][0], 1, 'Bottom-left finder corner must be dark');
 });
+
+test('Full Cattle Profile: Parses weightKg, shedNumber, sponsorship, healthHistory arrayValue, and feedSummary mapValue without leaking private fields', () => {
+  const fullDoc = {
+    fields: {
+      animalCode: { stringValue: 'JBGS-G-357' },
+      name: { stringValue: 'कामधेनु गौमाता' },
+      category: { stringValue: 'COW' },
+      breed: { stringValue: 'गिर (Gir)' },
+      sex: { stringValue: 'FEMALE' },
+      ageText: { stringValue: '5 वर्ष' },
+      birthDate: { stringValue: '2021-04-12' },
+      colour: { stringValue: 'लाल-सफेद' },
+      weightKg: { doubleValue: 425.5 },
+      entryDate: { stringValue: '2024-02-01' },
+      shedNumber: { stringValue: 'Shed-B2' },
+      healthStatus: { stringValue: 'UNDER_TREATMENT' },
+      vaccinationSummary: { stringValue: 'FMD व HS टीका पूर्ण' },
+      lastHealthCheckup: { stringValue: 'पैर का उपचार • 2026-11-24' },
+      identificationMarks: { stringValue: 'माथे पर सफेद तिलक' },
+      sponsorshipAvailable: { booleanValue: true },
+      monthlySupportInr: { integerValue: '2100' },
+      photoUrl: { stringValue: 'https://firebasestorage.googleapis.com/v0/b/gen-lang-client-0821187064.firebasestorage.app/o/cattle_photos%2Fcow.jpg?alt=media' },
+      publicApproved: { booleanValue: true },
+      notes: { stringValue: 'PRIVATE_SHOULD_NOT_APPEAR' },
+      healthHistory: {
+        arrayValue: {
+          values: [
+            {
+              mapValue: {
+                fields: {
+                  recordType: { stringValue: 'TREATMENT' },
+                  title: { stringValue: 'पैर की चोट का उपचार' },
+                  medicine: { stringValue: 'एंटीसेप्टिक ड्रेसिंग' },
+                  vetName: { stringValue: 'डॉ. शर्मा' },
+                  weightKg: { doubleValue: 425.5 },
+                  nextFollowUpDate: { stringValue: '2026-12-02' },
+                  dateStr: { stringValue: '2026-11-24' },
+                  costInr: { integerValue: '500' }
+                }
+              }
+            }
+          ]
+        }
+      },
+      feedSummary: {
+        mapValue: {
+          fields: {
+            logDate: { stringValue: '2026-11-27' },
+            greenFodderKg: { doubleValue: 180 },
+            dryFodderBhusaKg: { doubleValue: 220 },
+            concentrateKg: { doubleValue: 45 },
+            waterLiters: { doubleValue: 900 },
+            shedCleaned: { booleanValue: true }
+          }
+        }
+      }
+    }
+  };
+
+  const profile = app.parsePublicCattleDocument(fullDoc);
+  assert.ok(profile);
+  assert.equal(profile.weightKg, 425.5);
+  assert.equal(profile.shedNumber, 'Shed-B2');
+  assert.equal(profile.sponsorshipAvailable, true);
+  assert.equal(profile.monthlySupportInr, 2100);
+  assert.equal(profile.healthHistory.length, 1);
+  assert.equal(profile.healthHistory[0].recordType, 'TREATMENT');
+  assert.equal(profile.healthHistory[0].title, 'पैर की चोट का उपचार');
+  assert.equal(profile.healthHistory[0].medicine, 'एंटीसेप्टिक ड्रेसिंग');
+  assert.equal(profile.healthHistory[0].vetName, 'डॉ. शर्मा');
+  assert.equal(profile.healthHistory[0].nextFollowUpDate, '2026-12-02');
+  assert.equal(profile.healthHistory[0].costInr, undefined);
+  assert.equal(profile.notes, undefined);
+
+  assert.ok(profile.feedSummary);
+  assert.equal(profile.feedSummary.logDate, '2026-11-27');
+  assert.equal(profile.feedSummary.greenFodderKg, 180);
+  assert.equal(profile.feedSummary.dryFodderBhusaKg, 220);
+  assert.equal(profile.feedSummary.concentrateKg, 45);
+  assert.equal(profile.feedSummary.waterLiters, 900);
+  assert.equal(profile.feedSummary.shedCleaned, true);
+});
+
+test('Full Cattle Profile HTML contains top photo hero, weight/shed/entry/health/feed sections, and photo lightbox', () => {
+  const html = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf8');
+  const requiredIds = [
+    'homeDashboard',
+    'loadingState',
+    'errorState',
+    'cowCard',
+    'cowPhotoFrame',
+    'cowPhoto',
+    'photoPlaceholderNotice',
+    'valAnimalCode',
+    'valWeight',
+    'valEntryDate',
+    'valShedNumber',
+    'healthHistoryList',
+    'feedSummarySection',
+    'valGreenFodder',
+    'valSponsorship',
+    'photoLightbox',
+    'qrCanvas'
+  ];
+  for (const id of requiredIds) {
+    assert.ok(html.includes(`id="${id}"`), `Expected hosting/index.html to include id="${id}"`);
+  }
+});
+

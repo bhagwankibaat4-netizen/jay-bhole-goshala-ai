@@ -102,17 +102,48 @@ class DigitalCowIdCardRobolectricTest {
     }
 
     @Test
-    fun `Scenario 5 & 6 - Public card projection allows only approved cows and strips all private fields`() {
+    fun `Scenario 5 & 6 - Public card projection allows only approved cows, includes full profile fields, and strips all private fields`() {
+        val sampleHealthRecords = listOf(
+            HealthRecord(
+                id = "hr_secret_1",
+                cattleId = approvedCow.id,
+                cattleName = approvedCow.name,
+                animalCode = approvedCow.animalCode,
+                recordType = "TREATMENT",
+                title = "पैर की चोट का उपचार",
+                medicine = "एंटीसेप्टिक ड्रेसिंग",
+                vetName = "डॉ. शर्मा",
+                costInr = 750.0,
+                weightKg = 412.5,
+                nextFollowUpDate = "2027-01-15",
+                notes = "SECRET_VET_COST_NOTE_XYZ",
+                recordedBy = "private_staff_uid_77"
+            )
+        )
+        val sampleFeedLog = com.example.data.model.FeedAndOperationLog(
+            id = "feed_1",
+            logDate = "2026-11-27",
+            greenFodderKg = 165.0,
+            dryFodderBhusaKg = 210.0,
+            concentrateKg = 42.0,
+            waterLiters = 850.0,
+            shedCleaned = true,
+            notes = "INTERNAL_FEED_VENDOR_NOTE",
+            recordedBy = "private_staff_uid_88"
+        )
+
         val publicMap = QrAndExportUtils.buildPublicCattleCardMap(
             cattle = approvedCow,
             resolvedPhotoUrl = approvedCow.photoUri,
             lastHealthCheckup = "वार्षिक स्वास्थ्य जांच • 2026-11-20",
+            healthRecords = sampleHealthRecords,
+            latestFeedLog = sampleFeedLog,
             useServerTimestamp = false
         )
         assertNotNull("Approved cow must build public card map", publicMap)
         val map = publicMap!!
 
-        // Verify all required public fields are present from real cattle data
+        // Verify all required public profile fields are present from real cattle data
         assertEquals("JBGS-G-357", map["animalCode"])
         assertEquals("कामधेनु गौमाता", map["name"])
         assertEquals("COW", map["category"])
@@ -121,23 +152,52 @@ class DigitalCowIdCardRobolectricTest {
         assertEquals("4 वर्ष", map["ageText"])
         assertEquals("2022-03-18", map["birthDate"])
         assertEquals("सफेद-लाल", map["colour"])
+        assertEquals(410.0, map["weightKg"])
         assertEquals("2024-01-10", map["entryDate"])
+        assertEquals("Shed-A1", map["shedNumber"])
         assertEquals("HEALTHY", map["healthStatus"])
         assertEquals("FMD व HS टीका पूर्ण (आगामी: 2027-04-01)", map["vaccinationSummary"])
         assertEquals("वार्षिक स्वास्थ्य जांच • 2026-11-20", map["lastHealthCheckup"])
         assertEquals("माथे पर अर्धचंद्र तिलक", map["identificationMarks"])
+        assertEquals(true, map["sponsorshipAvailable"])
+        assertEquals(2100L, map["monthlySupportInr"])
         assertEquals(GosalaBrand.NAME_HI, map["goshalaNameHi"])
         assertEquals(GosalaBrand.ADDRESS_HI, map["goshalaAddressHi"])
         assertEquals(true, map["publicApproved"])
         assertEquals("https://gen-lang-client-0821187064.web.app/cattle/JBGS-G-357", map["qrUrl"])
 
-        // Verify strictly NO private/internal fields are ever leaked
+        @Suppress("UNCHECKED_CAST")
+        val healthHistory = map["healthHistory"] as? List<Map<String, Any>>
+        assertNotNull("Expected sanitized healthHistory list", healthHistory)
+        assertEquals(1, healthHistory!!.size)
+        assertEquals("TREATMENT", healthHistory[0]["recordType"])
+        assertEquals("पैर की चोट का उपचार", healthHistory[0]["title"])
+        assertEquals("एंटीसेप्टिक ड्रेसिंग", healthHistory[0]["medicine"])
+        assertEquals("डॉ. शर्मा", healthHistory[0]["vetName"])
+        assertFalse("healthHistory must never include costInr", healthHistory[0].containsKey("costInr"))
+        assertFalse("healthHistory must never include notes", healthHistory[0].containsKey("notes"))
+        assertFalse("healthHistory must never include recordedBy", healthHistory[0].containsKey("recordedBy"))
+
+        @Suppress("UNCHECKED_CAST")
+        val feedSummary = map["feedSummary"] as? Map<String, Any>
+        assertNotNull("Expected sanitized feedSummary map", feedSummary)
+        assertEquals("2026-11-27", feedSummary!!["logDate"])
+        assertEquals(165.0, feedSummary["greenFodderKg"])
+        assertEquals(210.0, feedSummary["dryFodderBhusaKg"])
+        assertEquals(true, feedSummary["shedCleaned"])
+        assertFalse("feedSummary must never include internal notes", feedSummary.containsKey("notes"))
+
+        // Verify strictly NO private/internal fields are ever leaked anywhere
         assertFalse(map.containsKey("notes"))
         assertFalse(map.containsKey("id"))
         assertFalse(map.containsKey("cattleId"))
         assertFalse(map.containsKey("createdBy"))
-        assertFalse(map.values.any { it.toString().contains("9876543210") })
-        assertFalse(map.values.any { it.toString().contains(approvedCow.id) })
+        val serialized = map.toString()
+        assertFalse(serialized.contains("9876543210"))
+        assertFalse(serialized.contains(approvedCow.id))
+        assertFalse(serialized.contains("SECRET_VET_COST_NOTE_XYZ"))
+        assertFalse(serialized.contains("INTERNAL_FEED_VENDOR_NOTE"))
+        assertFalse(serialized.contains("private_staff_uid_77"))
 
         // Unapproved cow MUST NEVER be published to publicCattleCards
         val blockedMap = QrAndExportUtils.buildPublicCattleCardMap(
