@@ -150,16 +150,12 @@ class AiGoshalaAssistantRobolectricTest {
     }
 
     @Test
-    fun `app check keeps DEBUG on emulators, uses reCAPTCHA on standalone physical phones and release, commits synchronously, and rejects dummy JWTs`() {
+    fun `app check selects DEBUG in debug builds and PLAY_INTEGRITY in release builds, enforces cooldowns, commits synchronously, and rejects dummy JWTs`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val persistenceKey = "test_goshala_app"
         val testToken = "12345678-ABCD-EF01-2345-6789ABCDEF01"
 
-        // 1. Provisioned reCAPTCHA Enterprise site key resolves cleanly from resources
-        val siteKey = resolveRecaptchaSiteKey(context)
-        assertFalse(siteKey.isNullOrBlank())
-
-        // 2. Debug token commits synchronously to both Firebase debug store and explicit meta store
+        // 1. Debug token commits synchronously to Firebase App Check debug SharedPreferences store
         val committed = persistDebugAppCheckToken(context, persistenceKey, testToken)
         assertTrue(committed)
         val stored = context.getSharedPreferences(
@@ -168,80 +164,54 @@ class AiGoshalaAssistantRobolectricTest {
         ).getString(DEBUG_SECRET_KEY, null)
         assertEquals(testToken, stored)
 
-        // 3. Provider selection matrix
-        // Debug with explicit Intent token -> DEBUG
-        assertEquals(
-            AppCheckProviderKind.DEBUG,
-            decideAppCheckProviderKind(
-                isDebugBuild = true,
-                intentDebugToken = testToken,
-                storedExplicitDebugToken = null,
-                storedSdkDebugSecret = null,
-                recaptchaSiteKey = siteKey,
-                isEmulator = true
-            )
-        )
-        // Debug on Android Emulator WITHOUT Intent token (e.g. launcher relaunch) -> MUST STAY DEBUG (never RECAPTCHA!)
-        assertEquals(
-            AppCheckProviderKind.DEBUG,
-            decideAppCheckProviderKind(
-                isDebugBuild = true,
-                intentDebugToken = null,
-                storedExplicitDebugToken = null,
-                storedSdkDebugSecret = null,
-                recaptchaSiteKey = siteKey,
-                isEmulator = true
-            )
-        )
-        // Standalone Debug APK on real physical phone (no intent token, stale random UUID) -> RECAPTCHA!
-        assertEquals(
-            AppCheckProviderKind.RECAPTCHA,
-            decideAppCheckProviderKind(
-                isDebugBuild = true,
-                intentDebugToken = null,
-                storedExplicitDebugToken = null,
-                storedSdkDebugSecret = "unregistered-random-uuid",
-                recaptchaSiteKey = siteKey,
-                isEmulator = false
-            )
-        )
-        // Relaunched Debug build with matching explicit harness token -> DEBUG!
-        assertEquals(
-            AppCheckProviderKind.DEBUG,
-            decideAppCheckProviderKind(
-                isDebugBuild = true,
-                intentDebugToken = null,
-                storedExplicitDebugToken = testToken,
-                storedSdkDebugSecret = testToken,
-                recaptchaSiteKey = siteKey,
-                isEmulator = false
-            )
-        )
-        // Release build -> ALWAYS RECAPTCHA (even if token present)!
-        assertEquals(
-            AppCheckProviderKind.RECAPTCHA,
-            decideAppCheckProviderKind(
-                isDebugBuild = false,
-                intentDebugToken = testToken,
-                storedExplicitDebugToken = testToken,
-                storedSdkDebugSecret = testToken,
-                recaptchaSiteKey = siteKey,
-                isEmulator = false
-            )
-        )
+        // 2. Strict build-type provider selection: DEBUG in debug builds, PLAY_INTEGRITY in release builds (never RECAPTCHA)
+        assertEquals(AppCheckProviderKind.DEBUG, decideAppCheckProviderKind(isDebugBuild = true))
+        assertEquals(AppCheckProviderKind.PLAY_INTEGRITY, decideAppCheckProviderKind(isDebugBuild = false))
 
-        // 4. Stale token cleanup works synchronously
+        // 3. Stale token cleanup works synchronously
         clearStoredDebugAppCheckToken(context, persistenceKey)
         assertNull(
             context.getSharedPreferences("$DEBUG_STORE_PREFIX$persistenceKey", Context.MODE_PRIVATE)
                 .getString(DEBUG_SECRET_KEY, null)
         )
 
-        // 5. JWT validator rejects Firebase dummy error token and accepts real JWTs
+        // 4. JWT validator rejects Firebase dummy error token and accepts real JWTs
         assertFalse(isValidAppCheckJwt(null))
         assertFalse(isValidAppCheckJwt(""))
         assertFalse(isValidAppCheckJwt("eyJlcnJvciI6IlVOS05PV05fRVJST1IifQ=="))
         assertTrue(isValidAppCheckJwt("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhcHAifQ.c2lnbmF0dXJl"))
+
+        // 5. Rate-limit detector and forced-refresh cooldown prevent "Too many attempts." retry storms
+        assertTrue(isRateLimitMessage("recaptcha: Too many attempts."))
+        assertTrue(isRateLimitMessage("Too many attempts."))
+        assertFalse(isRateLimitMessage("Firebase App Check token is invalid."))
+
+        val now = 1_000_000L
+        assertTrue(canAttemptForceRefreshNow(nowMs = now, lastForceAttemptMs = 0L, blockedUntilMs = 0L))
+        // Within 15s minimum interval -> blocked
+        assertFalse(
+            canAttemptForceRefreshNow(
+                nowMs = now,
+                lastForceAttemptMs = now - (MIN_FORCE_REFRESH_INTERVAL_MS - 1_000L),
+                blockedUntilMs = 0L
+            )
+        )
+        // After 15s minimum interval -> allowed
+        assertTrue(
+            canAttemptForceRefreshNow(
+                nowMs = now,
+                lastForceAttemptMs = now - (MIN_FORCE_REFRESH_INTERVAL_MS + 1_000L),
+                blockedUntilMs = 0L
+            )
+        )
+        // During 60s rate-limit lockout -> blocked
+        assertFalse(
+            canAttemptForceRefreshNow(
+                nowMs = now,
+                lastForceAttemptMs = 0L,
+                blockedUntilMs = now + 30_000L
+            )
+        )
 
         // 6. Error classifier accurately detects App Check token failures
         assertTrue(isAppCheckTokenError(Exception("Firebase App Check token is invalid.")))

@@ -4,14 +4,13 @@ import android.util.Log
 import com.example.core.AppLanguage
 import com.example.core.describeAppCheckDiagnostic
 import com.example.core.describeAppCheckProviderForLog
+import com.example.core.ensureAppCheckInitialized
+import com.example.core.fetchValidAppCheckToken
 import com.example.core.isValidAppCheckJwt
-import com.example.core.refreshAppCheckToken
 import com.example.data.model.UserRole
 import com.example.data.model.UserSession
 import com.google.firebase.Firebase
-import com.google.firebase.FirebaseApp
 import com.google.firebase.ai.ai
-import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -183,10 +182,10 @@ class AdminAiDiagnosticRepository(
                 errorDetails = buildString {
                     if (language == AppLanguage.HINDI) {
                         append("HTTP 401 (App Check त्रुटि): डिवाइस से वैध App Check टोकन नहीं बना। ")
-                        append("Debug बिल्ड में रजिस्टर्ड Debug Token और Release में Google Play Services / reCAPTCHA जाँचें।")
+                        append("Debug बिल्ड में Firebase Console → App Check → Manage debug tokens में Debug Token और Release में Play Integrity / SHA-256 जाँचें।")
                     } else {
                         append("HTTP 401 (App Check Error): Device did not issue a valid App Check JWT. ")
-                        append("Verify registered Debug Token (Debug) or Play Services / reCAPTCHA (Release).")
+                        append("Verify registered Debug Token (Debug) or Play Integrity / Release SHA-256 (Release).")
                     }
                     if (appCheckDiag.isNotBlank()) {
                         append('\n').append(appCheckDiag)
@@ -439,22 +438,13 @@ class AdminAiDiagnosticRepository(
             token
         }
 
-        private suspend fun fetchLiveAppCheckToken(): Result<String> = runCatching {
-            val app = FirebaseApp.getInstance()
-            val appCheck = FirebaseAppCheck.getInstance(app)
-            val first = runCatching { appCheck.getAppCheckToken(false).await().token }.getOrNull()
-            if (isValidAppCheckJwt(first)) {
-                return@runCatching first!!.trim()
-            }
-            refreshAppCheckToken(forceRefresh = true)
-            val refreshed = appCheck.getAppCheckToken(true).await().token
-            if (!isValidAppCheckJwt(refreshed)) {
-                throw IllegalStateException("App Check returned an invalid or dummy token.")
-            }
-            refreshed.trim()
+        private suspend fun fetchLiveAppCheckToken(): Result<String> {
+            ensureAppCheckInitialized()
+            return fetchValidAppCheckToken(forceRefreshOnInvalid = true)
         }
 
         private suspend fun executeLiveFirebaseAiLogicProbe(prompt: String): FirebaseAiLogicProbeOutcome {
+            ensureAppCheckInitialized()
             val models = listOf(PRIMARY_AI_LOGIC_MODEL, FALLBACK_AI_LOGIC_MODEL)
             var lastFailure: FirebaseAiLogicProbeOutcome? = null
 

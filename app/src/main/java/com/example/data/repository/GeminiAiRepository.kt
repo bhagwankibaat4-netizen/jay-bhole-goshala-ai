@@ -10,7 +10,9 @@ import com.example.core.VetSourceReference
 import com.example.core.VetTriageAnswers
 import com.example.core.VetTriageAssessment
 import com.example.core.VetTriageEngine
+import com.example.core.ensureAppCheckInitialized
 import com.example.core.isAppCheckTokenError
+import com.example.core.isRateLimitMessage
 import com.example.core.refreshAppCheckToken
 import com.example.data.model.*
 import com.google.firebase.Firebase
@@ -862,12 +864,15 @@ class GeminiAiRepository {
             )
         }
 
+        // Guarantee App Check is initialized before any Firebase AI Logic / Gemini call
+        ensureAppCheckInitialized()
+
         var lastError: Throwable? = null
         var skipGroundedBecauseUnsupported = false
+        var appCheckRetried = false
         for ((modelIndex, spec) in candidateSpecs.withIndex()) {
             if (skipGroundedBecauseUnsupported && spec.isGrounded) continue
             val candidatePrompt = buildChatPromptForCandidate(allowGoogleSearch = spec.isGrounded)
-            var appCheckRetried = false
             var attemptNumber = 0
             while (true) {
                 attemptNumber++
@@ -933,11 +938,12 @@ class GeminiAiRepository {
                     throw e
                 } catch (e: Exception) {
                     lastError = e
-                    if (!appCheckRetried && accumulated.isEmpty() && isAppCheckTokenError(e)) {
-                        Log.w(AI_REPO_TAG, "App Check token error during stream (model=${spec.modelName}, grounded=${spec.isGrounded}); forcing refresh and retrying once.", e)
-                        performAppCheckRefresh(forceRefresh = true)
+                    if (!appCheckRetried && accumulated.isEmpty() && isAppCheckTokenError(e) && !isRateLimitMessage(e.message)) {
+                        Log.w(AI_REPO_TAG, "App Check token error during stream (model=${spec.modelName}, grounded=${spec.isGrounded}); attempting single throttled refresh.", e)
                         appCheckRetried = true
-                        continue
+                        if (performAppCheckRefresh(forceRefresh = true)) {
+                            continue
+                        }
                     }
                     val searchUnsupported = spec.isGrounded && isSearchToolUnsupportedError(e)
                     if (searchUnsupported) {
@@ -1038,10 +1044,12 @@ class GeminiAiRepository {
             else -> if (language == AppLanguage.HINDI) "आज की AI गौशाला कार्य योजना" else "Daily AI Goshala Work Plan"
         }
 
+        ensureAppCheckInitialized()
+
         val workPlanModels = listOf(workPlanModel, fallbackWorkPlanModel)
         var lastError: Throwable? = null
+        var appCheckRetried = false
         for ((idx, model) in workPlanModels.withIndex()) {
-            var attempt = 0
             while (true) {
                 try {
                     val response = withTimeout(60_000L) {
@@ -1089,11 +1097,12 @@ class GeminiAiRepository {
                     throw e
                 } catch (e: Exception) {
                     lastError = e
-                    if (attempt == 0 && isAppCheckTokenError(e)) {
-                        Log.w(AI_REPO_TAG, "App Check token error during work plan; forcing refresh and retrying once.", e)
-                        performAppCheckRefresh(forceRefresh = true)
-                        attempt++
-                        continue
+                    if (!appCheckRetried && isAppCheckTokenError(e) && !isRateLimitMessage(e.message)) {
+                        Log.w(AI_REPO_TAG, "App Check token error during work plan; attempting single throttled refresh.", e)
+                        appCheckRetried = true
+                        if (performAppCheckRefresh(forceRefresh = true)) {
+                            continue
+                        }
                     }
                     if (idx < workPlanModels.lastIndex && isModelFallbackEligible(e)) {
                         Log.w(AI_REPO_TAG, "Work plan falling back to lite model: ${e.message}")
@@ -1247,6 +1256,9 @@ class GeminiAiRepository {
             }
         }
 
+        // Guarantee App Check is initialized before any Firebase AI Logic / Gemini call
+        ensureAppCheckInitialized()
+
         // Live Firebase AI Logic call with Google Search Grounding + graceful model/tool/AppCheck fallback
         val candidateSpecs: List<ModelCandidateSpec> = listOf(
             ModelCandidateSpec(PRIMARY_MODEL_NAME, isGrounded = true, isFallback = false),
@@ -1256,10 +1268,10 @@ class GeminiAiRepository {
         )
         var lastError: Throwable? = null
         var skipGroundedBecauseUnsupported = false
+        var appCheckRetried = false
         for ((idx, spec) in candidateSpecs.withIndex()) {
             if (skipGroundedBecauseUnsupported && spec.isGrounded) continue
             val candidatePromptText = buildReportPrompt(allowGoogleSearch = spec.isGrounded)
-            var appCheckRetried = false
             var attemptNumber = 0
             while (true) {
                 attemptNumber++
@@ -1313,11 +1325,12 @@ class GeminiAiRepository {
                     throw e
                 } catch (e: Exception) {
                     lastError = e
-                    if (!appCheckRetried && isAppCheckTokenError(e)) {
-                        Log.w(AI_REPO_TAG, "App Check token error during vet report (model=${spec.modelName}); forcing refresh and retrying once.", e)
-                        performAppCheckRefresh(forceRefresh = true)
+                    if (!appCheckRetried && isAppCheckTokenError(e) && !isRateLimitMessage(e.message)) {
+                        Log.w(AI_REPO_TAG, "App Check token error during vet report (model=${spec.modelName}); attempting single throttled refresh.", e)
                         appCheckRetried = true
-                        continue
+                        if (performAppCheckRefresh(forceRefresh = true)) {
+                            continue
+                        }
                     }
                     val searchUnsupported = spec.isGrounded && isSearchToolUnsupportedError(e)
                     if (searchUnsupported) {
@@ -1370,10 +1383,11 @@ class GeminiAiRepository {
     ).map { it.text }
 
     suspend fun extractVoiceEntryDraft(spokenText: String): Result<VoiceEntryDraft> {
+        ensureAppCheckInitialized()
         val models = listOf(structuredModel, fallbackStructuredModel)
         var lastError: Throwable? = null
+        var appCheckRetried = false
         for ((idx, model) in models.withIndex()) {
-            var attempt = 0
             while (true) {
                 try {
                     val prompt = """
@@ -1402,11 +1416,12 @@ class GeminiAiRepository {
                     throw e
                 } catch (e: Exception) {
                     lastError = e
-                    if (attempt == 0 && isAppCheckTokenError(e)) {
-                        Log.w(AI_REPO_TAG, "App Check token error during voice draft; forcing refresh and retrying once.", e)
-                        performAppCheckRefresh(forceRefresh = true)
-                        attempt++
-                        continue
+                    if (!appCheckRetried && isAppCheckTokenError(e) && !isRateLimitMessage(e.message)) {
+                        Log.w(AI_REPO_TAG, "App Check token error during voice draft; attempting single throttled refresh.", e)
+                        appCheckRetried = true
+                        if (performAppCheckRefresh(forceRefresh = true)) {
+                            continue
+                        }
                     }
                     if (idx < models.lastIndex && isModelFallbackEligible(e)) {
                         Log.w(AI_REPO_TAG, "Voice draft falling back to lite model: ${e.message}")

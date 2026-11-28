@@ -517,7 +517,15 @@ class AiViewModel(
             }
         }
 
-        // 2. HTTP 429 — Quota / Rate Limit Error
+        // 2. App Check / API Rate Limit ('Too many attempts' or HTTP 429)
+        if (rawLower.contains("too many attempts")) {
+            return if (language == AppLanguage.HINDI) {
+                "App Check अस्थायी सीमा (Too many attempts): टोकन के बार-बार प्रयास के कारण अनुरोध कुछ समय के लिए रुके हैं। कृपया 1–2 मिनट प्रतीक्षा करें और फिर एक बार प्रयास करें।"
+            } else {
+                "App Check Rate Limit (Too many attempts): Too many token verification attempts. Please wait 1-2 minutes before retrying once."
+            }
+        }
+
         if (
             rawLower.contains("429") ||
             rawLower.contains("quotaexceeded") ||
